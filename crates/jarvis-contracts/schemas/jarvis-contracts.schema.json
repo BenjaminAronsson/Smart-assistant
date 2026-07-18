@@ -1,0 +1,341 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AdapterHealth": {
+      "properties": {
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/AdapterState"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    },
+    "AdapterState": {
+      "description": "`disabled` = present in config but switched off (e.g. voice before M5).",
+      "enum": [
+        "up",
+        "down",
+        "disabled"
+      ],
+      "type": "string"
+    },
+    "Channel": {
+      "description": "One WebSocket replaces v1's three hubs; `channel` discriminates (docs/05 §1).",
+      "enum": [
+        "session",
+        "display",
+        "voice"
+      ],
+      "type": "string"
+    },
+    "ContentBlock": {
+      "oneOf": [
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Forward-compatibility catch-all (docs/05 §5). Never produced by this\nversion's writers; only ever the result of reading a newer peer.",
+          "properties": {
+            "type": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CreateSessionRequest": {
+      "properties": {
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ErrorCode": {
+      "enum": [
+        "auth.invalid_token",
+        "auth.scope_missing",
+        "validation.failed",
+        "idempotency.conflict",
+        "resource.version_conflict",
+        "resource.not_found",
+        "run.budget_exceeded",
+        "run.not_cancellable",
+        "provider.unavailable",
+        "provider.quota_exhausted",
+        "policy.denied",
+        "grant.expired",
+        "grant.args_mismatch",
+        "grant.consumed",
+        "tool.timeout",
+        "tool.result_invalid",
+        "artifact.too_large",
+        "degraded.queued"
+      ],
+      "type": "string"
+    },
+    "EventEnvelope": {
+      "properties": {
+        "channel": {
+          "$ref": "#/definitions/Channel"
+        },
+        "occurredAt": {
+          "description": "RFC 3339 timestamp of the domain occurrence.",
+          "type": "string"
+        },
+        "payload": true,
+        "resourceVersion": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "seq": {
+          "description": "Monotonic per connection scope; gaps trigger client resync (NFR-13).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "traceId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "description": "Event type discriminator, e.g. `run.tool.completed`.",
+          "type": "string"
+        },
+        "v": {
+          "description": "Contract version ([`crate::CONTRACT_VERSION`]).",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "seq",
+        "channel",
+        "type",
+        "occurredAt",
+        "payload"
+      ],
+      "type": "object"
+    },
+    "HealthResponse": {
+      "properties": {
+        "adapters": {
+          "additionalProperties": {
+            "$ref": "#/definitions/AdapterHealth"
+          },
+          "description": "Adapter readiness by adapter name (docs/02 §12 startup order).",
+          "type": "object"
+        },
+        "status": {
+          "$ref": "#/definitions/ServiceStatus"
+        },
+        "version": {
+          "description": "jarvisd semver, for support/diagnostics.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "version",
+        "adapters"
+      ],
+      "type": "object"
+    },
+    "PairRequest": {
+      "properties": {
+        "deviceName": {
+          "type": "string"
+        },
+        "pairingCode": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pairingCode",
+        "deviceName"
+      ],
+      "type": "object"
+    },
+    "PairResponse": {
+      "properties": {
+        "deviceId": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "deviceToken": {
+          "description": "Opaque 256-bit bearer token; the only time it crosses the wire.",
+          "type": "string"
+        },
+        "scopes": {
+          "description": "Device scopes, e.g. `ui`, `display-agent`, `voice-capture` (docs/05 §6).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "deviceId",
+        "deviceToken",
+        "scopes"
+      ],
+      "type": "object"
+    },
+    "ProblemDetails": {
+      "description": "RFC 9457 problem details body plus the stable machine `code` (docs/05 §2).\nThe gateway maps every boundary-crossing error through one `IntoProblem`\nimpl — no inline problem bodies.",
+      "properties": {
+        "code": {
+          "$ref": "#/definitions/ErrorCode"
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "instance": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "title": {
+          "type": "string"
+        },
+        "type": {
+          "description": "Problem type URI; `about:blank` when the code says it all.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "title",
+        "status",
+        "code"
+      ],
+      "type": "object"
+    },
+    "ServiceStatus": {
+      "oneOf": [
+        {
+          "const": "ok",
+          "description": "Core and all enabled adapters ready.",
+          "type": "string"
+        },
+        {
+          "const": "degraded",
+          "description": "Core up, one or more adapters down — degraded mode (FR-12).",
+          "type": "string"
+        }
+      ]
+    },
+    "SessionDto": {
+      "properties": {
+        "createdAt": {
+          "description": "RFC 3339.",
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "status": {
+          "$ref": "#/definitions/SessionStatus"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updatedAt": {
+          "description": "RFC 3339.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "SessionListResponse": {
+      "properties": {
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessions": {
+          "items": {
+            "$ref": "#/definitions/SessionDto"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sessions"
+      ],
+      "type": "object"
+    },
+    "SessionStatus": {
+      "enum": [
+        "active",
+        "archived"
+      ],
+      "type": "string"
+    },
+    "UlidString": {
+      "description": "ULID: 26 chars of uppercase Crockford base32",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "type": "string"
+    }
+  },
+  "description": "Jarvis wire contract v1 (generated — do not edit)",
+  "title": "jarvis-contracts"
+}

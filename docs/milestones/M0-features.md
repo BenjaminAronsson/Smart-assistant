@@ -33,7 +33,7 @@ Each feature is a vertical slice sized for one session and runs the `/feature` l
   Documented up/down/reset flow. Refs: NFR-10, NFR-14. Read: docs/09 §2,
   docs/02 §12. Deps: none (parallel with F0.1).
 
-- [ ] **F0.3 — Contracts seed + TypeScript codegen**
+- [x] **F0.3 — Contracts seed + TypeScript codegen**
   `jarvis-contracts` v1: WS event envelope struct (docs/05 §3), error-code registry
   starter set as `jarvis-contracts::errors` (docs/05 §7), health/pairing/session DTOs
   with newtyped ULID ids, discriminated content blocks (serde `tag`), schemars schemas;

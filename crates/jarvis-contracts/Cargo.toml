@@ -13,4 +13,4 @@ workspace = true
 jarvis-domain.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
+schemars.workspace = true
