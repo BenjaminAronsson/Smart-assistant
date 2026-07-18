@@ -1,0 +1,52 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo xtask:*)",
+      "Bash(cargo sqlx:*)",
+      "Bash(cargo deny:*)",
+      "Bash(cargo audit:*)",
+      "Bash(cargo tree:*)",
+      "Bash(npm run:*)",
+      "Bash(npm test:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git checkout:*)",
+      "Bash(git branch:*)",
+      "Bash(docker compose -f infra/compose/dev.yml:*)"
+    ],
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(sudo:*)",
+      "Bash(rm -rf /:*)",
+      "Read(.env*)",
+      "Read(**/secrets/**)"
+    ],
+    "ask": [
+      "Bash(git push:*)",
+      "Bash(cargo add:*)",
+      "Bash(npm install:*)",
+      "Bash(sqlx migrate run:*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$CLAUDE_FILE_PATHS\"; case \"$f\" in *.rs) cargo fmt -- \"$f\" 2>/dev/null || true;; esac"
+          }
+        ]
+      }
+    ]
+  }
+}

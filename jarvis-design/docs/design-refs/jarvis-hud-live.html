@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jarvis — HUD with live content + optional background</title>
+<style>
+  :root{
+    --c-idle: 210 90% 58%;
+    --c-listen: 172 70% 45%;
+    --c-think: 258 75% 62%;
+    --c-tool: 205 85% 55%;
+    --c-approve: 34 92% 55%;
+    --c-success: 152 55% 42%;
+    --c-error: 358 75% 58%;
+    --c-degraded: 220 10% 55%;
+    --hue: var(--c-idle);
+
+    /* glass material — adapts when a background image is active */
+    --glass-alpha: .55;
+    --glass-blur: 1.4vmin;
+    --glass-border: hsl(0 0% 100% / .8);
+    --glass-shadow: 0 1vmin 3vmin -1vmin hsl(220 30% 30% / .18);
+    --ink: #20242b;
+    --ink-dim: #6b7280;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html,body{height:100%;}
+  body{
+    min-height:100dvh; position:relative;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap: clamp(14px, 2.6vmin, 26px);
+    font-family: -apple-system, "Segoe UI", Inter, sans-serif;
+    overflow:hidden;
+    padding: clamp(16px, 4vmin, 40px);
+  }
+
+  /* ---------- background layer: none / abstract / photo ---------- */
+  .bg{ position:fixed; inset:0; z-index:-3; transition: opacity .5s ease; background:
+      radial-gradient(circle at 20% 15%, hsl(var(--hue) / .16), transparent 45%),
+      radial-gradient(circle at 82% 78%, hsl(200 80% 70% / .14), transparent 45%),
+      linear-gradient(180deg, #f4f6f9 0%, #eceff3 100%); }
+  body.bg-abstract .bg{ background:
+      radial-gradient(circle at 15% 20%, hsl(320 80% 65% / .9), transparent 55%),
+      radial-gradient(circle at 85% 15%, hsl(45 95% 60% / .9), transparent 50%),
+      radial-gradient(circle at 75% 85%, hsl(190 85% 45% / .9), transparent 55%),
+      radial-gradient(circle at 25% 85%, hsl(265 80% 55% / .9), transparent 50%),
+      linear-gradient(160deg, #1a1f2b, #2b2140); }
+  body.bg-photo .bg{ background-image: url('https://picsum.photos/seed/jarvishud/1800/1200');
+      background-size:cover; background-position:center; }
+  /* adaptive scrim: keeps glass legible regardless of what's under it */
+  .scrim{ position:fixed; inset:0; z-index:-2; opacity:0; transition:opacity .5s ease;
+      background: linear-gradient(180deg, hsl(0 0% 100% / .28), hsl(0 0% 100% / .5) 60%, hsl(0 0% 100% / .3)); }
+  body.bg-abstract .scrim, body.bg-photo .scrim{ opacity:1; }
+  body.bg-abstract, body.bg-photo{
+    --glass-alpha: .68; --glass-blur: 2.4vmin; --glass-border: hsl(0 0% 100% / .55);
+    --glass-shadow: 0 1.4vmin 3.6vmin -1vmin hsl(220 40% 10% / .35);
+  }
+
+  /* ---------- ambient particles ---------- */
+  .field{ position:fixed; inset:0; z-index:-1; pointer-events:none; }
+  .mote{ position:absolute; border-radius:50%;
+    background: radial-gradient(circle, hsl(var(--hue) / .5), transparent 70%);
+    filter: blur(1px); animation: drift linear infinite; transition: background 1.1s ease; }
+  @keyframes drift{ 0%{ transform:translateY(0) translateX(0) scale(1); opacity:0;} 8%{opacity:.55;} 92%{opacity:.35;}
+    100%{ transform:translateY(-38vmin) translateX(var(--dx,4vmin)) scale(1.4); opacity:0;} }
+
+  /* ---------- top-right background switcher ---------- */
+  .bgswitch{ position:fixed; top:clamp(12px,2.4vmin,20px); right:clamp(12px,2.4vmin,20px); z-index:5;
+    display:flex; gap:6px; }
+  .bgswitch button{ font:inherit; font-size:clamp(10px,1.15vmin,11.5px); font-weight:600;
+    padding:.42em .8em; border-radius:2em; cursor:pointer; color:var(--ink);
+    background: hsl(0 0% 100% / var(--glass-alpha)); backdrop-filter: blur(var(--glass-blur));
+    border:1px solid var(--glass-border); box-shadow: var(--glass-shadow); }
+  .bgswitch button.active{ background:#20242b; color:#fff; }
+
+  /* ---------- the orb ---------- */
+  .stage{ position:relative; z-index:1; width:min(40vmin, 260px); aspect-ratio:1;
+    display:flex; align-items:center; justify-content:center;
+    filter: drop-shadow(0 1.2vmin 2.4vmin hsl(220 30% 15% / .18)); }
+  .ring{ position:absolute; inset:0; border-radius:50%; border:max(1px,.3vmin) solid hsl(var(--hue) / .35);
+    transition: border-color 1.1s ease, opacity .6s ease; }
+  .ring.r1{ animation: spin 22s linear infinite; }
+  .ring.r2{ inset:9%; border-style:dashed; border-color:hsl(var(--hue) / .25); animation: spin 30s linear infinite reverse; }
+  .ring.r3{ inset:18%; box-shadow:0 0 4vmin 0 hsl(var(--hue) / .35); animation: breathe 3.4s ease-in-out infinite; }
+  @keyframes spin{ to{ transform:rotate(360deg);} }
+  @keyframes breathe{ 0%,100%{ opacity:.6; transform:scale(1);} 50%{ opacity:1; transform:scale(1.045);} }
+  .glass-core{ position:absolute; inset:26%; border-radius:50%;
+    background: radial-gradient(circle at 32% 28%, hsl(0 0% 100% / .95), hsl(var(--hue) / .2) 55%, hsl(var(--hue) / .08) 78%);
+    backdrop-filter: blur(1.2vmin); border:1px solid hsl(0 0% 100% / .8);
+    box-shadow: 0 1vmin 3vmin -.5vmin hsl(var(--hue) / .4), inset 0 0 2vmin hsl(0 0% 100% / .7);
+    transition: background 1.1s ease; animation: breathe 3.4s ease-in-out infinite; }
+  .waveform{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; gap:.9vmin; opacity:0; transition:opacity .3s ease; }
+  .state-listen .waveform{ opacity:1; }
+  .waveform span{ width:1vmin; min-width:3px; border-radius:2vmin; background:hsl(var(--hue) / .85); animation: bar 900ms ease-in-out infinite; }
+  .waveform span:nth-child(1){height:14%;animation-delay:0ms} .waveform span:nth-child(2){height:34%;animation-delay:90ms}
+  .waveform span:nth-child(3){height:54%;animation-delay:180ms} .waveform span:nth-child(4){height:38%;animation-delay:270ms}
+  .waveform span:nth-child(5){height:22%;animation-delay:360ms}
+  @keyframes bar{ 0%,100%{ transform:scaleY(.45);} 50%{ transform:scaleY(1);} }
+  .spark{ position:absolute; width:2.6%; height:2.6%; border-radius:50%; background:hsl(var(--hue) / .95);
+    box-shadow:0 0 1.4vmin hsl(var(--hue) / .85); top:50%; left:50%; opacity:0; transition:opacity .3s ease; }
+  .state-think .spark{ opacity:1; animation: orbit 1.1s linear infinite; }
+  .state-think .spark.s2{ animation-duration:1.7s; animation-direction:reverse; }
+  @keyframes orbit{ from{ transform:rotate(0deg) translateX(19vmin) rotate(0deg) scale(.4);} to{ transform:rotate(360deg) translateX(19vmin) rotate(-360deg) scale(.4);} }
+  .arc{ position:absolute; inset:2%; opacity:0; transition:opacity .4s ease; }
+  .arc svg{ width:100%; height:100%; transform:rotate(-90deg); }
+  .arc circle{ fill:none; stroke:hsl(var(--hue) / .85); stroke-width:1.6%; stroke-linecap:round; stroke-dasharray:300; stroke-dashoffset:300; }
+  .state-tool .arc{ opacity:1; }
+  .state-tool .arc circle{ animation: sweep 1.6s ease-in-out infinite; }
+  @keyframes sweep{ 0%{ stroke-dashoffset:300;} 50%{ stroke-dashoffset:70;} 100%{ stroke-dashoffset:300;} }
+  .state-approve .ring.r3{ animation: urgentpulse 1.4s ease-in-out infinite; }
+  @keyframes urgentpulse{ 0%,100%{ opacity:.65;} 50%{ opacity:1; box-shadow:0 0 5vmin hsl(var(--hue)/.6);} }
+  .state-success .glass-core{ animation: bloom 700ms cubic-bezier(.2,1.4,.4,1) 1; }
+  @keyframes bloom{ 0%{ transform:scale(1);} 40%{ transform:scale(1.14);} 100%{ transform:scale(1);} }
+  .state-error .stage{ animation: shake 480ms ease-in-out 1; }
+  @keyframes shake{ 0%,100%{ transform:translateX(0);} 20%{ transform:translateX(-1.4%);} 40%{ transform:translateX(1.2%);} 60%{ transform:translateX(-.8%);} 80%{ transform:translateX(.6%);} }
+  .state-degraded .ring{ animation-duration:60s; opacity:.4; }
+  .state-degraded .glass-core{ filter:saturate(.5); animation-duration:5.5s; }
+  .icon{ position:relative; z-index:2; width:30%; height:30%; color:hsl(var(--hue) / .95); }
+  .icon svg{ width:100%; height:100%; }
+
+  /* ---------- conversation card: this is what changing RESULTS looks like ---------- */
+  .convo{ position:relative; z-index:1; width:min(92vw, 460px); min-height: clamp(64px, 14vmin, 120px);
+    max-height: 42vh; overflow-y:auto;
+    padding: clamp(10px,1.8vmin,14px); border-radius: clamp(14px,2.2vmin,18px);
+    background: hsl(0 0% 100% / var(--glass-alpha)); backdrop-filter: blur(var(--glass-blur)) saturate(1.3);
+    border:1px solid var(--glass-border); box-shadow: var(--glass-shadow);
+    display:flex; flex-direction:column; gap:8px; scrollbar-width:thin; }
+  .convo:empty::after{ content:'Ask, instruct, or hold to talk.'; font-size:clamp(11px,1.3vmin,12.5px); color:var(--ink-dim); }
+
+  .bubble{ max-width:88%; font-size:clamp(11.5px,1.4vmin,13px); line-height:1.45; padding:.6em .85em; border-radius: 1vmin;
+    animation: enter 380ms cubic-bezier(.2,.8,.3,1) both; }
+  @keyframes enter{ from{ opacity:0; transform:translateY(6px) scale(.98);} to{ opacity:1; transform:translateY(0) scale(1);} }
+  .bubble.user{ align-self:flex-end; background:hsl(220 15% 20% / .9); color:#fff; border-bottom-right-radius:.3vmin; }
+  .bubble.assistant{ align-self:flex-start; background:hsl(0 0% 100% / .75); color:var(--ink); border:1px solid hsl(0 0% 0% / .06); border-bottom-left-radius:.3vmin; }
+  .bubble .cursor{ display:inline-block; width:.5em; color:hsl(var(--c-think)); animation: blink 900ms steps(1) infinite; }
+  @keyframes blink{ 50%{ opacity:0;} }
+
+  .card{ align-self:stretch; border-radius:1vmin; padding:.65em .8em; font-size:clamp(11px,1.3vmin,12.5px);
+    animation: cardin 420ms cubic-bezier(.16,.9,.3,1.05) both; }
+  @keyframes cardin{ from{ opacity:0; transform:translateY(10px) scale(.97);} to{ opacity:1; transform:translateY(0) scale(1);} }
+  .card.tool{ background:hsl(205 60% 96% / .9); border:1px solid hsl(205 50% 80% / .6); color:hsl(205 60% 25%); display:flex; align-items:center; gap:8px; }
+  .card.tool .dot{ width:6px; height:6px; border-radius:50%; background:hsl(205 85% 50%); flex:none; }
+
+  .card.approve{ background:hsl(34 90% 96% / .95); border:1px solid hsl(34 70% 75% / .7); border-left:3px solid hsl(34 85% 50%); border-radius:0 1vmin 1vmin 0; }
+  .card.approve .head{ display:flex; justify-content:space-between; font-weight:700; color:hsl(34 70% 30%); font-size:.92em; margin-bottom:.4em; }
+  .card.approve .mono{ font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size:.86em; background:hsl(0 0% 100% / .7);
+    border-radius:.6vmin; padding:.5em .6em; color:#3a3f47; white-space:pre-wrap; }
+  .card.approve .actions{ display:flex; gap:8px; margin-top:.5em; }
+  .card.approve .actions button{ font:inherit; font-weight:700; font-size:.85em; padding:.35em .9em; border-radius:2em; border:none; cursor:pointer; }
+  .card.approve .actions .deny{ background:hsl(0 0% 0% / .06); color:var(--ink); }
+  .card.approve .actions .allow{ background:hsl(34 85% 50%); color:#fff; }
+
+  .receipt{ font-size:clamp(10.5px,1.2vmin,11.5px); color:var(--ink-dim); display:flex; align-items:center; gap:6px; animation: enter 300ms ease both; }
+  .receipt .ok{ color:hsl(var(--c-success)); }
+
+  .card.error{ background:hsl(358 85% 97% / .95); border:1px solid hsl(358 60% 82% / .7); color:hsl(358 60% 32%); }
+  .card.queued{ background:hsl(220 15% 95% / .9); border:1px dashed hsl(220 15% 70% / .8); color:var(--ink-dim); }
+
+  /* ---------- status panel + picker (unchanged structurally) ---------- */
+  .panel{ position:relative; z-index:1; width:min(92vw, 460px); padding:clamp(12px,2.4vmin,18px) clamp(16px,3vmin,22px);
+    border-radius:clamp(14px,2.4vmin,20px); background:hsl(0 0% 100% / var(--glass-alpha)); backdrop-filter:blur(var(--glass-blur)) saturate(1.4);
+    border:1px solid var(--glass-border); box-shadow:var(--glass-shadow); display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .panel .label{ font-size:clamp(12px,1.6vmin,15px); font-weight:600; color:var(--ink); }
+  .panel .desc{ font-size:clamp(10.5px,1.35vmin,12.5px); color:var(--ink-dim); margin-top:2px; }
+  .panel .chip{ font-size:clamp(9.5px,1.2vmin,11px); font-weight:600; padding:.45em .8em; border-radius:2em; white-space:nowrap;
+    background:hsl(var(--hue) / .16); color:hsl(var(--hue) / 1); transition: background 1.1s ease,color 1.1s ease; }
+
+  .picker{ position:relative; z-index:1; display:flex; flex-wrap:wrap; gap:clamp(6px,1vmin,10px); justify-content:center; max-width:min(94vw,560px); }
+  .picker button{ font:inherit; font-size:clamp(11px,1.3vmin,12.5px); font-weight:600; padding:.5em 1em; border-radius:2em; cursor:pointer;
+    border:1px solid hsl(0 0% 0% / .08); background:hsl(0 0% 100% / var(--glass-alpha)); color:#3a3f47; backdrop-filter:blur(var(--glass-blur));
+    box-shadow: var(--glass-shadow); transition: transform .15s ease, background .2s ease; }
+  .picker button:hover{ transform:translateY(-1px); }
+  .picker button.active{ background:#20242b; color:#fff; border-color:#20242b; }
+  .autotag{ position:relative; z-index:1; font-size:clamp(10px,1.2vmin,11.5px); color:var(--ink-dim); }
+</style>
+</head>
+<body class="state-idle" id="body">
+
+<div class="bg"></div>
+<div class="scrim"></div>
+<div class="field" id="field"></div>
+
+<div class="bgswitch" id="bgswitch">
+  <button data-bg="" class="active">No background</button>
+  <button data-bg="bg-abstract">Abstract wallpaper</button>
+  <button data-bg="bg-photo">Photo wallpaper</button>
+</div>
+
+<div class="stage" id="stage">
+  <div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div>
+  <div class="glass-core"></div>
+  <div class="waveform"><span></span><span></span><span></span><span></span><span></span></div>
+  <div class="spark s1"></div><div class="spark s2"></div>
+  <div class="arc"><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="46"/></svg></div>
+  <div class="icon" id="icon"></div>
+</div>
+
+<div class="convo" id="convo"></div>
+
+<div class="panel">
+  <div><div class="label" id="label">Idle</div><div class="desc" id="desc">Nothing running. Say the word, or type.</div></div>
+  <div class="chip" id="chip">ready</div>
+</div>
+
+<div class="picker" id="picker"></div>
+<div class="autotag" id="autotag">auto-cycling demo — click any state to pin it</div>
+
+<script>
+const USER_MSG = 'Draft a note to the landlord about the leak.';
+const ASSIST_MSG = "Sure — I'll draft that and open it for you to review before sending.";
+const APPROVE_BODY = "Hi, following up about the kitchen sink leak — could someone take a look this week?";
+
+const states = [
+  { key:'idle', hue:'var(--c-idle)', label:'Idle', desc:'Nothing running. Say the word, or type.', chip:'ready',
+    icon:'<circle cx="12" cy="12" r="3.4" fill="currentColor"/>', story:'none' },
+  { key:'listen', hue:'var(--c-listen)', label:'Listening', desc:'Push-to-talk held — capturing audio.', chip:'mic live',
+    icon:'', story:'listen' },
+  { key:'think', hue:'var(--c-think)', label:'Thinking', desc:'Claude is reasoning — streaming a response.', chip:'claude · ok',
+    icon:'', story:'think' },
+  { key:'tool', hue:'var(--c-tool)', label:'Running a tool', desc:'Looking up the contact for the landlord.', chip:'R0 · auto',
+    icon:'<path d="M14.7 6.3a4 4 0 0 1-5.4 5.4L4 17l1 1 5.3-5.3a4 4 0 0 1 5.4-5.4l-2.2 2.2 1.2 1.2 2.2-2.2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>', story:'tool' },
+  { key:'approve', hue:'var(--c-approve)', label:'Waiting on you', desc:'send_message → landlord — approve or deny.', chip:'R2 · 0:58',
+    icon:'<path d="M12 3v10m0 0l-3.5-3.5M12 13l3.5-3.5M5 16v3a2 2 0 002 2h10a2 2 0 002-2v-3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>', story:'approve' },
+  { key:'success', hue:'var(--c-success)', label:'Done', desc:'Message sent. Logged to the run timeline.', chip:'completed',
+    icon:'<path d="M5 12.5l4.5 4.5L19 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>', story:'success' },
+  { key:'error', hue:'var(--c-error)', label:'Tool failed', desc:'Timed out after 30s. The action did not run.', chip:'error · TOOL_TIMEOUT',
+    icon:'<path d="M12 8v5m0 3.2h.01M12 3l9 16H3z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>', story:'error' },
+  { key:'degraded', hue:'var(--c-degraded)', label:'Degraded', desc:'Quota exhausted — queued. Resets in 12m.', chip:'offline · queued',
+    icon:'<path d="M4 4l16 16M8 8a6 6 0 0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>', story:'degraded' },
+];
+
+const body=document.getElementById('body'), label=document.getElementById('label'), desc=document.getElementById('desc'),
+  chip=document.getElementById('chip'), icon=document.getElementById('icon'), picker=document.getElementById('picker'),
+  field=document.getElementById('field'), autotag=document.getElementById('autotag'), convo=document.getElementById('convo');
+
+let pinned=false, idx=0, typeTimer=null;
+
+function clearConvo(){ convo.innerHTML=''; }
+function addBubble(who,text){ const d=document.createElement('div'); d.className='bubble '+who; d.textContent=text; convo.appendChild(d); return d; }
+function addCard(cls,html){ const d=document.createElement('div'); d.className='card '+cls; d.innerHTML=html; convo.appendChild(d); return d; }
+function addReceipt(html){ const d=document.createElement('div'); d.className='receipt'; d.innerHTML=html; convo.appendChild(d); }
+
+function typewrite(el, text, cps){
+  clearTimeout(typeTimer);
+  el.textContent='';
+  let i=0;
+  const cursor=document.createElement('span'); cursor.className='cursor'; cursor.textContent='▍';
+  function step(){
+    i++;
+    el.textContent = text.slice(0,i);
+    el.appendChild(cursor);
+    if(i<text.length){ typeTimer=setTimeout(step, cps); } else { cursor.remove(); }
+  }
+  step();
+}
+
+function buildStory(key){
+  clearConvo();
+  if(key==='none'){ return; }
+  if(key==='listen'){
+    addBubble('user', USER_MSG);
+    return;
+  }
+  if(key==='think'){
+    addBubble('user', USER_MSG);
+    const a=addBubble('assistant','');
+    typewrite(a, ASSIST_MSG, 16);
+    return;
+  }
+  if(key==='tool'){
+    addBubble('user', USER_MSG);
+    addBubble('assistant', ASSIST_MSG);
+    addCard('tool', '<span class="dot"></span> find_contact → landlord@parkview.example');
+    return;
+  }
+  if(key==='approve'){
+    addBubble('user', USER_MSG);
+    addBubble('assistant', ASSIST_MSG);
+    addCard('tool', '<span class="dot"></span> find_contact → landlord@parkview.example');
+    addCard('approve',
+      '<div class="head"><span>send_message · R2</span><span>0:58</span></div>' +
+      '<div class="mono">to: landlord@parkview.example\nbody: "'+APPROVE_BODY+'"</div>' +
+      '<div class="actions"><button class="deny">Deny</button><button class="allow">Approve</button></div>');
+    return;
+  }
+  if(key==='success'){
+    addBubble('user', USER_MSG);
+    addBubble('assistant', ASSIST_MSG);
+    addCard('tool', '<span class="dot"></span> find_contact → landlord@parkview.example');
+    addReceipt('<span class="ok">✓</span> send_message → landlord@parkview.example — approved & sent');
+    addBubble('assistant', "Sent. I'll let you know when they reply.");
+    return;
+  }
+  if(key==='error'){
+    addBubble('user', USER_MSG);
+    addCard('error', 'Tool timed out after 30s. The action did not run. Retry or inspect the trace.');
+    return;
+  }
+  if(key==='degraded'){
+    addCard('queued', 'Queued — Claude quota resets in 12m. Direct commands and R0/R1 tools still work.');
+    return;
+  }
+}
+
+function apply(s){
+  body.className='state-'+s.key + (body.dataset.bg?(' '+body.dataset.bg):'');
+  body.style.setProperty('--hue', s.hue);
+  label.textContent=s.label; desc.textContent=s.desc; chip.textContent=s.chip;
+  icon.innerHTML='<svg viewBox="0 0 24 24">'+s.icon+'</svg>';
+  [...picker.children].forEach(b=>b.classList.toggle('active', b.dataset.key===s.key));
+  buildStory(s.story);
+}
+
+states.forEach((s,i)=>{
+  const b=document.createElement('button'); b.textContent=s.label; b.dataset.key=s.key;
+  b.onclick=()=>{ pinned=true; idx=i; apply(s); autotag.textContent='pinned — click another to switch'; };
+  picker.appendChild(b);
+});
+
+document.getElementById('bgswitch').addEventListener('click', e=>{
+  const btn=e.target.closest('button'); if(!btn) return;
+  [...e.currentTarget.children].forEach(b=>b.classList.toggle('active', b===btn));
+  const cls=btn.dataset.bg;
+  body.dataset.bg=cls;
+  body.className = body.className.replace(/bg-\w+/g,'').trim() + (cls?(' '+cls):'');
+});
+
+apply(states[0]);
+setInterval(()=>{ if(pinned) return; idx=(idx+1)%states.length; apply(states[idx]); }, 3400);
+
+function spawnMote(){
+  const m=document.createElement('div'); m.className='mote';
+  const size=0.6+Math.random()*1.6;
+  m.style.width=size+'vmin'; m.style.height=size+'vmin';
+  m.style.left=(Math.random()*100)+'vw'; m.style.bottom=(-4-Math.random()*6)+'vmin';
+  m.style.setProperty('--dx',(Math.random()*8-4)+'vmin');
+  m.style.animationDuration=(9+Math.random()*10)+'s';
+  field.appendChild(m); setTimeout(()=>m.remove(),20000);
+}
+setInterval(spawnMote,700);
+for(let i=0;i<10;i++) setTimeout(spawnMote, i*180);
+</script>
+</body>
+</html>

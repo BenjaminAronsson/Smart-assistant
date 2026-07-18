@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Jarvis — HUD direction options</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #05070a;
+    font-family: -apple-system, "Segoe UI", sans-serif;
+    padding: 32px;
+    color: #e8ecef;
+  }
+  h1 { font-size: 15px; font-weight: 500; color: #7a838c; letter-spacing: .04em; text-transform: uppercase; margin-bottom: 24px; }
+  .row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .panel {
+    position: relative;
+    height: 480px;
+    border-radius: 10px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .label {
+    position: absolute; top: 14px; left: 16px; z-index: 5;
+    font-size: 11px; letter-spacing: .08em; text-transform: uppercase; opacity: .55;
+  }
+  .stage {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    position: relative;
+  }
+  .footer {
+    padding: 14px 18px; font-size: 11px; display: flex; justify-content: space-between; align-items: center;
+  }
+
+  /* ============ PANEL A — Iron Man / JARVIS: holographic, radial, glass ============ */
+  .a { background: radial-gradient(ellipse at 50% 40%, #0a1a22 0%, #050a0d 70%); border: 1px solid rgba(80,220,255,.15); }
+  .a .label { color: #6fe3ff; }
+  .a-ring-wrap { position: relative; width: 220px; height: 220px; }
+  .a-ring { position: absolute; inset: 0; border-radius: 50%; border: 1px solid rgba(90,225,255,.35); }
+  .a-ring.r1 { animation: aspin 18s linear infinite; box-shadow: 0 0 24px rgba(80,220,255,.15) inset; }
+  .a-ring.r2 { inset: 26px; border-color: rgba(90,225,255,.2); animation: aspin 26s linear infinite reverse; border-style: dashed; }
+  .a-ring.r3 { inset: 52px; border-color: rgba(120,235,255,.55); box-shadow: 0 0 30px 4px rgba(80,220,255,.35); animation: abreathe 3.2s ease-in-out infinite; }
+  .a-core { position: absolute; inset: 82px; border-radius: 50%; background: radial-gradient(circle, rgba(150,240,255,.9), rgba(70,190,220,.25) 60%, transparent 75%); filter: blur(1px); animation: abreathe 3.2s ease-in-out infinite; }
+  .a-tick { position: absolute; width: 2px; height: 8px; background: rgba(120,235,255,.6); left: 50%; top: -1px; transform-origin: 1px 111px; }
+  @keyframes aspin { to { transform: rotate(360deg); } }
+  @keyframes abreathe { 0%,100% { opacity: .7; transform: scale(1); } 50% { opacity: 1; transform: scale(1.06); } }
+  .a-hud-text { position: absolute; font-size: 10px; color: rgba(120,235,255,.7); letter-spacing: .1em; }
+  .a-glass { position: absolute; bottom: 16px; left: 16px; right: 16px; padding: 10px 14px; border-radius: 8px;
+    background: rgba(20,45,55,.35); backdrop-filter: blur(8px); border: 1px solid rgba(90,225,255,.2); font-size: 11px; color: #a9eaff; }
+  .a .footer { border-top: 1px solid rgba(90,225,255,.12); color: #6fe3ff; }
+
+  /* ============ PANEL B — Tactical ops: angular, scanlines, sharp readouts ============ */
+  .b { background: #07090a; border: 1px solid rgba(255,255,255,.06);
+    background-image: repeating-linear-gradient(0deg, rgba(255,255,255,.018) 0px, rgba(255,255,255,.018) 1px, transparent 1px, transparent 3px); }
+  .b .label { color: #ff8a3d; font-family: "Courier New", monospace; }
+  .b-frame { position: relative; width: 240px; height: 240px; }
+  .b-corner { position: absolute; width: 22px; height: 22px; border-color: #ff8a3d; opacity: .8; }
+  .b-corner.tl { top:0; left:0; border-top:2px solid; border-left:2px solid; }
+  .b-corner.tr { top:0; right:0; border-top:2px solid; border-right:2px solid; }
+  .b-corner.bl { bottom:0; left:0; border-bottom:2px solid; border-left:2px solid; }
+  .b-corner.br { bottom:0; right:0; border-bottom:2px solid; border-right:2px solid; }
+  .b-diamond { position: absolute; inset: 50px; clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+    border: 1px solid rgba(255,138,61,.5); animation: bpulse 2.4s ease-in-out infinite; }
+  .b-diamond.inner { inset: 78px; background: rgba(255,138,61,.08); animation: bpulse 2.4s ease-in-out infinite .3s; }
+  @keyframes bpulse { 0%,100% { opacity: .5; } 50% { opacity: 1; } }
+  .b-bars { position: absolute; bottom: -30px; left: 50%; transform: translateX(-50%); display: flex; gap: 3px; }
+  .b-bars span { width: 3px; background: #ff8a3d; animation: bbar 1s ease-in-out infinite; }
+  .b-bars span:nth-child(1){height:6px;animation-delay:0s} .b-bars span:nth-child(2){height:12px;animation-delay:.1s}
+  .b-bars span:nth-child(3){height:18px;animation-delay:.2s} .b-bars span:nth-child(4){height:10px;animation-delay:.3s}
+  .b-bars span:nth-child(5){height:14px;animation-delay:.4s}
+  @keyframes bbar { 0%,100% { transform: scaleY(.6); opacity:.5 } 50% { transform: scaleY(1); opacity:1 } }
+  .b-readout { position: absolute; top: 40px; right: -4px; font-family: "Courier New", monospace; font-size: 9px; color: rgba(255,138,61,.55); text-align: right; line-height: 1.6; }
+  .b-readout-l { position: absolute; top: 40px; left: -4px; font-family: "Courier New", monospace; font-size: 9px; color: rgba(255,138,61,.55); line-height: 1.6; }
+  .b .footer { border-top: 1px solid rgba(255,138,61,.15); color: #ff8a3d; font-family: "Courier New", monospace; }
+  .b .footer .dot { background: #ff8a3d; clip-path: polygon(50% 0,100% 50%,50% 100%,0 50%); }
+
+  /* ============ PANEL C — Minimal glass (visionOS): frosted depth, soft glow ============ */
+  .c { background: linear-gradient(180deg, #0d1116 0%, #06080b 100%); border: 1px solid rgba(255,255,255,.05); }
+  .c .label { color: #8fa3b8; }
+  .c-orb { position: relative; width: 180px; height: 180px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, rgba(255,255,255,.14), rgba(150,180,210,.05) 55%, transparent 75%);
+    backdrop-filter: blur(6px);
+    border: 1px solid rgba(255,255,255,.12);
+    box-shadow: 0 0 40px rgba(140,180,255,.12), inset 0 0 30px rgba(255,255,255,.04);
+    animation: cbreathe 4.5s ease-in-out infinite;
+  }
+  @keyframes cbreathe { 0%,100% { transform: scale(1); box-shadow: 0 0 40px rgba(140,180,255,.12), inset 0 0 30px rgba(255,255,255,.04);} 50% { transform: scale(1.035); box-shadow: 0 0 56px rgba(140,180,255,.2), inset 0 0 34px rgba(255,255,255,.06);} }
+  .c-panel { position: absolute; bottom: 16px; left: 16px; right: 16px; padding: 12px 16px; border-radius: 12px;
+    background: rgba(255,255,255,.04); backdrop-filter: blur(14px); border: 1px solid rgba(255,255,255,.08); font-size: 11px; color: #c3cddb; }
+  .c-chip { display: inline-block; padding: 3px 9px; border-radius: 20px; background: rgba(140,180,255,.12); color: #a9c2ff; font-size: 10px; margin-top: 6px; }
+  .c .footer { border-top: 1px solid rgba(255,255,255,.06); color: #8fa3b8; }
+
+  .swatches { display: flex; gap: 6px; margin-top: 10px; }
+  .sw { width: 16px; height: 16px; border-radius: 3px; }
+
+  .caption { max-width: 680px; margin: 18px auto 0; font-size: 12px; color: #7a838c; line-height: 1.6; text-align: center; }
+</style>
+</head>
+<body>
+
+<h1>Jarvis — three HUD directions, same idle voice-orb moment</h1>
+<div class="row">
+
+  <!-- A: Iron Man / JARVIS -->
+  <div class="panel a">
+    <div class="label">A · holographic / arc-reactor</div>
+    <div class="stage">
+      <div class="a-ring-wrap">
+        <div class="a-ring r1"></div>
+        <div class="a-ring r2"></div>
+        <div class="a-ring r3"></div>
+        <div class="a-core"></div>
+        <div class="a-hud-text" style="top:6px; left:50%; transform:translateX(-50%);">LISTENING</div>
+        <div class="a-hud-text" style="bottom:2px; left:50%; transform:translateX(-50%);">98.2%</div>
+      </div>
+    </div>
+    <div class="a-glass">provider <b>claude</b> · ok &nbsp;·&nbsp; run active · 2 tools queued</div>
+    <div class="footer"><span>◉ voice armed</span><span>16:04</span></div>
+  </div>
+
+  <!-- B: Tactical ops -->
+  <div class="panel b">
+    <div class="label">B · tactical / angular readout</div>
+    <div class="stage">
+      <div class="b-frame">
+        <div class="b-corner tl"></div><div class="b-corner tr"></div>
+        <div class="b-corner bl"></div><div class="b-corner br"></div>
+        <div class="b-diamond"></div>
+        <div class="b-diamond inner"></div>
+        <div class="b-readout">SYS·OK<br>QTA 62%<br>RUN 01</div>
+        <div class="b-readout-l">MIC·ARM<br>NET·OK<br>POL·R1</div>
+        <div class="b-bars"><span></span><span></span><span></span><span></span><span></span></div>
+      </div>
+    </div>
+    <div class="footer"><span><span class="dot" style="display:inline-block;width:6px;height:6px;margin-right:6px;"></span>PROVIDER: CLAUDE</span><span>16:04:12</span></div>
+  </div>
+
+  <!-- C: Minimal glass -->
+  <div class="panel c">
+    <div class="label">C · frosted glass / visionOS</div>
+    <div class="stage">
+      <div class="c-orb"></div>
+    </div>
+    <div class="c-panel">
+      Jarvis is listening
+      <div><span class="c-chip">claude · ok</span> <span class="c-chip">1 run active</span></div>
+    </div>
+    <div class="footer"><span>quiet, layered, understated</span><span>16:04</span></div>
+  </div>
+
+</div>
+
+<div class="caption">
+  Same underlying state (idle → listening → one active run) rendered three ways. A leans into the literal Iron Man/JARVIS lineage — cyan glow, radial dial, glass overlay. B is tactical sci-fi ops — angular brackets, scanlines, monospace telemetry. C is restrained sci-fi — frosted depth, soft breathing glow, near-silent chrome. All three can keep the same Run Spine / approval-card information architecture underneath; this is purely the skin and motion language.
+</div>
+
+</body>
+</html>
