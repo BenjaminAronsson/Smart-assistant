@@ -18,7 +18,7 @@ Each feature is a vertical slice sized for one session and runs the `/feature` l
 
 ## Features (ordered)
 
-- [ ] **F0.1 — Cargo workspace scaffold + arch gates**
+- [x] **F0.1 — Cargo workspace scaffold + arch gates**
   Workspace with all eight crates as compiling stubs (`jarvis-domain`,
   `jarvis-application`, `jarvis-contracts`, `jarvis-infra`, `jarvis-adapters`,
   `jarvisd`, `jarvis-agent`, `xtask`); `rust-toolchain.toml` (MSRV), edition 2024,

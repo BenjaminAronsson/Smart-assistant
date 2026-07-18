@@ -1,0 +1,34 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/jarvis-domain",
+    "crates/jarvis-application",
+    "crates/jarvis-contracts",
+    "crates/jarvis-infra",
+    "crates/jarvis-adapters",
+    "crates/jarvisd",
+    "crates/jarvis-agent",
+    "crates/xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "LicenseRef-Proprietary"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.dependencies]
+jarvis-domain = { path = "crates/jarvis-domain" }
+jarvis-application = { path = "crates/jarvis-application" }
+jarvis-contracts = { path = "crates/jarvis-contracts" }
+jarvis-infra = { path = "crates/jarvis-infra" }
+jarvis-adapters = { path = "crates/jarvis-adapters" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"

@@ -1,0 +1,18 @@
+[package]
+name = "jarvisd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+jarvis-domain.workspace = true
+jarvis-application.workspace = true
+jarvis-contracts.workspace = true
+jarvis-infra.workspace = true
+jarvis-adapters.workspace = true
+anyhow.workspace = true
