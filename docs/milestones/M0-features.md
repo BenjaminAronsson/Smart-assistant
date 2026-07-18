@@ -27,7 +27,7 @@ Each feature is a vertical slice sized for one session and runs the `/feature` l
   direction (domain ← application ← {contracts, infra, adapters} ← jarvisd).
   Refs: NFR-08, NFR-10. Read: docs/02 §3, docs/03 §2. Deps: none.
 
-- [ ] **F0.2 — Compose dev environment**
+- [x] **F0.2 — Compose dev environment**
   `infra/compose/dev.yml`: Postgres 16 + pgvector (loopback only, local volume,
   healthcheck, init script), OTel collector (loopback OTLP in, local export).
   Documented up/down/reset flow. Refs: NFR-10, NFR-14. Read: docs/09 §2,
