@@ -41,7 +41,7 @@ Each feature is a vertical slice sized for one session and runs the `/feature` l
   uncommitted regeneration. Refs: FR-02 (DTO subset), NFR-10, NFR-13.
   Read: docs/05 §1–§3, §5, §7; skill `ws-contracts`. Deps: F0.1.
 
-- [ ] **F0.4 — Angular workspace scaffold**
+- [x] **F0.4 — Angular workspace scaffold**
   `web/` Angular workspace (current LTS, signals + services default per docs/08 §6);
   imports the generated types from F0.3; lint/test/build wired; placeholder shell page.
   No SignalR — native WebSocket client comes in M1. Refs: FR-09 (scaffold only),
