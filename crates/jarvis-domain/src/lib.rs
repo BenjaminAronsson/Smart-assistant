@@ -3,3 +3,4 @@
 //! Pure logic, no I/O (docs/02 §3).
 
 pub mod ids;
+pub mod secrecy;

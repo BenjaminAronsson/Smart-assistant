@@ -48,7 +48,7 @@ Each feature is a vertical slice sized for one session and runs the `/feature` l
   NFR-11 (keyboard-first baseline). Read: docs/03 §3; skill `angular-shell`.
   Deps: F0.3.
 
-- [ ] **F0.5 — jarvisd skeleton: config, tracing/OTel, health, shutdown**
+- [x] **F0.5 — jarvisd skeleton: config, tracing/OTel, health, shutdown**
   axum host binary: figment layered config validated fail-fast at startup; `tracing` +
   OTLP export to the collector with a secret-redaction layer; graceful shutdown via
   `CancellationToken` with tracked spawned work; `GET /api/v1/diagnostics/health`

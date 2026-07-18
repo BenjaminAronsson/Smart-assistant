@@ -1,0 +1,18 @@
+# jarvisd dev configuration example (docs/09 §1). Copy to
+# ~/.config/jarvis/jarvisd.toml or point figment at it; env (`JARVIS__…`)
+# overrides file values, e.g. JARVIS__SERVER__BIND=127.0.0.1:9000.
+#
+# Works against infra/compose/dev.yml with:
+#   export JARVIS_DB_URL=postgres://jarvis:jarvis-dev-only@127.0.0.1:5432/jarvis
+
+[server]
+bind = "127.0.0.1:8741"          # loopback only until M7 (docs/06 §7)
+
+[database]
+url_secret = "env:JARVIS_DB_URL" # secret REFERENCE — never a literal URL here
+max_connections = 8
+
+[observability]
+# Collector is off by default (docs/09 §5). Uncomment while the compose
+# collector is running to ship spans:
+# otlp_endpoint = "http://127.0.0.1:4317"
