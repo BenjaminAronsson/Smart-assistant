@@ -21,7 +21,9 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     // degraded and the health probe reports it (docs/02 §12).
     let db_url = jarvisd::config::resolve_secret_ref(&config.database.url_secret)?;
     let pool = jarvis_infra::db::connect_lazy(db_url.expose(), config.database.max_connections)?;
-    let state = jarvisd::api::AppState::with_database(pool);
+    let identity = std::sync::Arc::new(jarvis_infra::identity::PgIdentityStore::new(pool.clone()));
+    let auth = jarvisd::auth::AuthState::bootstrap(identity).await;
+    let state = jarvisd::api::AppState::with_database(pool, auth);
 
     let app = jarvisd::api::router(state).layer(
         TraceLayer::new_for_http().make_span_with(|req: &axum::http::Request<_>| {

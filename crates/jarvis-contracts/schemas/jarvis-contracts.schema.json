@@ -84,6 +84,7 @@
       "enum": [
         "auth.invalid_token",
         "auth.scope_missing",
+        "auth.pairing_invalid",
         "validation.failed",
         "idempotency.conflict",
         "resource.version_conflict",
@@ -163,6 +164,13 @@
           },
           "description": "Adapter readiness by adapter name (docs/02 §12 startup order).",
           "type": "object"
+        },
+        "pairingCode": {
+          "description": "One-time pairing code, present only while the first-run pairing\nwindow is open (docs/05 §6: shown on the health page, loopback only).",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "status": {
           "$ref": "#/definitions/ServiceStatus"

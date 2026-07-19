@@ -67,7 +67,7 @@ Each feature is a vertical slice sized for one session and runs the `/feature` l
   committed. Refs: FR-02, FR-07, NFR-05, NFR-07. Read: docs/04 §1–§3; skill
   `sqlx-data`. Deps: F0.1, F0.2.
 
-- [ ] **F0.7 — Auth placeholder: pairing bootstrap + bearer middleware**
+- [x] **F0.7 — Auth placeholder: pairing bootstrap + bearer middleware**
   Per docs/05 §6: one-time pairing code on first start (journal + health page),
   `POST /api/v1/auth/pair` exchanging it for a device record + opaque 256-bit token
   (stored hashed, `identity` schema); tower middleware requiring

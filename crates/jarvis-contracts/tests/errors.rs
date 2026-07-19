@@ -11,10 +11,12 @@
 use jarvis_contracts::errors::{ErrorCode, ProblemDetails};
 use serde_json::json;
 
-/// The starter registry of docs/05 §7, in table order. Exactly 18 codes.
+/// The registry of docs/05 §7, in table order. Grows additively with the
+/// features that introduce new failure modes (auth.pairing_invalid: F0.7).
 const REGISTRY_CODES: &[&str] = &[
     "auth.invalid_token",
     "auth.scope_missing",
+    "auth.pairing_invalid",
     "validation.failed",
     "idempotency.conflict",
     "resource.version_conflict",
@@ -34,9 +36,9 @@ const REGISTRY_CODES: &[&str] = &[
 ];
 
 #[test]
-fn registry_fixture_has_exactly_eighteen_codes() {
-    // Sanity check on the fixture itself against docs/05 §7's starter table.
-    assert_eq!(REGISTRY_CODES.len(), 18);
+fn registry_fixture_matches_docs_05_table_size() {
+    // Sanity check on the fixture itself against docs/05 §7's table.
+    assert_eq!(REGISTRY_CODES.len(), 19);
 }
 
 #[test]

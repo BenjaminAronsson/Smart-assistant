@@ -195,6 +195,7 @@ and grows additively. HTTP mapping via RFC 9457 problem details.
 |---|---|---|
 | `auth.invalid_token` | Missing/revoked/expired device token | 401 |
 | `auth.scope_missing` | Device lacks required scope | 403 |
+| `auth.pairing_invalid` | No open pairing window matches the presented code | 403 |
 | `validation.failed` | Command failed schema/field validation | 400 |
 | `idempotency.conflict` | Key reused with different payload | 409 |
 | `resource.version_conflict` | Expected version mismatch | 409 |

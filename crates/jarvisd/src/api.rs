@@ -14,6 +14,7 @@ use std::sync::{Arc, RwLock};
 pub struct AppState {
     adapters: Arc<RwLock<BTreeMap<String, AdapterHealth>>>,
     db: Option<sqlx::PgPool>,
+    auth: Option<crate::auth::AuthState>,
 }
 
 impl AppState {
@@ -21,15 +22,22 @@ impl AppState {
         Self::default()
     }
 
-    pub fn with_database(pool: sqlx::PgPool) -> Self {
+    pub fn with_database(pool: sqlx::PgPool, auth: crate::auth::AuthState) -> Self {
         Self {
             adapters: Arc::default(),
             db: Some(pool),
+            auth: Some(auth),
         }
     }
 
     pub fn database(&self) -> Option<&sqlx::PgPool> {
         self.db.as_ref()
+    }
+
+    /// Attach auth without a database (tests use a fake IdentityStore).
+    pub fn with_auth(mut self, auth: crate::auth::AuthState) -> Self {
+        self.auth = Some(auth);
+        self
     }
 
     pub fn set_adapter(&self, name: &str, state: AdapterState, detail: Option<String>) {
@@ -73,17 +81,25 @@ impl AppState {
             status,
             version: env!("CARGO_PKG_VERSION").to_owned(),
             adapters,
+            // Deliberate (docs/05 §6): the bootstrap code is shown on the
+            // loopback-only health page while the pairing window is open.
+            pairing_code: self.auth.as_ref().and_then(|a| a.current_pairing_code()),
         }
     }
 }
 
 pub fn router(state: AppState) -> Router {
-    // Health is unauthenticated by design but loopback-only: config validation
-    // rejects non-loopback binds until M7 (docs/06 §7), so no per-route guard
-    // is needed yet. Revisit when remote binds become legal.
-    Router::new()
-        .route("/api/v1/diagnostics/health", get(health))
-        .with_state(state)
+    // Health and pair are unauthenticated by design but loopback-only:
+    // config validation rejects non-loopback binds until M7 (docs/06 §7).
+    // Everything else mounts behind the bearer middleware (F0.8+).
+    let mut router = Router::new().route("/api/v1/diagnostics/health", get(health));
+    if let Some(auth) = &state.auth {
+        router = router.route(
+            "/api/v1/auth/pair",
+            axum::routing::post(crate::auth::pair).with_state(auth.clone()),
+        );
+    }
+    router.with_state(state)
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {

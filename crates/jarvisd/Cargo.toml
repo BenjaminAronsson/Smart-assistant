@@ -38,3 +38,4 @@ opentelemetry-otlp = { version = "0.30", features = ["grpc-tonic"] }
 
 [dev-dependencies]
 http-body-util = "0.1"
+async-trait = "0.1"

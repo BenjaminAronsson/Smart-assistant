@@ -39,4 +39,8 @@ pub struct HealthResponse {
     pub version: String,
     /// Adapter readiness by adapter name (docs/02 §12 startup order).
     pub adapters: BTreeMap<String, AdapterHealth>,
+    /// One-time pairing code, present only while the first-run pairing
+    /// window is open (docs/05 §6: shown on the health page, loopback only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pairing_code: Option<String>,
 }

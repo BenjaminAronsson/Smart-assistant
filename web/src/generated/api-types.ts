@@ -35,6 +35,7 @@ export type ContentBlock =
 export type ErrorCode =
   | "auth.invalid_token"
   | "auth.scope_missing"
+  | "auth.pairing_invalid"
   | "validation.failed"
   | "idempotency.conflict"
   | "resource.version_conflict"
@@ -130,6 +131,11 @@ export interface HealthResponse {
   adapters: {
     [k: string]: AdapterHealth;
   };
+  /**
+   * One-time pairing code, present only while the first-run pairing
+   * window is open (docs/05 §6: shown on the health page, loopback only).
+   */
+  pairingCode?: string | null;
   status: ServiceStatus;
   /**
    * jarvisd semver, for support/diagnostics.

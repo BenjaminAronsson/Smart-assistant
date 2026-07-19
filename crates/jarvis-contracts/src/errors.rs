@@ -11,6 +11,8 @@ pub enum ErrorCode {
     AuthInvalidToken,
     #[serde(rename = "auth.scope_missing")]
     AuthScopeMissing,
+    #[serde(rename = "auth.pairing_invalid")]
+    AuthPairingInvalid,
     #[serde(rename = "validation.failed")]
     ValidationFailed,
     #[serde(rename = "idempotency.conflict")]
