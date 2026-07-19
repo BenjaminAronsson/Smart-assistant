@@ -20,7 +20,7 @@ contracts; Sonnet for infra/adapter/web volume).
 
 ## Features (ordered)
 
-- [ ] **F1.1 — Run/message/timeline contracts + typed WS event union** · *strong model*
+- [x] **F1.1 — Run/message/timeline contracts + typed WS event union** · *strong model*
   `jarvis-contracts`: message-submit DTO + run acknowledgement, `RunDto` (state, budgets,
   outcome), timeline snapshot response (messages + persisted run events, resync source),
   provider-health DTO. The typed WS event union split into `DomainEvent` (outbox-published,
