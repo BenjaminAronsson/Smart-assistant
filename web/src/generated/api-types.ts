@@ -29,6 +29,97 @@ export type ContentBlock =
       [k: string]: unknown;
     };
 /**
+ * Persisted, replayable events (docs/05 §3 "persisted event categories").
+ * Every variant must be representable in the timeline snapshot — a client that
+ * missed it while disconnected recovers it via `GET /sessions/{id}/timeline`.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "DomainEvent".
+ */
+export type DomainEvent =
+  | {
+      runId: UlidString;
+      sessionId: UlidString;
+      type: "run_started";
+      [k: string]: unknown;
+    }
+  | {
+      runId: UlidString;
+      state: RunStateDto;
+      type: "run_state_changed";
+      [k: string]: unknown;
+    }
+  | {
+      reason: string;
+      runId: UlidString;
+      type: "run_queued";
+      [k: string]: unknown;
+    }
+  | {
+      outcome: RunOutcome;
+      runId: UlidString;
+      type: "run_completed";
+      [k: string]: unknown;
+    }
+  | {
+      message: MessageDto;
+      type: "message_created";
+      [k: string]: unknown;
+    }
+  | {
+      provider: ProviderDto;
+      type: "provider_health_changed";
+      [k: string]: unknown;
+    }
+  | {
+      runId: UlidString;
+      state: RunStateDto;
+      type: "checkpoint_saved";
+      [k: string]: unknown;
+    };
+/**
+ * ULID: 26 chars of uppercase Crockford base32
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "UlidString".
+ */
+export type UlidString = string;
+/**
+ * Wire projection of `jarvis_domain::RunState` (docs/02 §4). The policy/tool/
+ * approval states exist on the wire from M1 but are only produced once their
+ * step executors land in M2 — the shape is stable so clients need no change.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "RunStateDto".
+ */
+export type RunStateDto =
+  | "received"
+  | "context_ready"
+  | "model_running"
+  | "policy_review"
+  | "waiting_approval"
+  | "tool_running"
+  | "replanning"
+  | "responding"
+  | "completed"
+  | "failed"
+  | "cancelled";
+/**
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "RunOutcomeKind".
+ */
+export type RunOutcomeKind = "completed" | "failed" | "cancelled";
+/**
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MessageRole".
+ */
+export type MessageRole = "user" | "assistant" | "system";
+/**
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ProviderState".
+ */
+export type ProviderState = "healthy" | "degraded" | "unavailable";
+/**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "ErrorCode".
  */
@@ -58,17 +149,40 @@ export type ErrorCode =
  */
 export type ServiceStatus = "ok" | "degraded";
 /**
- * ULID: 26 chars of uppercase Crockford base32
- *
- * This interface was referenced by `JarvisContracts`'s JSON-Schema
- * via the `definition` "UlidString".
- */
-export type UlidString = string;
-/**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "SessionStatus".
  */
 export type SessionStatus = "active" | "archived";
+/**
+ * One persisted entry in a session's history.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "TimelineItem".
+ */
+export type TimelineItem =
+  | {
+      message: MessageDto;
+      type: "message";
+      [k: string]: unknown;
+    }
+  | {
+      event: DomainEvent;
+      type: "run_event";
+      [k: string]: unknown;
+    };
+/**
+ * Disposable, never-replayed events (docs/05 §3 "not persisted"). A durable
+ * snapshot (`DomainEvent`) always follows the work these describe.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "TransientEvent".
+ */
+export type TransientEvent = {
+  runId: UlidString;
+  text: string;
+  type: "text_delta";
+  [k: string]: unknown;
+};
 
 /**
  * Jarvis wire contract v1 (generated — do not edit)
@@ -91,6 +205,62 @@ export interface AdapterHealth {
  */
 export interface CreateSessionRequest {
   title?: string | null;
+  [k: string]: unknown;
+}
+/**
+ * Terminal outcome of a run (docs/02 §4). `detail` is a short human sentence,
+ * never raw provider/driver text (docs/06 §5).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "RunOutcome".
+ */
+export interface RunOutcome {
+  detail?: string | null;
+  kind: RunOutcomeKind;
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MessageDto".
+ */
+export interface MessageDto {
+  content: ContentBlock[];
+  /**
+   * RFC 3339.
+   */
+  createdAt: string;
+  id: UlidString;
+  role: MessageRole;
+  sessionId: UlidString;
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ProviderDto".
+ */
+export interface ProviderDto {
+  /**
+   * Profile id, e.g. `claude-cli` (docs/03 §4).
+   */
+  id: string;
+  quota?: QuotaState | null;
+  /**
+   * Stable reason code only — never raw provider/driver text (docs/06 §5).
+   */
+  reason?: string | null;
+  state: ProviderState;
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "QuotaState".
+ */
+export interface QuotaState {
+  /**
+   * RFC 3339 instant the quota/rate window resets, when the provider
+   * reports one — the user sees *when* service returns (docs/03 §4).
+   */
+  resetAt?: string | null;
   [k: string]: unknown;
 }
 /**
@@ -190,6 +360,64 @@ export interface ProblemDetails {
 }
 /**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ProvidersResponse".
+ */
+export interface ProvidersResponse {
+  providers: ProviderDto[];
+  [k: string]: unknown;
+}
+/**
+ * Acknowledgement returned by `POST /sessions/{id}/messages` (docs/05 §1):
+ * the run has been accepted and persisted; streaming follows on the WS.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "RunAck".
+ */
+export interface RunAck {
+  runId: UlidString;
+  sessionId: UlidString;
+  state: RunStateDto;
+  [k: string]: unknown;
+}
+/**
+ * Per-run resource caps (docs/05 §4, NFR-12). Durations are seconds on the
+ * wire (JSON has no duration type).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "RunBudgetDto".
+ */
+export interface RunBudgetDto {
+  maxArtifactBytes: number;
+  maxDurationSecs: number;
+  maxModelTurns: number;
+  maxToolCalls: number;
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "RunDto".
+ */
+export interface RunDto {
+  budget: RunBudgetDto;
+  /**
+   * RFC 3339.
+   */
+  createdAt: string;
+  id: UlidString;
+  /**
+   * Present only once the run is terminal.
+   */
+  outcome?: RunOutcome | null;
+  sessionId: UlidString;
+  state: RunStateDto;
+  /**
+   * RFC 3339.
+   */
+  updatedAt: string;
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "SessionDto".
  */
 export interface SessionDto {
@@ -213,5 +441,29 @@ export interface SessionDto {
 export interface SessionListResponse {
   nextCursor?: string | null;
   sessions: SessionDto[];
+  [k: string]: unknown;
+}
+/**
+ * Body of `POST /sessions/{id}/messages` (docs/05 §1). The idempotency key
+ * rides the `Idempotency-Key` header (docs/05 §2), not the body.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "SubmitMessageRequest".
+ */
+export interface SubmitMessageRequest {
+  content: ContentBlock[];
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "TimelineResponse".
+ */
+export interface TimelineResponse {
+  items: TimelineItem[];
+  /**
+   * Sequence cursor to pass as `since` for the next page / next resync;
+   * absent when the snapshot reaches the head.
+   */
+  nextSince?: number | null;
   [k: string]: unknown;
 }

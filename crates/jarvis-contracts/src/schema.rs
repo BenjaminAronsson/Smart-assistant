@@ -39,6 +39,15 @@ pub fn export() -> Value {
     generator.subschema_for::<crate::sessions::CreateSessionRequest>();
     generator.subschema_for::<crate::sessions::SessionListResponse>();
     generator.subschema_for::<crate::content::ContentBlock>();
+    // M1 run/message/timeline/provider surface + typed WS events (F1.1).
+    generator.subschema_for::<crate::runs::RunDto>();
+    generator.subschema_for::<crate::runs::RunAck>();
+    generator.subschema_for::<crate::messages::MessageDto>();
+    generator.subschema_for::<crate::messages::SubmitMessageRequest>();
+    generator.subschema_for::<crate::timeline::TimelineResponse>();
+    generator.subschema_for::<crate::providers::ProvidersResponse>();
+    generator.subschema_for::<crate::events::DomainEvent>();
+    generator.subschema_for::<crate::events::TransientEvent>();
 
     let definitions: Value =
         serde_json::to_value(generator.definitions()).expect("schemas are valid JSON");

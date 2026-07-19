@@ -95,3 +95,7 @@ ulid_id!(
     /// Orchestrator run identifier (docs/04 §2).
     RunId
 );
+ulid_id!(
+    /// Immutable conversation message identifier (docs/04 §2).
+    MessageId
+);
