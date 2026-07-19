@@ -23,11 +23,29 @@ pub struct OutboxRecord {
     pub payload: Value,
 }
 
+/// A publisher failure (e.g. the WS hub could not accept the event). Returning
+/// it fails the whole batch so nothing is marked dispatched and the events
+/// re-deliver — never silently lost (perf-warden F1.4).
+#[derive(Debug, thiserror::Error)]
+#[error("outbox publish failed: {0}")]
+pub struct PublishError(pub String);
+
 /// Sink for committed domain events (the WS hub implements this in F1.5). Called
-/// in `id` order; must not assume exactly-once.
+/// in `id` order; must not assume exactly-once. An `Err` aborts the batch before
+/// it is marked dispatched, so the batch re-delivers on the next run.
 #[async_trait::async_trait]
 pub trait OutboxPublisher: Send + Sync {
-    async fn publish(&self, record: &OutboxRecord);
+    async fn publish(&self, record: &OutboxRecord) -> Result<(), PublishError>;
+}
+
+/// What ends the dispatch loop: a database/listener error or a publisher error.
+/// Either way the host restarts the dispatcher, which re-delivers.
+#[derive(Debug, thiserror::Error)]
+pub enum DispatchError {
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+    #[error(transparent)]
+    Publish(#[from] PublishError),
 }
 
 /// How many undispatched rows to claim per query (bounded so a large backlog
@@ -50,7 +68,7 @@ impl OutboxDispatcher {
         &self,
         publisher: &dyn OutboxPublisher,
         cancel: CancellationToken,
-    ) -> Result<(), sqlx::Error> {
+    ) -> Result<(), DispatchError> {
         let mut listener = PgListener::connect_with(&self.pool).await?;
         listener.listen("outbox_events").await?;
 
@@ -69,8 +87,10 @@ impl OutboxDispatcher {
         }
     }
 
-    /// Publish every undispatched row, oldest first, until none remain.
-    async fn drain(&self, publisher: &dyn OutboxPublisher) -> Result<(), sqlx::Error> {
+    /// Publish every undispatched row, oldest first, until none remain. A
+    /// publisher error aborts before the batch is marked dispatched, so the
+    /// whole batch re-delivers on the next run (at-least-once).
+    async fn drain(&self, publisher: &dyn OutboxPublisher) -> Result<(), DispatchError> {
         loop {
             let rows = sqlx::query!(
                 r#"
@@ -91,13 +111,15 @@ impl OutboxDispatcher {
 
             let mut ids = Vec::with_capacity(rows.len());
             for row in &rows {
+                // A publish failure aborts here — nothing in this batch is
+                // marked dispatched, so it all re-delivers on the next run.
                 publisher
                     .publish(&OutboxRecord {
                         id: row.id,
                         event_type: row.event_type.clone(),
                         payload: row.payload.clone(),
                     })
-                    .await;
+                    .await?;
                 ids.push(row.id);
             }
 

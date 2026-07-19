@@ -11,6 +11,7 @@ use jarvis_domain::ids::{MessageId, RunId, SessionId};
 use jarvis_domain::run::{Run, RunBudget, RunEvent, RunOutcomeKind, RunState};
 use jarvis_infra::messages::PgMessageStore;
 use jarvis_infra::runs::PgRunStore;
+use serde_json::json;
 use sqlx::PgPool;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -39,6 +40,16 @@ async fn undispatched_event_types(pool: &PgPool) -> Vec<String> {
         .fetch_all(pool)
         .await
         .unwrap()
+}
+
+async fn latest_payload(pool: &PgPool, event_type: &str) -> serde_json::Value {
+    sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT payload FROM outbox.outbox_events WHERE event_type = $1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(event_type)
+    .fetch_one(pool)
+    .await
+    .unwrap()
 }
 
 fn a_run() -> Run {
@@ -159,5 +170,64 @@ async fn message_append_then_list_round_trips(pool: PgPool) {
     assert_eq!(
         undispatched_event_types(&pool).await,
         vec!["message.created", "message.created"]
+    );
+}
+
+/// Pins the hand-built outbox payloads to the wire `DomainEvent`/`MessageDto`
+/// shapes (docs/05 §2-§3). infra cannot depend on jarvis-contracts, so nothing
+/// mechanical stops these from drifting once the host forwards them verbatim
+/// (F1.5) — this literal-fixture test is the guard (contract-keeper F1.4).
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn outbox_payloads_match_the_wire_shapes(pool: PgPool) {
+    seed_session(&pool, SESSION_ID).await;
+    let runs = PgRunStore::new(pool.clone());
+    let messages = PgMessageStore::new(pool.clone());
+
+    let mut run = a_run();
+    runs.create(&run).await.unwrap();
+    assert_eq!(
+        latest_payload(&pool, "run.started").await,
+        json!({ "runId": RUN_ID, "sessionId": SESSION_ID })
+    );
+
+    run.apply(RunEvent::ContextAssembled).unwrap();
+    runs.save(&run).await.unwrap();
+    assert_eq!(
+        latest_payload(&pool, "run.state_changed").await,
+        json!({ "runId": RUN_ID, "state": "context_ready" })
+    );
+
+    run.apply(RunEvent::ModelInvoked).unwrap();
+    run.apply(RunEvent::FinalResponseReceived).unwrap();
+    run.apply(RunEvent::ResponseCommitted).unwrap();
+    runs.save(&run).await.unwrap();
+    // detail is None here, so it is omitted (skip_serializing_if on the wire).
+    assert_eq!(
+        latest_payload(&pool, "run.completed").await,
+        json!({ "runId": RUN_ID, "outcome": { "kind": "completed" } })
+    );
+
+    let message = Message::new(
+        MSG_A.parse::<MessageId>().unwrap(),
+        SESSION_ID.parse::<SessionId>().unwrap(),
+        MessageRole::User,
+        "hi".into(),
+        ts(0),
+    );
+    messages.append(&message).await.unwrap();
+    let payload = latest_payload(&pool, "message.created").await;
+    assert_eq!(payload["message"]["id"], json!(MSG_A));
+    assert_eq!(payload["message"]["sessionId"], json!(SESSION_ID));
+    assert_eq!(payload["message"]["role"], json!("user"));
+    assert_eq!(
+        payload["message"]["content"],
+        json!([{ "type": "text", "text": "hi" }])
+    );
+    // createdAt is RFC 3339 text.
+    assert!(
+        payload["message"]["createdAt"]
+            .as_str()
+            .unwrap()
+            .contains('T')
     );
 }

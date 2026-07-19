@@ -170,6 +170,13 @@ async fn insert_outbox(
 /// The persisted domain event for the run's current state: `run.completed` once
 /// terminal (carrying the outcome), else `run.state_changed`. Payload shapes
 /// match the wire `DomainEvent` (docs/05 §3) so the host forwards them verbatim.
+///
+/// Note: `DomainEvent::CheckpointSaved` (`run.checkpoint_saved`) is intentionally
+/// NOT emitted in M1 — every checkpoint boundary is already carried by the
+/// `state_changed`/`completed` event written in the same transaction, so a
+/// distinct event would be redundant for resync. Whether checkpoints should
+/// surface separately is revisited if a client ever needs the last safe boundary
+/// independently of the state (contract-keeper F1.4).
 fn run_event(run: &Run) -> (&'static str, serde_json::Value) {
     match run.outcome.as_ref() {
         Some(outcome) => (

@@ -3,7 +3,7 @@
 //! publishes in `id` order, and marks rows dispatched. Uses unchecked queries
 //! for test-only inserts so no offline data is needed.
 
-use jarvis_infra::dispatcher::{OutboxDispatcher, OutboxPublisher, OutboxRecord};
+use jarvis_infra::dispatcher::{OutboxDispatcher, OutboxPublisher, OutboxRecord, PublishError};
 use serde_json::json;
 use sqlx::PgPool;
 use std::sync::Mutex;
@@ -17,8 +17,9 @@ struct RecordingPublisher {
 
 #[async_trait::async_trait]
 impl OutboxPublisher for RecordingPublisher {
-    async fn publish(&self, record: &OutboxRecord) {
+    async fn publish(&self, record: &OutboxRecord) -> Result<(), PublishError> {
         self.seen.lock().unwrap().push(record.clone());
+        Ok(())
     }
 }
 
@@ -89,6 +90,39 @@ async fn drains_backlog_then_reacts_to_notify_in_order(pool: PgPool) {
             .await
             .unwrap();
     assert_eq!(undispatched, 0);
+}
+
+struct FailingPublisher;
+
+#[async_trait::async_trait]
+impl OutboxPublisher for FailingPublisher {
+    async fn publish(&self, _record: &OutboxRecord) -> Result<(), PublishError> {
+        Err(PublishError("hub unavailable".into()))
+    }
+}
+
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn publisher_failure_leaves_events_undispatched(pool: PgPool) {
+    insert_event(&pool, "will.fail").await;
+
+    let dispatcher = OutboxDispatcher::new(pool.clone());
+    // The backlog drain hits the failing publisher and the loop ends with Err;
+    // nothing is marked dispatched, so the event re-delivers on the next run.
+    let err = dispatcher
+        .run(&FailingPublisher, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        jarvis_infra::dispatcher::DispatchError::Publish(_)
+    ));
+
+    let undispatched: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM outbox.outbox_events WHERE dispatched_at IS NULL")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(undispatched, 1);
 }
 
 #[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
