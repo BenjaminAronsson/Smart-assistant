@@ -82,9 +82,9 @@ fn transient_events_round_trip() {
     let value = serde_json::to_value(&delta).unwrap();
     assert_eq!(
         value,
-        json!({ "type": "text_delta", "runId": RUN, "text": "hel" })
+        json!({ "type": "text.delta", "runId": RUN, "text": "hel" })
     );
-    assert_eq!(delta.event_type(), "text_delta");
+    assert_eq!(delta.event_type(), "text.delta");
     let back: TransientEvent = serde_json::from_value(value).unwrap();
     assert_eq!(back, delta);
 }
@@ -115,13 +115,13 @@ fn persisted_and_transient_type_tags_are_disjoint() {
     assert_eq!(
         sorted,
         [
-            "checkpoint_saved",
-            "message_created",
-            "provider_health_changed",
-            "run_completed",
-            "run_queued",
-            "run_started",
-            "run_state_changed",
+            "message.created",
+            "provider.health_changed",
+            "run.checkpoint_saved",
+            "run.completed",
+            "run.queued",
+            "run.started",
+            "run.state_changed",
         ]
     );
 }

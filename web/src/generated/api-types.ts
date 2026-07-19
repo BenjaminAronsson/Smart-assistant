@@ -33,6 +33,20 @@ export type ContentBlock =
  * Every variant must be representable in the timeline snapshot — a client that
  * missed it while disconnected recovers it via `GET /sessions/{id}/timeline`.
  *
+ * The `type` discriminator is **dotted-namespaced** (`run.started`,
+ * `message.created`), matching the envelope example in docs/05 §3
+ * (`run.tool.completed`) and the error-code scheme — clients route on this
+ * string, so it is load-bearing and every tag is spelled explicitly below.
+ *
+ * This union is intentionally **strict**: there is no `Unknown` catch-all
+ * (unlike [`crate::content::ContentBlock`], which is open-world because blocks
+ * originate from external providers). Every `DomainEvent` is authored by
+ * jarvisd itself, and the web shell is served by the same binary — so producer
+ * and consumer share one contract version and can never skew. A tag the reader
+ * does not recognize is therefore a genuine bug we want surfaced as a decode
+ * error, not silently dropped from a resync page. New variants are added
+ * additively within a version (docs/05 §3).
+ *
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "DomainEvent".
  */
@@ -40,41 +54,41 @@ export type DomainEvent =
   | {
       runId: UlidString;
       sessionId: UlidString;
-      type: "run_started";
+      type: "run.started";
       [k: string]: unknown;
     }
   | {
       runId: UlidString;
       state: RunStateDto;
-      type: "run_state_changed";
+      type: "run.state_changed";
       [k: string]: unknown;
     }
   | {
       reason: string;
       runId: UlidString;
-      type: "run_queued";
+      type: "run.queued";
       [k: string]: unknown;
     }
   | {
       outcome: RunOutcome;
       runId: UlidString;
-      type: "run_completed";
+      type: "run.completed";
       [k: string]: unknown;
     }
   | {
       message: MessageDto;
-      type: "message_created";
+      type: "message.created";
       [k: string]: unknown;
     }
   | {
       provider: ProviderDto;
-      type: "provider_health_changed";
+      type: "provider.health_changed";
       [k: string]: unknown;
     }
   | {
       runId: UlidString;
       state: RunStateDto;
-      type: "checkpoint_saved";
+      type: "run.checkpoint_saved";
       [k: string]: unknown;
     };
 /**
@@ -172,7 +186,8 @@ export type TimelineItem =
     };
 /**
  * Disposable, never-replayed events (docs/05 §3 "not persisted"). A durable
- * snapshot (`DomainEvent`) always follows the work these describe.
+ * snapshot (`DomainEvent`) always follows the work these describe. Dotted tags
+ * and strict (no-catch-all) decoding for the same reasons as [`DomainEvent`].
  *
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "TransientEvent".
@@ -180,7 +195,7 @@ export type TimelineItem =
 export type TransientEvent = {
   runId: UlidString;
   text: string;
-  type: "text_delta";
+  type: "text.delta";
   [k: string]: unknown;
 };
 

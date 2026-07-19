@@ -21,13 +21,14 @@ pub enum RunStateDto {
     ToolRunning,
     Replanning,
     Responding,
-    /// Queued in degraded mode awaiting provider recovery (FR-12); a run that
-    /// cannot start is visibly waiting, not silently failed.
-    Queued,
     Completed,
     Failed,
     Cancelled,
 }
+// NOTE: the FR-12 "queued / visible waiting" signal is carried by the
+// `DomainEvent::RunQueued` event, not a RunState — whether queuing becomes a
+// distinct `RunState` is the state-machine feature's (F1.2) call, made with an
+// ADR + a docs/02 §4 update. Adding a wire variant then stays additive.
 
 impl RunStateDto {
     pub fn is_terminal(self) -> bool {

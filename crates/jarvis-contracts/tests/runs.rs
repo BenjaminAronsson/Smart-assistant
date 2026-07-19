@@ -28,7 +28,6 @@ fn all_run_states_round_trip_to_snake_case() {
         (RunStateDto::ToolRunning, "tool_running"),
         (RunStateDto::Replanning, "replanning"),
         (RunStateDto::Responding, "responding"),
-        (RunStateDto::Queued, "queued"),
         (RunStateDto::Completed, "completed"),
         (RunStateDto::Failed, "failed"),
         (RunStateDto::Cancelled, "cancelled"),
@@ -46,7 +45,7 @@ fn terminal_states_are_terminal() {
     assert!(RunStateDto::Failed.is_terminal());
     assert!(RunStateDto::Cancelled.is_terminal());
     assert!(!RunStateDto::Received.is_terminal());
-    assert!(!RunStateDto::Queued.is_terminal());
+    assert!(!RunStateDto::Responding.is_terminal());
 }
 
 #[test]

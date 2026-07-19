@@ -81,7 +81,7 @@
       "type": "object"
     },
     "DomainEvent": {
-      "description": "Persisted, replayable events (docs/05 §3 \"persisted event categories\").\nEvery variant must be representable in the timeline snapshot — a client that\nmissed it while disconnected recovers it via `GET /sessions/{id}/timeline`.",
+      "description": "Persisted, replayable events (docs/05 §3 \"persisted event categories\").\nEvery variant must be representable in the timeline snapshot — a client that\nmissed it while disconnected recovers it via `GET /sessions/{id}/timeline`.\n\nThe `type` discriminator is **dotted-namespaced** (`run.started`,\n`message.created`), matching the envelope example in docs/05 §3\n(`run.tool.completed`) and the error-code scheme — clients route on this\nstring, so it is load-bearing and every tag is spelled explicitly below.\n\nThis union is intentionally **strict**: there is no `Unknown` catch-all\n(unlike [`crate::content::ContentBlock`], which is open-world because blocks\noriginate from external providers). Every `DomainEvent` is authored by\njarvisd itself, and the web shell is served by the same binary — so producer\nand consumer share one contract version and can never skew. A tag the reader\ndoes not recognize is therefore a genuine bug we want surfaced as a decode\nerror, not silently dropped from a resync page. New variants are added\nadditively within a version (docs/05 §3).",
       "oneOf": [
         {
           "properties": {
@@ -92,7 +92,7 @@
               "$ref": "#/definitions/UlidString"
             },
             "type": {
-              "const": "run_started",
+              "const": "run.started",
               "type": "string"
             }
           },
@@ -112,7 +112,7 @@
               "$ref": "#/definitions/RunStateDto"
             },
             "type": {
-              "const": "run_state_changed",
+              "const": "run.state_changed",
               "type": "string"
             }
           },
@@ -133,7 +133,7 @@
               "$ref": "#/definitions/UlidString"
             },
             "type": {
-              "const": "run_queued",
+              "const": "run.queued",
               "type": "string"
             }
           },
@@ -153,7 +153,7 @@
               "$ref": "#/definitions/UlidString"
             },
             "type": {
-              "const": "run_completed",
+              "const": "run.completed",
               "type": "string"
             }
           },
@@ -170,7 +170,7 @@
               "$ref": "#/definitions/MessageDto"
             },
             "type": {
-              "const": "message_created",
+              "const": "message.created",
               "type": "string"
             }
           },
@@ -186,7 +186,7 @@
               "$ref": "#/definitions/ProviderDto"
             },
             "type": {
-              "const": "provider_health_changed",
+              "const": "provider.health_changed",
               "type": "string"
             }
           },
@@ -206,7 +206,7 @@
               "$ref": "#/definitions/RunStateDto"
             },
             "type": {
-              "const": "checkpoint_saved",
+              "const": "run.checkpoint_saved",
               "type": "string"
             }
           },
@@ -813,7 +813,7 @@
       "type": "object"
     },
     "TransientEvent": {
-      "description": "Disposable, never-replayed events (docs/05 §3 \"not persisted\"). A durable\nsnapshot (`DomainEvent`) always follows the work these describe.",
+      "description": "Disposable, never-replayed events (docs/05 §3 \"not persisted\"). A durable\nsnapshot (`DomainEvent`) always follows the work these describe. Dotted tags\nand strict (no-catch-all) decoding for the same reasons as [`DomainEvent`].",
       "oneOf": [
         {
           "description": "One incremental chunk of streamed model output (FR-01).",
@@ -825,7 +825,7 @@
               "type": "string"
             },
             "type": {
-              "const": "text_delta",
+              "const": "text.delta",
               "type": "string"
             }
           },
