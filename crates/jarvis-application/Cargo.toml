@@ -13,3 +13,4 @@ workspace = true
 jarvis-domain.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+async-trait = "0.1"

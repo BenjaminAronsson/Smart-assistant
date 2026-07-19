@@ -1,5 +1,5 @@
-//! HTTP surface (docs/05 §1). At F0.5: the unauthenticated loopback health
-//! endpoint only; sessions + auth arrive in F0.6–F0.8.
+//! HTTP surface (docs/05 §1). Unauthenticated loopback health endpoint;
+//! sessions + auth arrive in F0.7–F0.8.
 
 use axum::{Json, Router, extract::State, routing::get};
 use jarvis_contracts::health::{AdapterHealth, AdapterState, HealthResponse, ServiceStatus};
@@ -8,15 +8,28 @@ use std::sync::{Arc, RwLock};
 
 /// Shared per-request state. Adapter readiness is registered by whoever owns
 /// the adapter (docs/02 §12: adapters register asynchronously and update
-/// their state as it changes).
+/// their state as it changes). The database is probed live per health
+/// request — on-demand, never a background polling loop (docs/09 §5).
 #[derive(Clone, Default)]
 pub struct AppState {
     adapters: Arc<RwLock<BTreeMap<String, AdapterHealth>>>,
+    db: Option<sqlx::PgPool>,
 }
 
 impl AppState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_database(pool: sqlx::PgPool) -> Self {
+        Self {
+            adapters: Arc::default(),
+            db: Some(pool),
+        }
+    }
+
+    pub fn database(&self) -> Option<&sqlx::PgPool> {
+        self.db.as_ref()
     }
 
     pub fn set_adapter(&self, name: &str, state: AdapterState, detail: Option<String>) {
@@ -28,7 +41,17 @@ impl AppState {
             .insert(name.to_owned(), AdapterHealth { state, detail });
     }
 
-    fn health(&self) -> HealthResponse {
+    async fn health(&self) -> HealthResponse {
+        if let Some(pool) = &self.db {
+            // Detail carries a STABLE reason code only — never raw driver
+            // errors; this response is unauthenticated (docs/06 §5).
+            match jarvis_infra::db::ping(pool).await {
+                Ok(()) => self.set_adapter("database", AdapterState::Up, None),
+                Err(reason) => {
+                    self.set_adapter("database", AdapterState::Down, Some(reason.to_owned()))
+                }
+            }
+        }
         let adapters = self
             .adapters
             .read()
@@ -64,5 +87,5 @@ pub fn router(state: AppState) -> Router {
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
-    Json(state.health())
+    Json(state.health().await)
 }

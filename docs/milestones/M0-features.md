@@ -57,7 +57,7 @@ Each feature is a vertical slice sized for one session and runs the `/feature` l
   Refs: NFR-14, NFR-15 (cold start <2 s, idle RSS budget). Read: docs/02 §12, §14;
   docs/09 §1, §5; skill `low-power`. Deps: F0.1, F0.2.
 
-- [ ] **F0.6 — Migrations + conversation schema + session repository**
+- [x] **F0.6 — Migrations + conversation schema + session repository**
   sqlx migration stream with schema-per-module layout; seed schemas: `identity`,
   `conversation` (sessions, messages), `audit` (append-only `audit_events`,
   hash-chained), `outbox` (table only, no dispatcher yet). `Session` entity + newtyped

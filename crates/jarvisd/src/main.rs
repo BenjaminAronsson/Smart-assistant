@@ -15,7 +15,13 @@ fn main() -> anyhow::Result<()> {
 
 async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     let telemetry = jarvisd::observability::init(config.observability.otlp_endpoint.as_deref())?;
-    let state = jarvisd::api::AppState::new();
+
+    // Unresolvable secret reference = config error = fail fast (docs/09 §1).
+    // An unREACHABLE database is different: the lazy pool lets jarvisd start
+    // degraded and the health probe reports it (docs/02 §12).
+    let db_url = jarvisd::config::resolve_secret_ref(&config.database.url_secret)?;
+    let pool = jarvis_infra::db::connect_lazy(db_url.expose(), config.database.max_connections)?;
+    let state = jarvisd::api::AppState::with_database(pool);
 
     let app = jarvisd::api::router(state).layer(
         TraceLayer::new_for_http().make_span_with(|req: &axum::http::Request<_>| {
