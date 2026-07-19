@@ -54,16 +54,22 @@ jobs:
             sleep 1
           done
           exit 1
+      # Compile-time query checking uses the committed .sqlx cache (SQLX_OFFLINE
+      # stays true from the workflow env) — no migrated DB needed to build. The
+      # #[sqlx::test] DB tests create their own throwaway databases at runtime
+      # and apply the migrator themselves, using DATABASE_URL + the live server.
       - name: cargo test --workspace (unit + contract + DB tests)
         run: cargo test --workspace
+      # sqlx prepare --check re-derives query metadata from a LIVE schema and
+      # diffs it against .sqlx, so this step alone needs the DB migrated and
+      # runs online.
+      - name: sqlx offline query data check
         env:
           SQLX_OFFLINE: 'false'
-      - name: sqlx offline query data check
         run: |
           cargo install sqlx-cli --no-default-features --features postgres,rustls --locked
+          sqlx migrate run
           cargo sqlx prepare --check --workspace
-        env:
-          SQLX_OFFLINE: 'false'
       - name: web tests (headless)
         working-directory: web
         env:
