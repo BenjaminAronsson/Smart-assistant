@@ -3,7 +3,7 @@
 //! conversation schema — audit/outbox writes go through their own modules,
 //! composed here inside one transaction (invariant 6).
 
-use jarvis_application::ports::{RepositoryError, SessionStore};
+use jarvis_application::ports::{CreateOutcome, RepositoryError, SessionStore};
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::conversations::{Session, SessionStatus};
 use jarvis_domain::ids::SessionId;
@@ -18,32 +18,76 @@ impl PgSessionStore {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+
+    async fn get_by_idempotency_key(&self, key: &str) -> Result<Option<Session>, RepositoryError> {
+        let row = sqlx::query!(
+            r#"
+            SELECT id, title, status, created_at, updated_at
+            FROM conversation.sessions WHERE idempotency_key = $1
+            "#,
+            key,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
+        row.map(|r| map_session(&r.id, r.title, &r.status, r.created_at, r.updated_at))
+            .transpose()
+    }
 }
 
 #[async_trait::async_trait]
 impl SessionStore for PgSessionStore {
-    async fn create(&self, session: &Session, audit: &AuditEvent) -> Result<(), RepositoryError> {
+    async fn create(
+        &self,
+        session: &Session,
+        idempotency_key: Option<&str>,
+        audit: &AuditEvent,
+    ) -> Result<CreateOutcome, RepositoryError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
 
-        sqlx::query!(
+        let insert = sqlx::query!(
             r#"
-            INSERT INTO conversation.sessions (id, title, status, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO conversation.sessions
+                (id, title, status, created_at, updated_at, idempotency_key)
+            VALUES ($1, $2, $3, $4, $5, $6)
             "#,
             session.id.as_str(),
             session.title.as_deref(),
             status_str(session.status),
             OffsetDateTime::from(session.created_at),
             OffsetDateTime::from(session.updated_at),
+            idempotency_key,
         )
         .execute(&mut *tx)
-        .await
-        .map_err(|e| match &e {
-            sqlx::Error::Database(db) if db.is_unique_violation() => {
-                RepositoryError::Conflict(format!("session {} already exists", session.id))
-            }
-            _ => storage(e),
-        })?;
+        .await;
+
+        if let Err(e) = insert {
+            drop(tx); // release before the replay lookup
+            return match (&e, idempotency_key) {
+                (sqlx::Error::Database(db), Some(key)) if db.is_unique_violation() => {
+                    // Safe replay iff the stored payload matches (NFR-13);
+                    // same key + different payload is a client bug (409).
+                    // Payload equality must cover EVERY client-settable field
+                    // of CreateSessionRequest; extend this comparison when the
+                    // DTO grows or replays will falsely match (NFR-13).
+                    match self.get_by_idempotency_key(key).await? {
+                        Some(existing) if existing.title == session.title => {
+                            Ok(CreateOutcome::AlreadyExists(existing))
+                        }
+                        Some(_) => Err(RepositoryError::IdempotencyConflict),
+                        // Unique violation was on the id, not the key.
+                        None => Err(RepositoryError::Conflict(format!(
+                            "session {} already exists",
+                            session.id
+                        ))),
+                    }
+                }
+                (sqlx::Error::Database(db), None) if db.is_unique_violation() => Err(
+                    RepositoryError::Conflict(format!("session {} already exists", session.id)),
+                ),
+                _ => Err(storage(e)),
+            };
+        }
 
         // Same transaction as the domain change (invariant 6): if the audit
         // append fails, the session create rolls back with it.
@@ -65,7 +109,8 @@ impl SessionStore for PgSessionStore {
         .await
         .map_err(storage)?;
 
-        tx.commit().await.map_err(storage)
+        tx.commit().await.map_err(storage)?;
+        Ok(CreateOutcome::Created(session.clone()))
     }
 
     async fn get(&self, id: &SessionId) -> Result<Option<Session>, RepositoryError> {

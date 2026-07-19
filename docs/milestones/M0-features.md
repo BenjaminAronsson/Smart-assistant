@@ -76,7 +76,7 @@ Each feature is a vertical slice sized for one session and runs the `/feature` l
   NFR-02. Read: docs/05 §6, docs/06 §2, §7. Deps: F0.5, F0.6.
   Security-auditor review mandatory.
 
-- [ ] **F0.8 — Session round-trip vertical slice (exit-evidence feature)**
+- [x] **F0.8 — Session round-trip vertical slice (exit-evidence feature)**
   `POST /api/v1/sessions`, `GET /api/v1/sessions/{id}`, `GET /api/v1/sessions` (basic
   list; full search deferred to M1+) behind auth; idempotency key on create; RFC 9457
   problem bodies with stable machine codes at the boundary; audit event on create.
@@ -107,6 +107,24 @@ F0.1 ──┬── F0.3 ── F0.4 ──┐
 F0.2 ──┘          │       │
        └── F0.6 ──┴─ F0.7 ┘
 ```
+
+## Deferrals recorded during implementation (reviewed, deliberate)
+
+- **INSERT-only audit DB role** (docs/06 §5 "append-only permissions"): triggers
+  enforce append-only for now; the dedicated role ships with packaging/prod
+  provisioning. Noted in migrations/0003 header. (security-auditor, F0.6)
+- **Malformed-JSON requests** bypass the RFC 9457 problem-body convention (axum's
+  default rejection): custom extractor lands with M1's message endpoints.
+  (rust-reviewer, F0.7)
+- **Bearer scheme case-sensitivity** (RFC 6750): fine for owner-controlled loopback
+  clients; revisit on the M7 remote path. (rust-reviewer, F0.7)
+- **Keyring secret resolution** (`keyring:` refs): validated in config but resolution
+  errors until packaging; dev uses `env:` refs. (F0.5)
+- **Run-event correlation ids on audit events**: session creates carry the acting
+  device; trace-id correlation arrives with the M1 run pipeline. (F0.8)
+- **cargo-audit as a separate CI step**: cargo-deny's advisories check covers the
+  RustSec DB; dedicated cargo-audit + SBOM + container scans activate when
+  container images exist (M1+). (F0.9)
 
 ## Explicitly out of scope for M0 (scope control, docs/08 §7)
 

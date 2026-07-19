@@ -10,8 +10,21 @@ use jarvis_domain::ids::SessionId;
 pub enum RepositoryError {
     #[error("conflict: {0}")]
     Conflict(String),
+    /// Same idempotency key, different payload (docs/05 §7
+    /// `idempotency.conflict`).
+    #[error("idempotency key reused with a different payload")]
+    IdempotencyConflict,
     #[error("storage failure: {0}")]
     Storage(String),
+}
+
+/// Result of an idempotent create (docs/05 §2, NFR-13).
+#[derive(Debug, Clone, PartialEq)]
+pub enum CreateOutcome {
+    Created(Session),
+    /// The same idempotency key already created this session with an
+    /// identical payload — safe replay, no new side effect.
+    AlreadyExists(Session),
 }
 
 /// Session persistence (FR-02). Implementations MUST write the given audit
@@ -19,7 +32,12 @@ pub enum RepositoryError {
 /// session create that cannot be audited must not happen at all.
 #[async_trait::async_trait]
 pub trait SessionStore: Send + Sync {
-    async fn create(&self, session: &Session, audit: &AuditEvent) -> Result<(), RepositoryError>;
+    async fn create(
+        &self,
+        session: &Session,
+        idempotency_key: Option<&str>,
+        audit: &AuditEvent,
+    ) -> Result<CreateOutcome, RepositoryError>;
     async fn get(&self, id: &SessionId) -> Result<Option<Session>, RepositoryError>;
     /// Newest first; basic listing for M0, search lands in M1+.
     async fn list(&self, limit: u32) -> Result<Vec<Session>, RepositoryError>;

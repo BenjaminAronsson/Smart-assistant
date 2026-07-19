@@ -89,14 +89,48 @@ impl AppState {
 }
 
 pub fn router(state: AppState) -> Router {
+    router_with(state, None, None)
+}
+
+/// Full router: unauthenticated surface (loopback health + pair), the
+/// authenticated session API behind the bearer middleware, and optional
+/// static web assets (docs/03 §3: Angular built assets served by jarvisd).
+pub fn router_with(
+    state: AppState,
+    sessions: Option<crate::sessions::SessionApi>,
+    web_assets: Option<std::path::PathBuf>,
+) -> Router {
     // Health and pair are unauthenticated by design but loopback-only:
     // config validation rejects non-loopback binds until M7 (docs/06 §7).
-    // Everything else mounts behind the bearer middleware (F0.8+).
     let mut router = Router::new().route("/api/v1/diagnostics/health", get(health));
     if let Some(auth) = &state.auth {
         router = router.route(
             "/api/v1/auth/pair",
             axum::routing::post(crate::auth::pair).with_state(auth.clone()),
+        );
+        if let Some(api) = sessions {
+            let protected = Router::new()
+                .route(
+                    "/api/v1/sessions",
+                    axum::routing::post(crate::sessions::create).get(crate::sessions::list),
+                )
+                .route("/api/v1/sessions/{id}", get(crate::sessions::get))
+                .with_state(api)
+                .layer(axum::middleware::from_fn_with_state(
+                    auth.clone(),
+                    crate::auth::require_device,
+                ));
+            router = router.merge(protected);
+        }
+    }
+    if let Some(assets) = web_assets {
+        // Unknown API paths must stay problem-body 404s — only non-API paths
+        // fall through to the SPA (rust-reviewer F0.8 NIT-3).
+        router = router.route("/api/{*rest}", axum::routing::any(api_not_found));
+        let index = assets.join("index.html");
+        router = router.fallback_service(
+            tower_http::services::ServeDir::new(assets)
+                .fallback(tower_http::services::ServeFile::new(index)),
         );
     }
     router.with_state(state)
@@ -104,4 +138,13 @@ pub fn router(state: AppState) -> Router {
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(state.health().await)
+}
+
+async fn api_not_found() -> axum::response::Response {
+    crate::problem::problem(
+        axum::http::StatusCode::NOT_FOUND,
+        jarvis_contracts::errors::ErrorCode::ResourceNotFound,
+        "unknown API route",
+        None,
+    )
 }

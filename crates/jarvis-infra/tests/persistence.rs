@@ -3,7 +3,7 @@
 //! isolated throwaway database created by `#[sqlx::test]` from DATABASE_URL,
 //! with the workspace migration stream applied.
 
-use jarvis_application::ports::{RepositoryError, SessionStore};
+use jarvis_application::ports::{CreateOutcome, RepositoryError, SessionStore};
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::conversations::{Session, SessionStatus};
 use jarvis_domain::ids::SessionId;
@@ -44,7 +44,10 @@ const ID_C: &str = "01BX5ZZKBKACTAV9WEVGEMMVS0";
 async fn create_then_get_round_trips(pool: PgPool) {
     let store = PgSessionStore::new(pool);
     let created = session(ID_A, Some("morning plans"), 0);
-    store.create(&created, &audit_for(&created)).await.unwrap();
+    store
+        .create(&created, None, &audit_for(&created))
+        .await
+        .unwrap();
 
     let fetched = store.get(&ID_A.parse().unwrap()).await.unwrap();
     assert_eq!(fetched, Some(created));
@@ -61,7 +64,7 @@ async fn list_is_newest_first_with_limit(pool: PgPool) {
     let store = PgSessionStore::new(pool);
     for (id, micros) in [(ID_A, 0), (ID_B, 1_000), (ID_C, 2_000)] {
         let s = session(id, None, micros);
-        store.create(&s, &audit_for(&s)).await.unwrap();
+        store.create(&s, None, &audit_for(&s)).await.unwrap();
     }
     let listed = store.list(2).await.unwrap();
     assert_eq!(listed.len(), 2);
@@ -73,10 +76,16 @@ async fn list_is_newest_first_with_limit(pool: PgPool) {
 async fn duplicate_create_is_conflict_and_leaves_no_partial_writes(pool: PgPool) {
     let store = PgSessionStore::new(pool.clone());
     let first = session(ID_A, Some("one"), 0);
-    store.create(&first, &audit_for(&first)).await.unwrap();
+    store
+        .create(&first, None, &audit_for(&first))
+        .await
+        .unwrap();
 
     let dup = session(ID_A, Some("two"), 1_000);
-    let err = store.create(&dup, &audit_for(&dup)).await.unwrap_err();
+    let err = store
+        .create(&dup, None, &audit_for(&dup))
+        .await
+        .unwrap_err();
     assert!(matches!(err, RepositoryError::Conflict(_)), "got {err:?}");
 
     // Atomicity (invariant 6): the failed transaction left NOTHING behind.
@@ -97,7 +106,7 @@ async fn duplicate_create_is_conflict_and_leaves_no_partial_writes(pool: PgPool)
 async fn create_writes_audit_and_outbox_in_same_transaction(pool: PgPool) {
     let store = PgSessionStore::new(pool.clone());
     let s = session(ID_A, None, 0);
-    store.create(&s, &audit_for(&s)).await.unwrap();
+    store.create(&s, None, &audit_for(&s)).await.unwrap();
 
     let (event_type, target): (String, String) = sqlx::query_as(
         "SELECT event_type, target FROM audit.audit_events ORDER BY seq DESC LIMIT 1",
@@ -158,7 +167,7 @@ async fn audit_chain_links_and_verifies_across_transactions(pool: PgPool) {
 async fn audit_rows_reject_update_and_delete(pool: PgPool) {
     let store = PgSessionStore::new(pool.clone());
     let s = session(ID_A, None, 0);
-    store.create(&s, &audit_for(&s)).await.unwrap();
+    store.create(&s, None, &audit_for(&s)).await.unwrap();
 
     let update = sqlx::query("UPDATE audit.audit_events SET actor = 'attacker'")
         .execute(&pool)
@@ -178,7 +187,7 @@ async fn archived_status_round_trips(pool: PgPool) {
     let store = PgSessionStore::new(pool);
     let mut s = session(ID_A, Some("done"), 0);
     s.status = SessionStatus::Archived;
-    store.create(&s, &audit_for(&s)).await.unwrap();
+    store.create(&s, None, &audit_for(&s)).await.unwrap();
     let fetched = store.get(&s.id).await.unwrap().unwrap();
     assert_eq!(fetched.status, SessionStatus::Archived);
 }
@@ -260,11 +269,60 @@ async fn audit_chain_verifies_with_numeric_edge_payloads(pool: PgPool) {
 async fn audit_rows_reject_truncate(pool: PgPool) {
     let store = PgSessionStore::new(pool.clone());
     let s = session(ID_A, None, 0);
-    store.create(&s, &audit_for(&s)).await.unwrap();
+    store.create(&s, None, &audit_for(&s)).await.unwrap();
 
     let truncate = sqlx::query("TRUNCATE audit.audit_events")
         .execute(&pool)
         .await
         .unwrap_err();
     assert!(truncate.to_string().contains("append-only"), "{truncate}");
+}
+
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn idempotent_replay_returns_existing_without_new_side_effects(pool: PgPool) {
+    let store = PgSessionStore::new(pool.clone());
+    let first = session(ID_A, Some("plans"), 0);
+    let out = store
+        .create(&first, Some("key-1"), &audit_for(&first))
+        .await
+        .unwrap();
+    assert_eq!(out, CreateOutcome::Created(first.clone()));
+
+    // Replay: same key, same payload, different generated id (client retry).
+    let retry = session(ID_B, Some("plans"), 1_000);
+    let out = store
+        .create(&retry, Some("key-1"), &audit_for(&retry))
+        .await
+        .unwrap();
+    assert_eq!(out, CreateOutcome::AlreadyExists(first));
+
+    let sessions: i64 = sqlx::query_scalar("SELECT count(*) FROM conversation.sessions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let audits: i64 = sqlx::query_scalar("SELECT count(*) FROM audit.audit_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!((sessions, audits), (1, 1), "replay must add nothing");
+}
+
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn idempotency_key_with_different_payload_is_conflict(pool: PgPool) {
+    let store = PgSessionStore::new(pool);
+    let first = session(ID_A, Some("plans"), 0);
+    store
+        .create(&first, Some("key-1"), &audit_for(&first))
+        .await
+        .unwrap();
+
+    let different = session(ID_B, Some("OTHER TITLE"), 1_000);
+    let err = store
+        .create(&different, Some("key-1"), &audit_for(&different))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, RepositoryError::IdempotencyConflict),
+        "{err:?}"
+    );
 }
