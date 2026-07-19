@@ -63,7 +63,7 @@ docker compose -f infra/compose/dev.yml up -d   # postgres+pgvector, otel
 ```
 
 On low-power dev hosts use `cargo check` as the inner loop, mold as linker, and sccache;
-see `docs/09-operations.md` §5. CI is Azure DevOps (`infra/azure-pipelines.yml`); every PR runs the full loop above plus
+see `docs/09-operations.md` §5. CI is GitHub Actions (`.github/workflows/ci.yml`); every PR runs the full loop above plus
 `cargo deny check` and container scans. Do not merge with warnings.
 
 ## Coding conventions

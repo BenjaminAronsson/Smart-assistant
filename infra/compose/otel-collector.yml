@@ -1,0 +1,25 @@
+# Local collector (docs/09 §2): loopback OTLP in, local export only.
+# Dev sink is the collector's own debug log; no data leaves the machine.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317 # container-internal; host binding is loopback (dev.yml)
+
+exporters:
+  debug:
+    verbosity: basic
+
+processors:
+  batch: {}
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]

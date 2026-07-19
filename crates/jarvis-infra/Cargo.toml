@@ -1,0 +1,30 @@
+[package]
+name = "jarvis-infra"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+jarvis-domain.workspace = true
+jarvis-application.workspace = true
+thiserror.workspace = true
+serde_json.workspace = true
+async-trait = "0.1"
+sqlx = { version = "0.8", default-features = false, features = [
+    "postgres",
+    "runtime-tokio",
+    "tls-rustls",
+    "macros",
+    "migrate",
+    "time",
+    "json",
+] }
+sha2 = "0.10"
+hex = "0.4"
+time = { version = "0.3", features = ["formatting"] }
+tokio = { version = "1", features = ["time"] }

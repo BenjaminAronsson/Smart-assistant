@@ -1,0 +1,40 @@
+# Dev environment (docs/09 §2): Postgres+pgvector and the OTel collector.
+# Everything binds loopback only — nothing here is reachable off-host (06 §7).
+#
+#   docker compose -f infra/compose/dev.yml up -d
+#   docker compose -f infra/compose/dev.yml down          # keep data
+#   docker compose -f infra/compose/dev.yml down -v       # reset data
+#
+# Credentials below are dev-only and never used outside this compose file;
+# real deployments resolve the database URL from the keyring (docs/09 §1).
+
+name: jarvis-dev
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: jarvis
+      POSTGRES_PASSWORD: jarvis-dev-only
+      POSTGRES_DB: jarvis
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jarvis -d jarvis"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.116.1
+    command: ["--config=/etc/otelcol/config.yml"]
+    volumes:
+      - ./otel-collector.yml:/etc/otelcol/config.yml:ro
+    ports:
+      - "127.0.0.1:4317:4317" # OTLP gRPC in (docs/09 §1 [observability])
+
+volumes:
+  pgdata:

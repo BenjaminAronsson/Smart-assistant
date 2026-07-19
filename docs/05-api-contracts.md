@@ -6,7 +6,7 @@
 |---|---|---|
 | `POST /api/v1/auth/pair` | — | Exchange first-run pairing code for a device token (§6). |
 | `GET /api/v1/sessions?query=&status=&limit=&cursor=` | FR-02 | List/search sessions (full-text on title + summary, filters on status/time). |
-| `POST /api/v1/sessions` | FR-02 | Create a session. |
+| `POST /api/v1/sessions` | FR-02 | Create a session. Body: `{ title? }` — all other metadata is server-assigned. |
 | `GET /api/v1/sessions/{id}` | FR-02 | Session metadata + summary. |
 | `GET /api/v1/sessions/{id}/timeline?since=&limit=` | FR-01/07 | Messages + persisted run events (resync snapshot source). |
 | `POST /api/v1/sessions/{id}/messages` | FR-01 | Submit input; returns run acknowledgement. |
@@ -175,7 +175,8 @@ Single-owner, loopback-first — deliberately simple, upgraded at M7:
    pairing code, prints it to the journal, and shows it on the health page (loopback
    only). The client posts it to `/api/v1/auth/pair` with a device name and receives a
    device record + opaque device token (random 256-bit, stored hashed server-side, keyring
-   client-side).
+   client-side). The pair response body is `{ deviceId, deviceToken, scopes }` — the
+   granted scope list (§6.3) is returned explicitly so clients never infer it.
 2. **Requests.** Every REST call and the WS upgrade carry `Authorization: Bearer <token>`.
    Unauthenticated surface: `GET /api/v1/diagnostics/health` on loopback only.
 3. **Scopes.** Tokens carry device scopes (e.g. `ui`, `display-agent`, `voice-capture`);
@@ -194,6 +195,7 @@ and grows additively. HTTP mapping via RFC 9457 problem details.
 |---|---|---|
 | `auth.invalid_token` | Missing/revoked/expired device token | 401 |
 | `auth.scope_missing` | Device lacks required scope | 403 |
+| `auth.pairing_invalid` | No open pairing window matches the presented code | 403 |
 | `validation.failed` | Command failed schema/field validation | 400 |
 | `idempotency.conflict` | Key reused with different payload | 409 |
 | `resource.version_conflict` | Expected version mismatch | 409 |

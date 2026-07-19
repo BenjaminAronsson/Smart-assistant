@@ -1,0 +1,16 @@
+[package]
+name = "jarvis-application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+jarvis-domain.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+async-trait = "0.1"

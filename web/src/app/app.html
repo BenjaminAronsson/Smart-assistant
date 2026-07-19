@@ -1,0 +1,47 @@
+<main class="shell">
+  <h1>{{ title() }}</h1>
+
+  @if (error(); as message) {
+    <p class="error" role="alert">{{ message }}</p>
+  }
+
+  @if (health(); as h) {
+    <section aria-label="daemon health">
+      <p class="status" role="status">
+        daemon: {{ h.status }} (v{{ h.version }})
+        @for (adapter of h.adapters | keyvalue; track adapter.key) {
+          <span class="adapter">· {{ adapter.key }}: {{ adapter.value.state }}</span>
+        }
+      </p>
+      @if (!paired() && h.pairingCode) {
+        <button type="button" (click)="pair()">Pair this device ({{ h.pairingCode }})</button>
+      }
+    </section>
+  } @else {
+    <p class="status" role="status">daemon: unreachable</p>
+  }
+
+  @if (paired()) {
+    <section aria-label="sessions">
+      <h2>Sessions</h2>
+      <form (submit)="$event.preventDefault(); createSession()">
+        <label>
+          Title
+          <input type="text" [value]="newSessionTitle()" (input)="onTitleInput($event)" />
+        </label>
+        <button type="submit">Create session</button>
+        <button type="button" (click)="refresh()">Refresh</button>
+      </form>
+      <ul>
+        @for (session of sessions(); track session.id) {
+          <li>
+            <code>{{ session.id }}</code> — {{ session.title ?? '(untitled)' }} ·
+            {{ session.status }} · {{ session.createdAt }}
+          </li>
+        } @empty {
+          <li>No sessions yet.</li>
+        }
+      </ul>
+    </section>
+  }
+</main>

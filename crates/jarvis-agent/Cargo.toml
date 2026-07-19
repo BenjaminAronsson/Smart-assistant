@@ -1,0 +1,16 @@
+[package]
+name = "jarvis-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Not on workspace lints: CLAUDE.md permits justified `unsafe` in this crate only
+# (comment + test required per block). Deny stays until the first such block exists.
+[lints.rust]
+unsafe_code = "deny"
+
+[dependencies]
+jarvis-contracts.workspace = true
+anyhow.workspace = true

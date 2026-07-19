@@ -1,0 +1,5 @@
+# MSRV / build toolchain pin (docs/03 §2). Bump deliberately; CI uses exactly this.
+[toolchain]
+channel = "1.94.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
