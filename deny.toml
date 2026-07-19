@@ -9,6 +9,9 @@ yanked = "deny"
 
 [licenses]
 version = 2
+# Our own unpublished workspace crates (LicenseRef-Proprietary) are exempt;
+# the allowlist below governs everything that actually ships from crates.io.
+private = { ignore = true }
 # Reviewed as part of the SBOM gate (docs/03 §2). Extend deliberately, never wildcard.
 allow = [
     "MIT",
@@ -26,6 +29,9 @@ confidence-threshold = 0.9
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Workspace-internal path deps (`foo.workspace = true`) are not version
+# wildcards; only registry deps must pin versions.
+allow-wildcard-paths = true
 # The purity rule (CLAUDE.md invariant 3) is enforced structurally by
 # `cargo xtask arch-test`; cargo-deny gates licenses/advisories/sources.
 

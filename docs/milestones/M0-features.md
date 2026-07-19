@@ -1,7 +1,8 @@
 # M0 Foundation — feature list
 
-Status: **awaiting human approval** — no implementation begins until this list is
-approved (docs/11 §3).
+Status: **all features complete** (list approved 2026-07-19; owner directed full
+feature-loop approvals). Next step: `/gate` — run explicitly, never implicitly
+(docs/11 §2), with human sign-off.
 
 Milestone scope (docs/08 §1): Cargo workspace + Angular workspace, Postgres/pgvector +
 migrations, `jarvis-contracts` + codegen, OTel wiring, auth placeholder, compose env,
@@ -86,7 +87,7 @@ Each feature is a vertical slice sized for one session and runs the `/feature` l
   Read: docs/05 §1–§2, §7; skills `ws-contracts`, `angular-shell`.
   Deps: F0.4, F0.6, F0.7.
 
-- [ ] **F0.9 — CI pipeline (Azure DevOps)**
+- [x] **F0.9 — CI pipeline (Azure DevOps)**
   `infra/azure-pipelines.yml` per docs/03 §6: Validate (fmt, clippy -D warnings,
   npm lint, codegen drift check), Test (cargo test --workspace, arch-test, Angular
   tests), Build (pinned toolchains, SBOM), Security (cargo deny, cargo audit, secret

@@ -1,0 +1,125 @@
+# CI (docs/03 §6). Every PR runs the full loop; do not merge with warnings.
+# M0 scope notes: container images/SBOM/scan stages activate when images exist
+# (M1+); cargo-deny advisories covers the RustSec DB (cargo-audit's source),
+# so a separate cargo-audit step is deliberately omitted until the SBOM gate.
+
+trigger:
+  branches:
+    include: [main]
+pr:
+  branches:
+    include: ['*']
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  CARGO_TERM_COLOR: always
+  SQLX_OFFLINE: 'true'
+  DATABASE_URL: postgres://jarvis:jarvis-dev-only@127.0.0.1:5432/jarvis
+
+stages:
+  - stage: Validate
+    jobs:
+      - job: validate
+        steps:
+          - script: rustup show active-toolchain
+            displayName: toolchain (pinned by rust-toolchain.toml)
+          - script: cargo fmt --check
+            displayName: cargo fmt --check
+          - script: cargo clippy --workspace --all-targets -- -D warnings
+            displayName: cargo clippy -D warnings
+          - script: npm ci
+            displayName: npm ci (web)
+            workingDirectory: web
+          - script: npm run lint
+            displayName: npm run lint (web)
+            workingDirectory: web
+          - script: cargo xtask codegen --check
+            displayName: generated types drift check
+          - script: cargo xtask arch-test
+            displayName: architecture dependency rules
+
+  - stage: Test
+    dependsOn: Validate
+    jobs:
+      - job: test
+        steps:
+          - script: docker compose -f infra/compose/dev.yml up -d postgres
+            displayName: start postgres (pgvector)
+          - script: |
+              for i in $(seq 1 30); do
+                docker exec jarvis-dev-postgres-1 pg_isready -U jarvis -d jarvis && exit 0
+                sleep 1
+              done
+              exit 1
+            displayName: wait for postgres
+          - script: cargo test --workspace
+            displayName: cargo test --workspace (unit + contract + DB tests)
+            env:
+              SQLX_OFFLINE: 'false'
+          - script: cargo sqlx prepare --check --workspace || (cargo install sqlx-cli --no-default-features --features postgres,rustls --locked && cargo sqlx prepare --check --workspace)
+            displayName: sqlx offline query data check
+            env:
+              SQLX_OFFLINE: 'false'
+          - script: npm ci && npm test -- --browsers=ChromeHeadlessNoSandbox
+            displayName: web tests (headless)
+            workingDirectory: web
+
+  - stage: Build
+    dependsOn: Validate
+    jobs:
+      - job: build
+        steps:
+          - script: cargo build --workspace --release
+            displayName: cargo build --release
+          - script: npm ci && npm run build
+            displayName: web production build
+            workingDirectory: web
+
+  - stage: Security
+    dependsOn: Validate
+    jobs:
+      - job: security
+        steps:
+          - script: |
+              set -e
+              VERSION=0.18.4
+              curl -sSfL "https://github.com/EmbarkStudios/cargo-deny/releases/download/${VERSION}/cargo-deny-${VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+                | tar xz --strip-components=1 -C /usr/local/bin --wildcards '*/cargo-deny'
+              cargo deny check
+            displayName: cargo deny (licenses, advisories, bans, sources)
+          - script: |
+              set -e
+              VERSION=8.30.0
+              curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
+                | tar xz -C /usr/local/bin gitleaks
+              gitleaks detect --source . --no-banner
+            displayName: secret scan (gitleaks)
+
+  - stage: Integration
+    dependsOn: [Test, Build]
+    jobs:
+      - job: integration
+        steps:
+          - script: docker compose -f infra/compose/dev.yml up -d
+            displayName: compose env (postgres + otel)
+          - script: |
+              for i in $(seq 1 30); do
+                docker exec jarvis-dev-postgres-1 pg_isready -U jarvis -d jarvis && break
+                sleep 1
+              done
+              cargo install sqlx-cli --no-default-features --features postgres,rustls --locked
+              sqlx migrate run
+            displayName: apply migrations
+            env:
+              SQLX_OFFLINE: 'false'
+          - script: cargo build -p jarvisd
+            displayName: build jarvisd
+          - script: npm ci && npm run build
+            displayName: build web assets
+            workingDirectory: web
+          - script: bash infra/ci/smoke.sh
+            displayName: session round-trip smoke (exit evidence)
+          - script: cargo xtask golden
+            displayName: golden traces (harness slot; scenarios land M1)

@@ -11,9 +11,20 @@ fn main() -> anyhow::Result<()> {
     match task.as_str() {
         "arch-test" => arch_test(),
         "codegen" => codegen::run(args.next().as_deref() == Some("--check")),
-        "golden" => anyhow::bail!("xtask golden lands with F0.9 (CI pipeline)"),
+        "golden" => golden(),
         _ => anyhow::bail!("usage: cargo xtask <arch-test|codegen [--check]|golden>"),
     }
+}
+
+/// Golden-trace runner slot (docs/08 §3: automation exists from M0). The
+/// scenario registry fills in at M1 (golden traces 1-3); an empty registry
+/// is success, a failing scenario is a build failure.
+fn golden() -> anyhow::Result<()> {
+    const SCENARIOS: &[&str] = &[];
+    if SCENARIOS.is_empty() {
+        println!("golden: 0 scenarios registered (harness slot — scenarios land in M1)");
+    }
+    Ok(())
 }
 
 mod codegen {
