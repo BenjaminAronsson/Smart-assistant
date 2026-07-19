@@ -1,10 +1,7 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { provideHttpClient } from '@angular/common/http';
-import {
-  HttpTestingController,
-  provideHttpClientTesting,
-} from '@angular/common/http/testing';
+import { provideHttpClient, withXhr } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { App } from './app';
 
 describe('App', () => {
@@ -16,7 +13,7 @@ describe('App', () => {
       imports: [App],
       providers: [
         provideZonelessChangeDetection(),
-        provideHttpClient(),
+        provideHttpClient(withXhr()),
         provideHttpClientTesting(),
       ],
     }).compileComponents();
@@ -68,9 +65,7 @@ describe('App', () => {
     fixture.detectChanges();
     await fixture.whenStable();
 
-    http
-      .expectOne('/api/v1/diagnostics/health')
-      .error(new ProgressEvent('error'), { status: 0 });
+    http.expectOne('/api/v1/diagnostics/health').error(new ProgressEvent('error'), { status: 0 });
     await fixture.whenStable();
     fixture.detectChanges();
 

@@ -79,7 +79,7 @@ No code defects were found at the gate — the only failure was CI configuration
 ## 5. Deviations requested (owner decision)
 
 1. **CI platform: Azure DevOps → GitHub Actions.** The spec (docs/03 §6, CLAUDE.md) named Azure DevOps, but the project lives on GitHub. Corrected to `.github/workflows/ci.yml` at the owner's direction; docs updated in the same commit. The stage/gate contract is unchanged. **Confirm this is the intended platform.**
-2. **Angular version.** The scaffold pins Angular 20.3.x (I invoked `@angular/cli@20`); the spec said only "current LTS" without a version. **If a specific Angular version is your standard, name it and I'll re-pin** — cheap now, costly later.
+2. **Angular version — RESOLVED.** Owner requested Angular 22; upgraded 20→21→22 via `ng update` (Angular 22.0.7, TypeScript 6, angular-eslint 22, typescript-eslint 8.64). Requires Node ≥22.22.3 — CI and `.nvmrc` now on Node 24. web lint/test/build green.
 
 ## 6. Open risks carried into M1
 

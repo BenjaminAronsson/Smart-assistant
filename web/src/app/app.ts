@@ -1,5 +1,5 @@
 import { KeyValuePipe } from '@angular/common';
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { Component, OnInit, inject, signal, ChangeDetectionStrategy } from '@angular/core';
 import type { HealthResponse, SessionDto } from '../generated/api-types';
 import { ApiService } from './api.service';
 
@@ -12,6 +12,7 @@ import { ApiService } from './api.service';
   selector: 'app-root',
   imports: [KeyValuePipe],
   templateUrl: './app.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './app.scss',
 })
 export class App implements OnInit {

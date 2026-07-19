@@ -63,7 +63,9 @@ license output as part of the SBOM gate.
 
 ## 3. Frontend
 
-- **Angular** (current LTS) in `web/`, built to static assets served by `jarvisd`.
+- **Angular 22** (zoneless, signals) in `web/`, built to static assets served by
+  `jarvisd`. Requires Node ≥22.22.3 / 24.15+ (`web/.nvmrc` pins 24; CI runs Node 24).
+  Bump the major deliberately via `ng update`, one major at a time.
 - Native `WebSocket` client with reconnect + sequence resync (`05` §3); no SignalR client.
 - Types generated from JSON Schemas by `cargo xtask codegen` — the wire contract has one
   source of truth in `jarvis-contracts`.

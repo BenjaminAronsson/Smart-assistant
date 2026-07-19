@@ -22,7 +22,7 @@ jobs:
       - run: rustup show active-toolchain # installs the pinned toolchain + components
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: cargo fmt --check
@@ -42,7 +42,7 @@ jobs:
       - run: rustup show active-toolchain
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: start postgres (pgvector)
@@ -86,7 +86,7 @@ jobs:
       - run: rustup show active-toolchain
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: cargo build --workspace --release
@@ -118,7 +118,7 @@ jobs:
       - run: rustup show active-toolchain
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: compose env (postgres + otel)
