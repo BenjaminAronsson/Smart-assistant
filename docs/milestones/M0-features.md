@@ -87,8 +87,8 @@ Each feature is a vertical slice sized for one session and runs the `/feature` l
   Read: docs/05 §1–§2, §7; skills `ws-contracts`, `angular-shell`.
   Deps: F0.4, F0.6, F0.7.
 
-- [x] **F0.9 — CI pipeline (Azure DevOps)**
-  `infra/azure-pipelines.yml` per docs/03 §6: Validate (fmt, clippy -D warnings,
+- [x] **F0.9 — CI pipeline (GitHub Actions)**
+  `.github/workflows/ci.yml` per docs/03 §6: Validate (fmt, clippy -D warnings,
   npm lint, codegen drift check), Test (cargo test --workspace, arch-test, Angular
   tests), Build (pinned toolchains, SBOM), Security (cargo deny, cargo audit, secret
   scan), Integration (compose Postgres; migration run; session round-trip smoke;

@@ -109,9 +109,11 @@ openWakeWord later (license-check pretrained models separately). Home Assistant 
 WebSocket with a dedicated token. Playwright browser worker as an out-of-process tool
 server (Node) speaking MCP — acceptable because it is Z3-isolated and replaceable.
 
-## 6. CI/CD — Azure DevOps
+## 6. CI/CD — GitHub Actions
 
-Retained (owner's workflow). Pipeline stages and gates:
+The project lives on GitHub, so CI is GitHub Actions (`.github/workflows/ci.yml`).
+(Earlier drafts named Azure DevOps; corrected 2026-07-19 — the platform changed, the
+stage/gate contract below did not.) Pipeline stages and gates:
 
 | Stage | Gate |
 |---|---|
