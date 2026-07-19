@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO orchestration.checkpoints (run_id, state) VALUES ($1, $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f854196f031d877a016bbbf98ebd916dab1fc147b8f033a2f238e0d84ec5fc02"
+}

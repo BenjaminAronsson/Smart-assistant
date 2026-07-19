@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE orchestration.runs\n            SET state = $2, used_model_turns = $3, used_tool_calls = $4,\n                outcome_kind = $5, outcome_detail = $6, updated_at = $7\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int4",
+        "Int4",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9b93e6391445b388a02a682b344207bc8373dff6dfbc94b370d17325ada8abc6"
+}

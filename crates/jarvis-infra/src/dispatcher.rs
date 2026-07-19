@@ -1,0 +1,113 @@
+//! Transactional-outbox dispatcher (docs/02 §2, sqlx-data skill §5). Domain
+//! events are written to `outbox.outbox_events` in the same transaction as the
+//! state change; this dispatcher publishes them AFTER commit, in order, exactly
+//! where they become visible.
+//!
+//! It is **event-driven, not polling** (perf-warden): a `LISTEN` on the
+//! `outbox_events` channel (fired by the `AFTER INSERT` trigger, migration
+//! 0007) wakes it; it then drains every undispatched row. On start it drains
+//! once to clear any backlog inserted while it was down. Delivery is
+//! at-least-once — a crash between publish and mark re-delivers, and clients
+//! resync by `seq` (docs/05 §3) — so publishers must tolerate a repeat.
+
+use serde_json::Value;
+use sqlx::PgPool;
+use sqlx::postgres::PgListener;
+use tokio_util::sync::CancellationToken;
+
+/// One committed outbox event handed to the publisher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboxRecord {
+    pub id: i64,
+    pub event_type: String,
+    pub payload: Value,
+}
+
+/// Sink for committed domain events (the WS hub implements this in F1.5). Called
+/// in `id` order; must not assume exactly-once.
+#[async_trait::async_trait]
+pub trait OutboxPublisher: Send + Sync {
+    async fn publish(&self, record: &OutboxRecord);
+}
+
+/// How many undispatched rows to claim per query (bounded so a large backlog
+/// can never build an unbounded batch in memory — low-power discipline).
+const BATCH: i64 = 100;
+
+pub struct OutboxDispatcher {
+    pool: PgPool,
+}
+
+impl OutboxDispatcher {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
+    /// Run until `cancel` fires. Drains the backlog once, then reacts to each
+    /// `NOTIFY`. Returns `Ok(())` on cancellation; a database/listener error
+    /// ends the loop with `Err` (the host restarts it).
+    pub async fn run(
+        &self,
+        publisher: &dyn OutboxPublisher,
+        cancel: CancellationToken,
+    ) -> Result<(), sqlx::Error> {
+        let mut listener = PgListener::connect_with(&self.pool).await?;
+        listener.listen("outbox_events").await?;
+
+        // Backlog drain: catch anything inserted while we were down.
+        self.drain(publisher).await?;
+
+        loop {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Ok(()),
+                recv = listener.recv() => {
+                    recv?;
+                    self.drain(publisher).await?;
+                }
+            }
+        }
+    }
+
+    /// Publish every undispatched row, oldest first, until none remain.
+    async fn drain(&self, publisher: &dyn OutboxPublisher) -> Result<(), sqlx::Error> {
+        loop {
+            let rows = sqlx::query!(
+                r#"
+                SELECT id, event_type, payload
+                FROM outbox.outbox_events
+                WHERE dispatched_at IS NULL
+                ORDER BY id ASC
+                LIMIT $1
+                "#,
+                BATCH,
+            )
+            .fetch_all(&self.pool)
+            .await?;
+
+            if rows.is_empty() {
+                return Ok(());
+            }
+
+            let mut ids = Vec::with_capacity(rows.len());
+            for row in &rows {
+                publisher
+                    .publish(&OutboxRecord {
+                        id: row.id,
+                        event_type: row.event_type.clone(),
+                        payload: row.payload.clone(),
+                    })
+                    .await;
+                ids.push(row.id);
+            }
+
+            // Mark the whole batch dispatched in one statement.
+            sqlx::query!(
+                "UPDATE outbox.outbox_events SET dispatched_at = now() WHERE id = ANY($1)",
+                &ids,
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+    }
+}

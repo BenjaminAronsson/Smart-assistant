@@ -904,6 +904,7 @@ name = "jarvis-infra"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures-core",
  "hex",
  "jarvis-application",
  "jarvis-domain",
@@ -913,6 +914,7 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

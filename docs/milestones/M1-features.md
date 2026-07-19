@@ -48,7 +48,7 @@ contracts; Sonnet for infra/adapter/web volume).
   don't. Refs: FR-01/03/06, NFR-05/12/13, ADR-003. Read: docs/02 §4–§5; skills
   `state-machine`, `provider-adapter`. Deps: F1.1, F1.2. rust-reviewer mandatory.
 
-- [ ] **F1.4 — Run persistence + checkpoints + event-driven outbox dispatcher (infra)** · *Sonnet*
+- [x] **F1.4 — Run persistence + checkpoints + event-driven outbox dispatcher (infra)** · *Sonnet*
   Migrations for the `orchestration` (runs, plan_steps, checkpoints, cancellations) and
   `models` (invocations, usage_samples, health_state) schemas (docs/04 §3). sqlx repos
   behind the application ports; message persistence; checkpoint save/load for restart
@@ -57,6 +57,13 @@ contracts; Sonnet for infra/adapter/web volume).
   — publishes committed domain events. `cargo sqlx prepare` committed. Refs: FR-01/07,
   NFR-05/13. Read: docs/04 §3, docs/02 §2; skills `sqlx-data`, `low-power`. Deps: F1.2,
   F1.3. contract-keeper (migrations) + perf-warden (dispatcher) review.
+  *Delivered:* `orchestration` schema (runs, checkpoints), `PgRunStore` (RunStore +
+  Checkpointer), `PgMessageStore`, the LISTEN/NOTIFY `OutboxDispatcher` (0007 trigger),
+  `.sqlx` committed. **Deferred (deliberate):** the `models` schema and orchestration's
+  `plan_steps`/`cancellations` tables move to F1.6/F1.7/M2 where their writers land —
+  seeding them now would be speculative migrations for tables nothing reads. Restart
+  *recovery reconciliation* (re-driving a loaded run) is F1.5 host wiring; F1.4 provides
+  the durable load path and proves reload.
 
 - [ ] **F1.5 — WS hub + run REST endpoints + timeline resync (jarvisd)** · *Sonnet*
   `/ws/v1` token-authenticated hub (monotonic `seq`, gap/reconnect → REST snapshot
