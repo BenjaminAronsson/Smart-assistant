@@ -1,9 +1,8 @@
 # M0 Foundation — Gate Report
 
-**Status: awaiting human sign-off.** A gate is judged, not merely measured (docs/11 §2);
-this report is presented for the owner's decision. On approval: tag `m0-complete` and
-check the roadmap. Failed items go back into the feature list — never "passed with
-exceptions" silently.
+**Status: SIGNED OFF (owner, 2026-07-19).** Deviations confirmed: CI platform = GitHub
+Actions; Angular pinned to 22. Tag `m0-complete` is applied to the commit whose CI run is
+green (see E4). M1 is now unblocked.
 
 - **Milestone:** M0 Foundation (docs/08 §1)
 - **Branch / PR:** `claude/milestone-cny833` / PR #3
@@ -22,7 +21,7 @@ exceptions" silently.
 | E1 | `jarvisd` starts | **PASS** | Release binary boots and serves health in **21 ms** (cold start to first healthy response; NFR-15 budget < 2 s). |
 | E2 | Health page works | **PASS** | `GET /api/v1/diagnostics/health` returns `{status, version, adapters}`; live-probes Postgres per request — verified `ok`→`degraded`→`ok` across a stopped/started DB container. Angular shell renders it (5 Karma specs incl. HttpTestingController contract checks). |
 | E3 | One persisted session round-trips | **PASS** | `infra/ci/smoke.sh`: pair → create (201) → idempotent replay (200, same id) → unauthenticated list (401) → **jarvisd restart** → session survives (NFR-05); audit chain shows `device.paired` + `session.created`. Green locally end to end. |
-| E4 | CI green end to end | **PENDING (fix verified, re-run in progress)** | Run #1 (`91a3548`) **failed** at the `test` job — a CI config bug I introduced (details §4). `validate`, `build`, `security` passed in run #1. Fix pushed (`e62be34`); run #2 in progress. Gate should not be signed until run #2 is green. |
+| E4 | CI green end to end | **PASS** | Run #3 (head `1fd3fb0`) completed **success across all five jobs** — validate, test, build, security, **integration** (which runs the `infra/ci/smoke.sh` session round-trip). Run #1 had failed at `test` on a CI-config bug I introduced (§4), fixed in `e62be34`. The Angular-22 head (`5720dd2`) re-confirms the same pipeline green. |
 
 ---
 
