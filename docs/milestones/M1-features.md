@@ -37,7 +37,7 @@ contracts; Sonnet for infra/adapter/web volume).
   Refs: FR-01/06/07, NFR-12, ADR-003. Read: docs/02 §4; skill `state-machine`. Deps: none.
   test-architect writes the table first; rust-reviewer mandatory.
 
-- [ ] **F1.3 — Orchestrator loop + step ports + `FakeModel` (application)** · *strong model*
+- [x] **F1.3 — Orchestrator loop + step ports + `FakeModel` (application)** · *strong model*
   `jarvis-application::orchestrator`: the code loop (`while !terminal`, budgets checked at
   loop top, `cancel.check()?`, checkpoint per safe transition). Step-executor ports for the
   M1 path (context assembly, model step, response commit); `ModelProvider` port (docs/05

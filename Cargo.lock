@@ -872,9 +872,12 @@ name = "jarvis-application"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures-core",
  "jarvis-domain",
  "serde",
  "thiserror",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

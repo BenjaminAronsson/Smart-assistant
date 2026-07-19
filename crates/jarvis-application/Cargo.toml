@@ -9,8 +9,25 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Exposes `jarvis_application::testing` (FakeModel + fake ports) to external
+# consumers such as the golden-trace harness. Off by default so the doubles are
+# never compiled into a production build. The crate's own tests reach `testing`
+# via `cfg(test)`, so they do not need this feature.
+fixtures = []
+
 [dependencies]
 jarvis-domain.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 async-trait = "0.1"
+# Cancellation primitive only (arch-test allow-listed); never the tokio runtime.
+tokio-util = { version = "0.7", default-features = false }
+# `Stream`/`BoxStream` for the ModelProvider port. futures-core carries the
+# trait only — no executor, no combinators (futures-util is not permitted here).
+futures-core = "0.3"
+
+[dev-dependencies]
+# The crate's own tests are in-crate (cfg(test)), so the `testing` doubles are
+# available without enabling the `fixtures` feature; only a runtime is needed.
+tokio = { version = "1", default-features = false, features = ["rt", "macros"] }

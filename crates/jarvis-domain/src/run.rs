@@ -14,6 +14,7 @@
 //! resumes idempotently on provider recovery; the wire carries the waiting
 //! signal as `DomainEvent::RunQueued` (see `jarvis-contracts::runs`).
 
+use crate::ids::{RunId, SessionId};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -287,7 +288,7 @@ impl RunBudget {
 
 /// Consumption accrued by a run so far. Time is passed in — the domain never
 /// reads a clock (the orchestrator computes `elapsed` from the run start).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RunUsage {
     pub model_turns: u8,
     pub tool_calls: u16,
@@ -302,4 +303,93 @@ pub enum BudgetDimension {
     ToolCalls,
     Duration,
     ArtifactBytes,
+}
+
+/// How a terminal run ended (docs/02 §4). Mirrors the three terminal
+/// [`RunState`]s; the wire projection lives in `jarvis-contracts::runs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunOutcomeKind {
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl RunOutcomeKind {
+    /// The outcome implied by a terminal state, or `None` for a non-terminal
+    /// one. Exhaustive (no `_`) so a new state forces a decision here.
+    pub fn from_terminal(state: RunState) -> Option<Self> {
+        match state {
+            RunState::Completed => Some(Self::Completed),
+            RunState::Failed => Some(Self::Failed),
+            RunState::Cancelled => Some(Self::Cancelled),
+            RunState::Received
+            | RunState::ContextReady
+            | RunState::ModelRunning
+            | RunState::PolicyReview
+            | RunState::WaitingApproval
+            | RunState::ToolRunning
+            | RunState::Replanning
+            | RunState::Responding => None,
+        }
+    }
+}
+
+/// The terminal outcome of a run: a machine `kind` plus an optional short human
+/// sentence. `detail` is never raw provider/driver text (docs/06 §5) — the
+/// orchestrator writes a generic reason (e.g. the exhausted budget dimension).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunOutcome {
+    pub kind: RunOutcomeKind,
+    pub detail: Option<String>,
+}
+
+/// A run aggregate (docs/02 §4, docs/04 §2): the durable, checkpointable unit
+/// the orchestrator drives. Pure — it carries state and consumption but reads
+/// no clock and performs no I/O; the application layer advances it via
+/// [`Run::apply`] and updates `usage` from injected time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Run {
+    pub id: RunId,
+    pub session_id: SessionId,
+    pub state: RunState,
+    pub budget: RunBudget,
+    pub usage: RunUsage,
+    /// Present exactly once the run is terminal.
+    pub outcome: Option<RunOutcome>,
+}
+
+impl Run {
+    /// A fresh run in [`RunState::Received`] with zero usage and no outcome.
+    pub fn new(id: RunId, session_id: SessionId, budget: RunBudget) -> Self {
+        Self {
+            id,
+            session_id,
+            state: RunState::Received,
+            budget,
+            usage: RunUsage::default(),
+            outcome: None,
+        }
+    }
+
+    /// Advance the run by one event (docs/02 §4). On reaching a terminal state
+    /// the outcome is recorded once; a subsequent apply that stays terminal is
+    /// rejected by [`next`], so the first-recorded outcome is preserved
+    /// (idempotency, invariant 6-adjacent). Returns the new state on success.
+    pub fn apply(&mut self, event: RunEvent) -> Result<RunState, TransitionError> {
+        let next_state = next(self.state, event)?;
+        self.state = next_state;
+        if let Some(kind) = RunOutcomeKind::from_terminal(next_state) {
+            self.outcome
+                .get_or_insert(RunOutcome { kind, detail: None });
+        }
+        Ok(next_state)
+    }
+
+    /// Attach a human detail to the terminal outcome (no-op if not yet
+    /// terminal). Used by the orchestrator to record why a run failed.
+    pub fn set_outcome_detail(&mut self, detail: impl Into<String>) {
+        if let Some(outcome) = self.outcome.as_mut() {
+            outcome.detail = Some(detail.into());
+        }
+    }
 }
