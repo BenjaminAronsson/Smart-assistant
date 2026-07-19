@@ -26,9 +26,14 @@ pub enum RunStateDto {
     Cancelled,
 }
 // NOTE: the FR-12 "queued / visible waiting" signal is carried by the
-// `DomainEvent::RunQueued` event, not a RunState — whether queuing becomes a
-// distinct `RunState` is the state-machine feature's (F1.2) call, made with an
-// ADR + a docs/02 §4 update. Adding a wire variant then stays additive.
+// `DomainEvent::RunQueued` event, not a RunState. F1.2 resolved the open
+// question: queuing is an application-layer concern (single-flight FIFO +
+// provider health), not a run lifecycle phase — a queued run rests at its
+// `ContextReady` checkpoint and the model step emits `RunQueued` when it parks,
+// resuming idempotently on provider recovery. No `Queued` RunState is added, so
+// this DTO stays a faithful projection of the domain's 11 states (docs/02 §4).
+// Should that ever change it needs an ADR + a docs/02 §4 update, and the wire
+// variant would then be additive.
 
 impl RunStateDto {
     pub fn is_terminal(self) -> bool {

@@ -1,7 +1,7 @@
 # M1 Text vertical slice — feature list
 
-Status: **awaiting human approval** — no implementation begins until this list is
-approved (docs/11 §3). M0 signed off + tagged `m0-complete` 2026-07-19.
+Status: **approved — in progress**. M0 signed off + tagged `m0-complete`
+2026-07-19. F1.1 and F1.2 complete (merged / on branch); continuing in order.
 
 Milestone scope (docs/08 §1): message/run state machine, WS streaming UI, Claude CLI
 adapter (single-flight queue, quota/health detection), deterministic fallback mode,
@@ -29,7 +29,7 @@ contracts; Sonnet for infra/adapter/web volume).
   committed TS. Refs: FR-01, FR-07, NFR-13. Read: docs/05 §1–§4; skill `ws-contracts`.
   Deps: none. contract-keeper review.
 
-- [ ] **F1.2 — `RunState` enum + transition table (domain)** · *strong model*
+- [x] **F1.2 — `RunState` enum + transition table (domain)** · *strong model*
   `jarvis-domain`: the full `RunState` enum (docs/02 §4), pure
   `fn next(state, event) -> Result<RunState, TransitionError>` with an exhaustive match
   (no `_` arm), `RunBudget` value type. Transition-table test FIRST
