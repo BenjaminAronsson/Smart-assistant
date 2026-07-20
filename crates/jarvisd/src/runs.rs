@@ -45,6 +45,7 @@ use jarvis_domain::run::{Run, RunBudget, RunState};
 use jarvis_infra::dispatcher::OutboxRecord;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::Instrument;
@@ -71,6 +72,9 @@ pub struct RunEngine {
     tracker: TaskTracker,
     /// Parent of every run's token: cancelling it cancels all in-flight runs.
     shutdown: CancellationToken,
+    /// Single-flight queue (F1.6): only one run can invoke the model at a time
+    /// (prevent concurrent quota consumption, auth conflicts, billing issues).
+    model_permit: Semaphore,
 }
 
 impl RunEngine {
@@ -94,6 +98,7 @@ impl RunEngine {
             active: Mutex::new(HashMap::new()),
             tracker: TaskTracker::new(),
             shutdown,
+            model_permit: Semaphore::new(1),
         })
     }
 
@@ -126,10 +131,18 @@ impl RunEngine {
     async fn drive(&self, run: Run, input: RunInput, cancel: CancellationToken) {
         let run_id = run.id.clone();
         let session_id = run.session_id.clone();
-        // One span per run (docs/02 §14): the run/session ids correlate every
-        // downstream log line. Instrument the async work rather than holding a
-        // guard across await points.
         let span = tracing::info_span!("run", run_id = %run_id, session_id = %session_id);
+
+        // Single-flight queue (F1.6): acquire permit before invoking model,
+        // hold it through the entire run so only one model invocation happens at a time.
+        let _permit = match self.model_permit.acquire().await {
+            Ok(p) => p,
+            Err(_) => {
+                // Semaphore closed (only on shutdown).
+                tracing::warn!("run started after model permit closed");
+                return;
+            }
+        };
 
         // A sink that broadcasts transient deltas (via the hub) AND accumulates
         // the response text so the host can commit the assistant message.

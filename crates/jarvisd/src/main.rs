@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use jarvis_adapters::claude_cli::ClaudeCliModel;
 use jarvis_application::orchestrator::RunInput;
 use jarvis_application::ports::{MessageStore, RunStore};
 use jarvis_domain::conversations::MessageRole;
@@ -11,7 +12,7 @@ use jarvis_domain::ids::SessionId;
 use jarvis_domain::run::Run;
 use jarvis_infra::dispatcher::OutboxDispatcher;
 use jarvisd::api::RunWiring;
-use jarvisd::runs::{EchoModel, PassthroughAssembler, RunApi, RunEngine, SystemClock};
+use jarvisd::runs::{PassthroughAssembler, RunApi, RunEngine, SystemClock};
 use jarvisd::ws::{WsHub, WsState};
 use tokio_util::sync::CancellationToken;
 use tower_http::trace::TraceLayer;
@@ -55,7 +56,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     spawn_signal_listener(serve_shutdown.clone());
 
     let engine = RunEngine::new(
-        Arc::new(EchoModel::default()), // interim provider; Claude CLI adapter lands in F1.6
+        Arc::new(ClaudeCliModel::new("claude-cli")),
         Arc::new(PassthroughAssembler),
         run_store.clone(),
         message_store.clone(),
