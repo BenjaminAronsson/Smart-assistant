@@ -63,7 +63,18 @@
       }
     }
 
-    @if (timeline().length === 0) {
+    <!-- Live-streaming response (transient token deltas, F1.8) -->
+    @if (streamingText(); as streamed) {
+      <div class="message-item streaming">
+        <div class="message-header">
+          <strong>Jarvis</strong>
+          <span class="timestamp">streaming…</span>
+        </div>
+        <div class="message-body">{{ streamed }}</div>
+      </div>
+    }
+
+    @if (timeline().length === 0 && !streamingText()) {
       <div class="empty-state">
         <p>No messages yet. Start a conversation below.</p>
       </div>

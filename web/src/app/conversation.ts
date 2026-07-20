@@ -13,8 +13,8 @@ import { ActivatedRoute } from '@angular/router';
 import type {
   SessionDto,
   DomainEvent,
+  EventEnvelope,
   TimelineItem,
-  TimelineResponse,
   MessageDto,
   ProviderState,
   ProvidersResponse,
@@ -45,6 +45,9 @@ export class Conversation implements OnInit, OnDestroy {
   protected readonly messageText = signal('');
   protected readonly loading = signal(false);
   protected readonly error = signal<string | null>(null);
+  /** Live-accumulated token deltas for the in-progress response (transient,
+   * never persisted — docs/05 §3). Cleared when the durable message arrives. */
+  protected readonly streamingText = signal('');
 
   private sessionId: string | null = null;
   private ws: WebSocket | null = null;
@@ -84,7 +87,7 @@ export class Conversation implements OnInit, OnDestroy {
     try {
       const resp = await this.api.getSession(this.sessionId);
       this.session.set(resp);
-    } catch (err) {
+    } catch {
       this.error.set('Failed to load session');
     }
   }
@@ -97,7 +100,7 @@ export class Conversation implements OnInit, OnDestroy {
       if (resp.nextSince !== null && resp.nextSince !== undefined) {
         this.resyncCursor = resp.nextSince;
       }
-    } catch (err) {
+    } catch {
       this.error.set('Failed to load timeline');
     }
   }
@@ -121,8 +124,8 @@ export class Conversation implements OnInit, OnDestroy {
 
     this.ws.onmessage = (event) => {
       try {
-        const msg = JSON.parse(event.data);
-        this.handleWebSocketMessage(msg);
+        const envelope: EventEnvelope = JSON.parse(event.data);
+        this.handleWebSocketMessage(envelope);
       } catch (err) {
         console.error('Failed to parse WS message', err);
       }
@@ -138,38 +141,48 @@ export class Conversation implements OnInit, OnDestroy {
     };
   }
 
-  private handleWebSocketMessage(msg: any): void {
-    // Message format: { seq, type, channel, payload }
-    // For session channel: payload contains DomainEvent
-    if (msg.channel === 'session' && msg.type === 'message') {
-      const event = msg.payload as DomainEvent;
+  /**
+   * Handle one WS envelope (docs/05 §3). The wire shape is
+   * `{ channel, type, payload, seq, … }`: the event discriminator lives on the
+   * envelope's `type`, and the payload carries only the event's own fields (the
+   * server splits the tag out, see jarvisd `ws::split_tagged`). We fold `type`
+   * back into the payload to reconstruct the generated `DomainEvent` union —
+   * the same decode the timeline resync performs.
+   */
+  private handleWebSocketMessage(env: EventEnvelope): void {
+    if (env.channel !== 'session') return;
 
-      // Add to timeline
-      const currentTimeline = this.timeline();
-      let newItem: TimelineItem | null = null;
+    // Transient token delta: accumulate into the live response bubble. A durable
+    // `message.created` follows on completion and replaces it.
+    if (env.type === 'text.delta') {
+      const delta = (env.payload as { text?: string }).text ?? '';
+      this.streamingText.update((prev) => prev + delta);
+      return;
+    }
 
-      if (event.type === 'message.created') {
-        newItem = {
-          type: 'message',
-          message: (event as any).message as MessageDto,
-        };
-      } else if (
-        event.type === 'run.queued' ||
-        event.type === 'run.state_changed' ||
-        event.type === 'run.completed' ||
-        event.type === 'run.started'
-      ) {
-        newItem = { type: 'run_event', event };
-      }
+    const event = {
+      ...(env.payload as Record<string, unknown>),
+      type: env.type,
+    } as DomainEvent;
 
-      if (newItem) {
-        this.timeline.set([...currentTimeline, newItem]);
-      }
-
-      // Refresh providers on health change or run completion
-      if (event.type === 'provider.health_changed') {
+    switch (event.type) {
+      case 'message.created':
+        // The durable message supersedes any in-progress streamed text.
+        this.streamingText.set('');
+        this.timeline.update((items) => [...items, { type: 'message', message: event.message }]);
+        break;
+      case 'run.queued':
+      case 'run.started':
+      case 'run.state_changed':
+        this.timeline.update((items) => [...items, { type: 'run_event', event }]);
+        break;
+      case 'run.completed':
+        this.streamingText.set('');
+        this.timeline.update((items) => [...items, { type: 'run_event', event }]);
+        break;
+      case 'provider.health_changed':
         void this.loadProviders();
-      }
+        break;
     }
   }
 
@@ -181,7 +194,7 @@ export class Conversation implements OnInit, OnDestroy {
     try {
       await this.api.submitMessage(this.sessionId, text);
       this.messageText.set('');
-    } catch (err) {
+    } catch {
       this.error.set('Failed to submit message');
     } finally {
       this.loading.set(false);
@@ -209,10 +222,8 @@ export class Conversation implements OnInit, OnDestroy {
   }
 
   protected getRunState(event: DomainEvent): RunStateDto | null {
-    if (event.type === 'run.state_changed') {
-      return (event as any).state as RunStateDto;
-    }
-    return null;
+    // Narrows the union to the run.state_changed variant, which carries `state`.
+    return event.type === 'run.state_changed' ? event.state : null;
   }
 
   protected getMessageRole(msg: MessageDto): string {
@@ -221,8 +232,7 @@ export class Conversation implements OnInit, OnDestroy {
 
   protected getMessageText(msg: MessageDto): string {
     return msg.content
-      .filter((block) => block.type === 'text')
-      .map((block) => (block as any).text || '')
+      .map((block) => (block.type === 'text' ? block.text : ''))
       .join('');
   }
 

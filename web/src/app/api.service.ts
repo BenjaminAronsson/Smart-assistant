@@ -11,6 +11,7 @@ import type {
   TimelineResponse,
   SubmitMessageRequest,
   ProvidersResponse,
+  RunAck,
 } from '../generated/api-types';
 
 const TOKEN_KEY = 'jarvis.deviceToken';
@@ -65,8 +66,8 @@ export class ApiService {
     );
   }
 
-  getTimeline(sessionId: string, since: number = 0): Promise<TimelineResponse> {
-    const params: { [key: string]: string | number } = since > 0 ? { since } : {};
+  getTimeline(sessionId: string, since = 0): Promise<TimelineResponse> {
+    const params: Record<string, string | number> = since > 0 ? { since } : {};
     return firstValueFrom(
       this.http.get<TimelineResponse>(`/api/v1/sessions/${sessionId}/timeline`, {
         params,
@@ -75,12 +76,12 @@ export class ApiService {
     );
   }
 
-  submitMessage(sessionId: string, text: string): Promise<any> {
+  submitMessage(sessionId: string, text: string): Promise<RunAck> {
     const request: SubmitMessageRequest = {
       content: [{ type: 'text', text }],
     };
     return firstValueFrom(
-      this.http.post(`/api/v1/sessions/${sessionId}/messages`, request, {
+      this.http.post<RunAck>(`/api/v1/sessions/${sessionId}/messages`, request, {
         headers: this.authHeaders(),
       }),
     );
