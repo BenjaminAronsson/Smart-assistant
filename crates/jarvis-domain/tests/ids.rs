@@ -8,7 +8,7 @@
 //! string, rejecting anything that is not a canonical 26-char uppercase
 //! Crockford-base32 ULID.
 
-use jarvis_domain::ids::{DeviceId, IdParseError, RunId, SessionId, UserId};
+use jarvis_domain::ids::{DeviceId, IdParseError, MessageId, RunId, SessionId, UserId};
 
 /// Canonical example ULID (docs/05 §3 style), 26 chars, uppercase Crockford-base32.
 const VALID_ULID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -149,3 +149,4 @@ ulid_newtype_tests!(session_id, SessionId);
 ulid_newtype_tests!(device_id, DeviceId);
 ulid_newtype_tests!(user_id, UserId);
 ulid_newtype_tests!(run_id, RunId);
+ulid_newtype_tests!(message_id, MessageId);

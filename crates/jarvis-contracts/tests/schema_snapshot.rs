@@ -19,6 +19,14 @@ const REQUIRED_DEFINITIONS: &[&str] = &[
     "CreateSessionRequest",
     "SessionListResponse",
     "ContentBlock",
+    "RunDto",
+    "RunAck",
+    "MessageDto",
+    "SubmitMessageRequest",
+    "TimelineResponse",
+    "ProvidersResponse",
+    "DomainEvent",
+    "TransientEvent",
 ];
 
 fn snapshot_path() -> std::path::PathBuf {

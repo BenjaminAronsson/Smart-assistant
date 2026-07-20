@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO outbox.outbox_events (event_type, payload) VALUES ($1, $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "98ea27ccb3c096b83003f503ee7d5f194c8247acc2d3055845729f9a9e51dc47"
+}

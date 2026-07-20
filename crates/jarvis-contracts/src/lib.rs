@@ -10,9 +10,14 @@ pub mod auth;
 pub mod content;
 pub mod envelope;
 pub mod errors;
+pub mod events;
 pub mod health;
+pub mod messages;
+pub mod providers;
+pub mod runs;
 pub mod schema;
 pub mod sessions;
+pub mod timeline;
 
 /// Wire contract major version, carried as `v` on every WS envelope.
 /// Breaking changes bump this with a dual-emit shim window (docs/05 §5).

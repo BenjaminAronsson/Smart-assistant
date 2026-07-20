@@ -4,7 +4,11 @@
 
 pub mod audit;
 pub mod db;
+pub mod dispatcher;
+pub mod events;
 pub mod identity;
+pub mod messages;
+pub mod runs;
 pub mod sessions;
 
 /// Embedded migration stream (docs/04 §3); applied by ops (`sqlx migrate run`)

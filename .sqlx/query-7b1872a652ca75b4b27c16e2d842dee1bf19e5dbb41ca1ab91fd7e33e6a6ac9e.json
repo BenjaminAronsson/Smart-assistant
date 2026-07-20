@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO orchestration.runs\n                (id, session_id, state, max_model_turns, max_tool_calls,\n                 max_duration_secs, max_artifact_bytes, used_model_turns,\n                 used_tool_calls, outcome_kind, outcome_detail, created_at, updated_at)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int4",
+        "Int4",
+        "Int8",
+        "Int8",
+        "Int4",
+        "Int4",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7b1872a652ca75b4b27c16e2d842dee1bf19e5dbb41ca1ab91fd7e33e6a6ac9e"
+}

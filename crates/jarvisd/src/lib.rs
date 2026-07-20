@@ -7,4 +7,6 @@ pub mod auth;
 pub mod config;
 pub mod observability;
 pub mod problem;
+pub mod runs;
 pub mod sessions;
+pub mod ws;

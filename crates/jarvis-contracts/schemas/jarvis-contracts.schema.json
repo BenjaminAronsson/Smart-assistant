@@ -80,6 +80,145 @@
       },
       "type": "object"
     },
+    "DomainEvent": {
+      "description": "Persisted, replayable events (docs/05 §3 \"persisted event categories\").\nEvery variant must be representable in the timeline snapshot — a client that\nmissed it while disconnected recovers it via `GET /sessions/{id}/timeline`.\n\nThe `type` discriminator is **dotted-namespaced** (`run.started`,\n`message.created`), matching the envelope example in docs/05 §3\n(`run.tool.completed`) and the error-code scheme — clients route on this\nstring, so it is load-bearing and every tag is spelled explicitly below.\n\nThis union is intentionally **strict**: there is no `Unknown` catch-all\n(unlike [`crate::content::ContentBlock`], which is open-world because blocks\noriginate from external providers). Every `DomainEvent` is authored by\njarvisd itself, and the web shell is served by the same binary — so producer\nand consumer share one contract version and can never skew. A tag the reader\ndoes not recognize is therefore a genuine bug we want surfaced as a decode\nerror, not silently dropped from a resync page. New variants are added\nadditively within a version (docs/05 §3).",
+      "oneOf": [
+        {
+          "properties": {
+            "runId": {
+              "$ref": "#/definitions/UlidString"
+            },
+            "sessionId": {
+              "$ref": "#/definitions/UlidString"
+            },
+            "type": {
+              "const": "run.started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "runId",
+            "sessionId"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "runId": {
+              "$ref": "#/definitions/UlidString"
+            },
+            "state": {
+              "$ref": "#/definitions/RunStateDto"
+            },
+            "type": {
+              "const": "run.state_changed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "runId",
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Degraded mode: the run is parked awaiting provider recovery (FR-12) —\na visible waiting state, replayed so a reconnecting client still sees it.",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "runId": {
+              "$ref": "#/definitions/UlidString"
+            },
+            "type": {
+              "const": "run.queued",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "runId",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "outcome": {
+              "$ref": "#/definitions/RunOutcome"
+            },
+            "runId": {
+              "$ref": "#/definitions/UlidString"
+            },
+            "type": {
+              "const": "run.completed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "runId",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "message": {
+              "$ref": "#/definitions/MessageDto"
+            },
+            "type": {
+              "const": "message.created",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "message"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "provider": {
+              "$ref": "#/definitions/ProviderDto"
+            },
+            "type": {
+              "const": "provider.health_changed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "provider"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Recovery checkpoint (NFR-05/13); replayed so resync reflects the last\nsafe boundary a restart would resume from.",
+          "properties": {
+            "runId": {
+              "$ref": "#/definitions/UlidString"
+            },
+            "state": {
+              "$ref": "#/definitions/RunStateDto"
+            },
+            "type": {
+              "const": "run.checkpoint_saved",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "runId",
+            "state"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "ErrorCode": {
       "enum": [
         "auth.invalid_token",
@@ -187,6 +326,45 @@
       ],
       "type": "object"
     },
+    "MessageDto": {
+      "properties": {
+        "content": {
+          "items": {
+            "$ref": "#/definitions/ContentBlock"
+          },
+          "type": "array"
+        },
+        "createdAt": {
+          "description": "RFC 3339.",
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "role": {
+          "$ref": "#/definitions/MessageRole"
+        },
+        "sessionId": {
+          "$ref": "#/definitions/UlidString"
+        }
+      },
+      "required": [
+        "id",
+        "sessionId",
+        "role",
+        "content",
+        "createdAt"
+      ],
+      "type": "object"
+    },
+    "MessageRole": {
+      "enum": [
+        "user",
+        "assistant",
+        "system"
+      ],
+      "type": "string"
+    },
     "PairRequest": {
       "properties": {
         "deviceName": {
@@ -266,6 +444,226 @@
       ],
       "type": "object"
     },
+    "ProviderDto": {
+      "properties": {
+        "id": {
+          "description": "Profile id, e.g. `claude-cli` (docs/03 §4).",
+          "type": "string"
+        },
+        "quota": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/QuotaState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "description": "Stable reason code only — never raw provider/driver text (docs/06 §5).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/ProviderState"
+        }
+      },
+      "required": [
+        "id",
+        "state"
+      ],
+      "type": "object"
+    },
+    "ProviderState": {
+      "oneOf": [
+        {
+          "enum": [
+            "healthy"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "degraded",
+          "description": "Reachable but degraded (e.g. rate-limited); runs may queue.",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "Unusable (quota exhausted / auth missing / network down); LLM runs queue.",
+          "type": "string"
+        }
+      ]
+    },
+    "ProvidersResponse": {
+      "properties": {
+        "providers": {
+          "items": {
+            "$ref": "#/definitions/ProviderDto"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "providers"
+      ],
+      "type": "object"
+    },
+    "QuotaState": {
+      "properties": {
+        "resetAt": {
+          "description": "RFC 3339 instant the quota/rate window resets, when the provider\nreports one — the user sees *when* service returns (docs/03 §4).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RunAck": {
+      "description": "Acknowledgement returned by `POST /sessions/{id}/messages` (docs/05 §1):\nthe run has been accepted and persisted; streaming follows on the WS.",
+      "properties": {
+        "runId": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "sessionId": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "state": {
+          "$ref": "#/definitions/RunStateDto"
+        }
+      },
+      "required": [
+        "runId",
+        "sessionId",
+        "state"
+      ],
+      "type": "object"
+    },
+    "RunBudgetDto": {
+      "description": "Per-run resource caps (docs/05 §4, NFR-12). Durations are seconds on the\nwire (JSON has no duration type).",
+      "properties": {
+        "maxArtifactBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxDurationSecs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxModelTurns": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxToolCalls": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "maxModelTurns",
+        "maxToolCalls",
+        "maxDurationSecs",
+        "maxArtifactBytes"
+      ],
+      "type": "object"
+    },
+    "RunDto": {
+      "properties": {
+        "budget": {
+          "$ref": "#/definitions/RunBudgetDto"
+        },
+        "createdAt": {
+          "description": "RFC 3339.",
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RunOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present only once the run is terminal."
+        },
+        "sessionId": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "state": {
+          "$ref": "#/definitions/RunStateDto"
+        },
+        "updatedAt": {
+          "description": "RFC 3339.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sessionId",
+        "state",
+        "budget",
+        "createdAt",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "RunOutcome": {
+      "description": "Terminal outcome of a run (docs/02 §4). `detail` is a short human sentence,\nnever raw provider/driver text (docs/06 §5).",
+      "properties": {
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/RunOutcomeKind"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "RunOutcomeKind": {
+      "enum": [
+        "completed",
+        "failed",
+        "cancelled"
+      ],
+      "type": "string"
+    },
+    "RunStateDto": {
+      "description": "Wire projection of `jarvis_domain::RunState` (docs/02 §4). The policy/tool/\napproval states exist on the wire from M1 but are only produced once their\nstep executors land in M2 — the shape is stable so clients need no change.",
+      "enum": [
+        "received",
+        "context_ready",
+        "model_running",
+        "policy_review",
+        "waiting_approval",
+        "tool_running",
+        "replanning",
+        "responding",
+        "completed",
+        "failed",
+        "cancelled"
+      ],
+      "type": "string"
+    },
     "ServiceStatus": {
       "oneOf": [
         {
@@ -337,6 +735,108 @@
         "archived"
       ],
       "type": "string"
+    },
+    "SubmitMessageRequest": {
+      "description": "Body of `POST /sessions/{id}/messages` (docs/05 §1). The idempotency key\nrides the `Idempotency-Key` header (docs/05 §2), not the body.",
+      "properties": {
+        "content": {
+          "items": {
+            "$ref": "#/definitions/ContentBlock"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "type": "object"
+    },
+    "TimelineItem": {
+      "description": "One persisted entry in a session's history.",
+      "oneOf": [
+        {
+          "properties": {
+            "message": {
+              "$ref": "#/definitions/MessageDto"
+            },
+            "type": {
+              "const": "message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "message"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Any persisted run event — the same [`DomainEvent`] that streamed live.",
+          "properties": {
+            "event": {
+              "$ref": "#/definitions/DomainEvent"
+            },
+            "type": {
+              "const": "run_event",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "event"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TimelineResponse": {
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/definitions/TimelineItem"
+          },
+          "type": "array"
+        },
+        "nextSince": {
+          "description": "Sequence cursor to pass as `since` for the next page / next resync;\nabsent when the snapshot reaches the head.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "TransientEvent": {
+      "description": "Disposable, never-replayed events (docs/05 §3 \"not persisted\"). A durable\nsnapshot (`DomainEvent`) always follows the work these describe. Dotted tags\nand strict (no-catch-all) decoding for the same reasons as [`DomainEvent`].",
+      "oneOf": [
+        {
+          "description": "One incremental chunk of streamed model output (FR-01).",
+          "properties": {
+            "runId": {
+              "$ref": "#/definitions/UlidString"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text.delta",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "runId",
+            "text"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "UlidString": {
       "description": "ULID: 26 chars of uppercase Crockford base32",

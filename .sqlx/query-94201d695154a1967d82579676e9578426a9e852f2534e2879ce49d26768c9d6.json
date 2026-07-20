@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT session_id, state, max_model_turns, max_tool_calls,\n                   max_duration_secs, max_artifact_bytes, used_model_turns,\n                   used_tool_calls, outcome_kind, outcome_detail,\n                   created_at, updated_at\n            FROM orchestration.runs WHERE id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "session_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "state",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "max_model_turns",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "max_tool_calls",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "max_duration_secs",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "max_artifact_bytes",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "used_model_turns",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "used_tool_calls",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "outcome_kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "outcome_detail",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "94201d695154a1967d82579676e9578426a9e852f2534e2879ce49d26768c9d6"
+}
