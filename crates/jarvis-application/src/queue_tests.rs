@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::health::{classify, HealthState};
+    use crate::health::{HealthState, classify};
     use crate::model::ModelError;
     use crate::orchestrator::RunInput;
     use crate::queue::{RunPriority, RunQueue};
@@ -66,7 +66,13 @@ mod tests {
                 session_id.clone(),
                 RunBudget::default_interactive(),
             );
-            queue.enqueue(run, RunInput { text: format!("q{}", i) }, RunPriority::Background);
+            queue.enqueue(
+                run,
+                RunInput {
+                    text: format!("q{}", i),
+                },
+                RunPriority::Background,
+            );
         }
 
         // Queue should have capacity 2, so first run should be evicted
@@ -94,11 +100,17 @@ mod tests {
                 session_id.clone(),
                 RunBudget::default_interactive(),
             );
-            queue.enqueue(run, RunInput { text: format!("q{}", i) }, RunPriority::Interactive);
+            queue.enqueue(
+                run,
+                RunInput {
+                    text: format!("q{}", i),
+                },
+                RunPriority::Interactive,
+            );
         }
 
-        // Interactive runs should all be queued (no capacity limit)
-        assert!(queue.len() >= 10 || queue.len() > 0); // At least some are queued
+        // Interactive runs are never evicted, so all 10 remain despite capacity 1.
+        assert_eq!(queue.len(), 10);
     }
 
     #[test]

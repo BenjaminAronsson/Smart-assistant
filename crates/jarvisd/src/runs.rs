@@ -60,6 +60,22 @@ use crate::ws::{EventReader, WsHub};
 const TIMELINE_DEFAULT_LIMIT: u32 = 200;
 const TIMELINE_MAX_LIMIT: u32 = 500;
 
+/// The prefix the orchestrator prepends to a run's outcome detail when the model
+/// provider was unavailable (see `jarvis_application::orchestrator`). The host
+/// strips this — trailing space included — to recover the bare reason string
+/// (e.g. `quota_exhausted: …`) that `health::classify` matches on. This is the
+/// one coupling point between the orchestrator's failure detail and the host's
+/// degraded-mode queueing; [`unavailable_reason`] is its single reader.
+const PROVIDER_UNAVAILABLE_PREFIX: &str = "provider unavailable: ";
+
+/// Recover the bare provider-error reason from a run's outcome detail, or `None`
+/// if the run did not fail for provider unavailability. Kept as a free function
+/// so the orchestrator↔host prefix contract is unit-testable without a full
+/// engine (the degraded-mode reason code is user-visible, docs/07 §2 trace 3).
+fn unavailable_reason(detail: &str) -> Option<&str> {
+    detail.strip_prefix(PROVIDER_UNAVAILABLE_PREFIX)
+}
+
 /// The host run engine: owns the orchestrator ports and the live-run registry.
 pub struct RunEngine {
     model: Arc<dyn ModelProvider>,
@@ -184,25 +200,26 @@ impl RunEngine {
             .instrument(span.clone())
             .await;
 
-        // F1.7: if the run failed due to provider unavailability, enqueue it instead of failing.
-        if terminal.state == RunState::Failed {
-            if let Some(outcome) = &terminal.outcome {
-                if let Some(detail) = &outcome.detail {
-                    if detail.starts_with("provider unavailable:") {
-                        // Record the error in health tracker
-                        self.health
-                            .record_error(&self.model.id(), &ModelError::Unavailable(
-                                detail[21..].to_owned(), // strip "provider unavailable: " prefix
-                            ));
-                        // Enqueue the run at ContextReady checkpoint for retry (F1.7).
-                        // F1.7 treats all queued runs as interactive (user-initiated).
-                        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
-                        queue.enqueue(terminal, input, RunPriority::Interactive);
-                        // Don't commit the assistant message; the run will retry when provider recovers
-                        return;
-                    }
-                }
-            }
+        // F1.7: if the run failed due to provider unavailability, enqueue it
+        // instead of failing. The orchestrator writes the detail as
+        // "provider unavailable: <reason>" (orchestrator.rs); stripping the full
+        // prefix INCLUDING the trailing space recovers the bare reason string
+        // ("quota_exhausted: …") so `classify` can match its prefix — a leading
+        // space would fall through to the generic "unavailable" reason code.
+        if terminal.state == RunState::Failed
+            && let Some(outcome) = &terminal.outcome
+            && let Some(detail) = &outcome.detail
+            && let Some(reason) = unavailable_reason(detail)
+        {
+            // Record the error in the health tracker (drives the providers endpoint).
+            let error = ModelError::Unavailable(reason.to_owned());
+            self.health.record_error(&self.model.id(), &error);
+            // Enqueue the run for retry when the profile recovers (F1.7). All
+            // queued runs are interactive (user-initiated) in M1.
+            let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+            queue.enqueue(terminal, input, RunPriority::Interactive);
+            // Don't commit an assistant message; the run retries on recovery.
+            return;
         }
 
         if terminal.state == RunState::Completed {
@@ -613,7 +630,11 @@ pub async fn get_providers(
         id: model_id.0.clone(),
         state: wire_state,
         quota: None, // F1.7 does not track quota windows yet
-        reason: if reason.is_empty() { None } else { Some(reason) },
+        reason: if reason.is_empty() {
+            None
+        } else {
+            Some(reason)
+        },
     };
 
     Ok(Json(jarvis_contracts::providers::ProvidersResponse {
@@ -769,5 +790,34 @@ mod tests {
     fn unrecognized_event_type_is_skipped_not_fatal() {
         let record = row(4, "run.mystery_future_event", json!({ "runId": RUN }));
         assert!(timeline_item(&record).is_none());
+    }
+
+    // The orchestrator↔host contract: the detail the orchestrator writes on a
+    // provider-unavailable failure must strip back to the bare reason so
+    // `classify` recovers the specific reason code (not the generic fallback).
+    // Regression for the off-by-one that left a leading space and collapsed
+    // every degraded-mode reason to "unavailable".
+    #[test]
+    fn unavailable_reason_round_trips_through_classify() {
+        use jarvis_application::health::{HealthState, classify};
+        use jarvis_application::model::ModelError;
+
+        // Exactly what jarvis_application::orchestrator formats.
+        let detail = "provider unavailable: quota_exhausted: reset in 60s";
+        let reason = unavailable_reason(detail).expect("recognized as unavailable");
+        assert_eq!(reason, "quota_exhausted: reset in 60s", "no leading space");
+
+        let (state, code) = classify(&ModelError::Unavailable(reason.to_owned()));
+        assert_eq!(state, HealthState::Unavailable);
+        assert_eq!(
+            code, "quota_exhausted",
+            "specific reason code, not fallback"
+        );
+    }
+
+    #[test]
+    fn unavailable_reason_ignores_non_provider_failures() {
+        // A budget-exhaustion detail must not be mistaken for a queueable error.
+        assert!(unavailable_reason("budget exhausted: ModelTurns").is_none());
     }
 }

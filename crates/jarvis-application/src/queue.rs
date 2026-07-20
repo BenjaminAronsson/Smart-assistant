@@ -46,7 +46,11 @@ impl RunQueue {
     /// Enqueue a run. Interactive runs are unlimited; background runs are capped
     /// and oldest background run is evicted if limit exceeded.
     pub fn enqueue(&mut self, run: Run, input: RunInput, priority: RunPriority) {
-        let queued = QueuedRun { run, input, priority };
+        let queued = QueuedRun {
+            run,
+            input,
+            priority,
+        };
         match priority {
             RunPriority::Interactive => {
                 self.interactive.push_back(queued);

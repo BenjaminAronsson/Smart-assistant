@@ -286,8 +286,7 @@ async fn quota_exhausted_marks_provider_unavailable() {
 // Golden trace 3 (F1.7): auth failure also marks provider unavailable
 #[tokio::test]
 async fn auth_failure_marks_provider_unavailable() {
-    let model =
-        FakeModel::fails_open(ModelError::Unavailable("auth_failed: invalid token".into()));
+    let model = FakeModel::fails_open(ModelError::Unavailable("auth_failed: invalid token".into()));
     let asm = EchoAssembler;
     let cp = RecordingCheckpointer::default();
     let sink = RecordingSink::default();
@@ -304,11 +303,7 @@ async fn auth_failure_marks_provider_unavailable() {
         )
         .await;
 
-    let detail = final_run
-        .outcome
-        .expect("terminal outcome")
-        .detail
-        .unwrap();
+    let detail = final_run.outcome.expect("terminal outcome").detail.unwrap();
     assert!(detail.contains("provider unavailable:"));
     assert!(detail.contains("auth_failed"));
 }
@@ -318,8 +313,9 @@ async fn auth_failure_marks_provider_unavailable() {
 #[tokio::test]
 async fn golden_trace_3_degraded_mode_flow() {
     // First attempt: provider quota exhausted
-    let quota_err_model =
-        FakeModel::fails_open(ModelError::Unavailable("quota_exhausted: reset in 60s".into()));
+    let quota_err_model = FakeModel::fails_open(ModelError::Unavailable(
+        "quota_exhausted: reset in 60s".into(),
+    ));
     let asm = EchoAssembler;
     let cp = RecordingCheckpointer::default();
     let sink = RecordingSink::default();
@@ -342,11 +338,13 @@ async fn golden_trace_3_degraded_mode_flow() {
     assert_eq!(first_attempt.state, RunState::Failed);
     let outcome = first_attempt.outcome.expect("terminal outcome");
     assert_eq!(outcome.kind, RunOutcomeKind::Failed);
-    assert!(outcome
-        .detail
-        .as_ref()
-        .unwrap()
-        .contains("provider unavailable:"));
+    assert!(
+        outcome
+            .detail
+            .as_ref()
+            .unwrap()
+            .contains("provider unavailable:")
+    );
 
     // Simulate provider recovery: second model succeeds
     let recovery_model = FakeModel::streaming(["Sunny and ", "warm."]);
@@ -383,17 +381,11 @@ async fn restart_recovery_redrives_from_checkpoint() {
     let original_model = FakeModel::streaming(["Hello", " world"]);
     let orch1 = orchestrator(&original_model, &asm, &original_cp, &sink1, &clock);
 
-    let input = RunInput {
-        text: "hi".into(),
-    };
+    let input = RunInput { text: "hi".into() };
     let run = new_run(RunBudget::default_interactive());
 
     let first = orch1
-        .drive(
-            run.clone(),
-            input.clone(),
-            CancellationToken::new(),
-        )
+        .drive(run.clone(), input.clone(), CancellationToken::new())
         .await;
 
     assert_eq!(first.state, RunState::Completed);
@@ -410,13 +402,7 @@ async fn restart_recovery_redrives_from_checkpoint() {
     let recovery_model = FakeModel::streaming(["Hello", " world"]);
     let orch2 = orchestrator(&recovery_model, &asm, &recovery_cp, &sink2, &clock);
 
-    let second = orch2
-        .drive(
-            run,
-            input,
-            CancellationToken::new(),
-        )
-        .await;
+    let second = orch2.drive(run, input, CancellationToken::new()).await;
 
     // Re-drive from checkpoint produces the same result (idempotent)
     assert_eq!(second.state, RunState::Completed);

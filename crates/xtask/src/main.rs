@@ -28,7 +28,7 @@ fn golden() -> anyhow::Result<()> {
     println!("  Trace 3: quota-exhausted → degraded mode → recovery");
 
     let status = Command::new("cargo")
-        .args(&["test", "--lib", "orchestrator_tests", "--", "--nocapture"])
+        .args(["test", "--lib", "orchestrator_tests", "--", "--nocapture"])
         .status()?;
 
     if !status.success() {
@@ -36,7 +36,7 @@ fn golden() -> anyhow::Result<()> {
     }
 
     let status = Command::new("cargo")
-        .args(&["test", "--lib", "queue_tests", "--", "--nocapture"])
+        .args(["test", "--lib", "queue_tests", "--", "--nocapture"])
         .status()?;
 
     if !status.success() {

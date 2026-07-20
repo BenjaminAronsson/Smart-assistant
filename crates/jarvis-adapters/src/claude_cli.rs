@@ -111,10 +111,9 @@ impl ModelProvider for ClaudeCliModel {
                 ModelError::Unavailable(format!("network_error: failed to spawn claude: {}", e))
             })?;
 
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| ModelError::Unavailable("network_error: failed to capture stdin".to_owned()))?;
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            ModelError::Unavailable("network_error: failed to capture stdin".to_owned())
+        })?;
 
         // Send the request as JSON over stdin.
         let request_json = json!({
@@ -138,10 +137,9 @@ impl ModelProvider for ClaudeCliModel {
             )));
         }
 
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| ModelError::Unavailable("network_error: failed to capture stdout".to_owned()))?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            ModelError::Unavailable("network_error: failed to capture stdout".to_owned())
+        })?;
 
         // Read streaming events from stdout using unfold to create a boxed stream.
         let stream = unfold(ReadState::new(child, stdout, cancel), |state| async move {
