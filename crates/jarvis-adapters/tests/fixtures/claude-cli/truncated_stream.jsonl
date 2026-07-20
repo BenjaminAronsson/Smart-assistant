@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"sess_fixture","tools":[]}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}}

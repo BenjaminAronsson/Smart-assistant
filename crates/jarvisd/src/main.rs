@@ -56,7 +56,10 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     spawn_signal_listener(serve_shutdown.clone());
 
     let engine = RunEngine::new(
-        Arc::new(ClaudeCliModel::new("claude-cli")),
+        Arc::new(ClaudeCliModel::with_config(
+            "claude-cli",
+            config.providers.claude_cli.to_adapter(),
+        )),
         Arc::new(PassthroughAssembler),
         run_store.clone(),
         message_store.clone(),

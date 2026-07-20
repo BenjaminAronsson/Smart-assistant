@@ -1,0 +1,4 @@
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}}
+{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"max_tokens","stop_sequence":null}}}
+{"type":"stream_event","event":{"type":"message_stop"}}
+{"type":"result","subtype":"success","is_error":false,"result":"Hello","session_id":"sess_fixture"}

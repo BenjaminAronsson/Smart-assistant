@@ -18,6 +18,7 @@ pub struct Config {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub observability: ObservabilityConfig,
+    pub providers: ProvidersConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +47,48 @@ pub struct ObservabilityConfig {
     pub otlp_endpoint: Option<String>,
 }
 
+/// Model/embedding provider configuration (docs/09 §1 `[providers.*]`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvidersConfig {
+    #[serde(rename = "claude-cli")]
+    pub claude_cli: ClaudeCliConfig,
+}
+
+/// `[providers.claude-cli]` (docs/09 §1, ADR-004). The reasoning-profile CLI
+/// adapter's spawn contract: binary, controlled workdir, built-in tools disabled.
+///
+/// Unknown keys are tolerated (no `deny_unknown_fields`) because docs/09 §1
+/// documents the full block — `enabled`, `timeout_secs`, `single_flight`,
+/// `backoff_initial_secs`, `backoff_max_secs` — but those are host-level health
+/// /single-flight concerns wired in F1.7, not the adapter's spawn contract. They
+/// are modelled here when that wiring lands.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeCliConfig {
+    /// The CLI binary, resolved on the PATH of the service user.
+    pub binary: String,
+    /// Controlled working directory the process is spawned in (ADR-004).
+    pub workdir: PathBuf,
+    /// Reasoning profile disables the CLI's built-in tools — Jarvis tools are the
+    /// only action path (invariant 1, ADR-004/014).
+    pub reasoning_disable_builtin_tools: bool,
+    /// Idle read timeout in seconds: no event within this window ⇒ unhealthy.
+    pub idle_timeout_secs: u64,
+}
+
+impl ClaudeCliConfig {
+    /// Map to the adapter's spawn config (`jarvis-adapters`). Kept here so the
+    /// adapter never depends on the host's config types.
+    pub fn to_adapter(&self) -> jarvis_adapters::claude_cli::ClaudeCliConfig {
+        jarvis_adapters::claude_cli::ClaudeCliConfig {
+            binary: self.binary.clone(),
+            workdir: self.workdir.clone(),
+            disable_builtin_tools: self.reasoning_disable_builtin_tools,
+            idle_timeout: std::time::Duration::from_secs(self.idle_timeout_secs),
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -59,6 +102,15 @@ impl Default for Config {
             },
             observability: ObservabilityConfig {
                 otlp_endpoint: None,
+            },
+            providers: ProvidersConfig {
+                // Mirrors the documented `[providers.claude-cli]` defaults (docs/09 §1).
+                claude_cli: ClaudeCliConfig {
+                    binary: "claude".into(),
+                    workdir: PathBuf::from("/var/lib/jarvis/claude-work"),
+                    reasoning_disable_builtin_tools: true,
+                    idle_timeout_secs: 60,
+                },
             },
         }
     }
@@ -153,5 +205,44 @@ pub fn resolve_secret_ref_with(
              the value is withheld from this message",
             scheme_of(reference)
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_carry_the_documented_claude_cli_config() {
+        let config = Config::from_figment(Figment::new()).expect("defaults are valid");
+        let cli = config.providers.claude_cli;
+        assert_eq!(cli.binary, "claude");
+        assert_eq!(cli.workdir, PathBuf::from("/var/lib/jarvis/claude-work"));
+        assert!(cli.reasoning_disable_builtin_tools);
+        assert_eq!(cli.idle_timeout_secs, 60);
+    }
+
+    #[test]
+    fn kebab_section_overrides_and_tolerates_unwired_f17_keys() {
+        // `[providers.claude-cli]` is kebab-cased in TOML (docs/09 §1); the
+        // still-unwired F1.7 keys (`timeout_secs`, `single_flight`, `backoff_*`)
+        // must not fail the parse.
+        let toml = r#"
+            [providers.claude-cli]
+            binary = "claude-test"
+            workdir = "/tmp/jarvis-work"
+            reasoning_disable_builtin_tools = false
+            idle_timeout_secs = 90
+            timeout_secs = 300
+            single_flight = true
+            backoff_initial_secs = 30
+        "#;
+        let config = Config::from_figment(Figment::new().merge(Toml::string(toml)))
+            .expect("documented block parses");
+        let adapter = config.providers.claude_cli.to_adapter();
+        assert_eq!(adapter.binary, "claude-test");
+        assert_eq!(adapter.workdir, PathBuf::from("/tmp/jarvis-work"));
+        assert!(!adapter.disable_builtin_tools);
+        assert_eq!(adapter.idle_timeout, std::time::Duration::from_secs(90));
     }
 }

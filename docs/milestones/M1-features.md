@@ -95,14 +95,22 @@ contracts; Sonnet for infra/adapter/web volume).
   kill process group + reap + assert no zombie (fake sleeping CLI). Implements
   `ModelProvider` only. Refs: FR-03/11, NFR-08, ADR-004/011. Read: docs/03 §4, docs/05 §4;
   skill `provider-adapter`. Deps: F1.3. security-auditor + rust-reviewer mandatory.
-  **Sync-docs note (2026-07-20):** as merged, `crates/jarvis-adapters/src/claude_cli.rs`
-  spawns `claude api messages stream --no-limit` with a hand-built Messages-API JSON
-  body and a hardcoded model string — not the `claude -p --output-format stream-json`
-  invocation this spec and ADR-004 describe — and sets no controlled workdir and no
-  built-in-tools-disable flag. No `tests/fixtures/claude-cli/` fixtures or unit tests
-  exist for the parser. Flagged BLOCKING in the `/sync-docs` run for human decision
-  (fix to match ADR-004, or a superseding ADR if the new invocation is intentional);
-  not corrected here per the ADR-wins-over-code-silently-fixed rule.
+  **Sync-docs note (2026-07-20):** the `/sync-docs` run flagged a BLOCKING drift — as
+  originally merged, `claude_cli.rs` spawned `claude api messages stream --no-limit` with
+  a hand-built Messages-API body and a hardcoded model string, no controlled workdir, and
+  no tool-disable flag, contradicting ADR-004. **Resolved (2026-07-20):** the adapter was
+  rewritten to the ADR-004 invocation — `claude -p --output-format stream-json --verbose
+  --include-partial-messages` in the configured `[providers.claude-cli] workdir`, built-in
+  tools disabled (`--allowedTools ""`), prompt on stdin, no model string. The CLI
+  stream-json envelope parser is now covered by fixtures in `tests/fixtures/claude-cli/`
+  and pure `classify_line` unit tests, and `[providers.claude-cli]` is wired through
+  `jarvisd::config`. **Residual (owed):** fixtures are hand-authored from the documented
+  envelope, not a live capture — one real sample must be recorded and diffed to confirm
+  the `--include-partial-messages` shape and the `--allowedTools` disable semantics on the
+  installed CLI version (see the fixtures README). Fine-grained health classification
+  (QuotaExhausted/AuthMissing/RateLimited) and the fake-sleeping-CLI cancellation test
+  remain F1.7/M2 follow-ups. security-auditor + rust-reviewer review of this fix is still
+  owed before DoD.
 
 - [x] **F1.7 — Degraded mode: run queue + provider health + providers endpoint** · *Sonnet*
   Application-layer run queue (interactive > background FIFO, single-flight honored);
