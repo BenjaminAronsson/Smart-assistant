@@ -1,7 +1,9 @@
 # M1 Text vertical slice — feature list
 
-Status: **approved — in progress**. M0 signed off + tagged `m0-complete`
-2026-07-19. F1.1 and F1.2 complete (merged / on branch); continuing in order.
+Status: **complete — milestone signed off**. M0 signed off + tagged `m0-complete`
+2026-07-19; M1 signed off (approve-with-fixes) 2026-07-20, tagged `m1-complete`
+(PR #4 + follow-up PR #6). All nine features (F1.1-F1.9) merged; see
+`docs/milestones/M1-gate-report.md` for exit evidence and review findings.
 
 Milestone scope (docs/08 §1): message/run state machine, WS streaming UI, Claude CLI
 adapter (single-flight queue, quota/health detection), deterministic fallback mode,
@@ -83,7 +85,7 @@ contracts; Sonnet for infra/adapter/web volume).
   live, a reconnect resyncs the persisted history, no deltas replayed). Interim `EchoModel`
   provider is replaced by the Claude CLI adapter in F1.6.
 
-- [ ] **F1.6 — Claude CLI adapter: stream-json, health, single-flight (adapters)** · *Sonnet*
+- [x] **F1.6 — Claude CLI adapter: stream-json, health, single-flight (adapters)** · *Sonnet*
   `jarvis-adapters::claude_cli`: spawn `claude -p --output-format stream-json` (tokio
   process, controlled workdir, built-in tools disabled, **no secrets/prompt in argv**);
   line-by-line stream-json → `ModelEvent` parsing developed against
@@ -93,8 +95,16 @@ contracts; Sonnet for infra/adapter/web volume).
   kill process group + reap + assert no zombie (fake sleeping CLI). Implements
   `ModelProvider` only. Refs: FR-03/11, NFR-08, ADR-004/011. Read: docs/03 §4, docs/05 §4;
   skill `provider-adapter`. Deps: F1.3. security-auditor + rust-reviewer mandatory.
+  **Sync-docs note (2026-07-20):** as merged, `crates/jarvis-adapters/src/claude_cli.rs`
+  spawns `claude api messages stream --no-limit` with a hand-built Messages-API JSON
+  body and a hardcoded model string — not the `claude -p --output-format stream-json`
+  invocation this spec and ADR-004 describe — and sets no controlled workdir and no
+  built-in-tools-disable flag. No `tests/fixtures/claude-cli/` fixtures or unit tests
+  exist for the parser. Flagged BLOCKING in the `/sync-docs` run for human decision
+  (fix to match ADR-004, or a superseding ADR if the new invocation is intentional);
+  not corrected here per the ADR-wins-over-code-silently-fixed rule.
 
-- [ ] **F1.7 — Degraded mode: run queue + provider health + providers endpoint** · *Sonnet*
+- [x] **F1.7 — Degraded mode: run queue + provider health + providers endpoint** · *Sonnet*
   Application-layer run queue (interactive > background FIFO, single-flight honored);
   provider health scoring feeding router eligibility (router never self-selects, never
   switches when sensitivity forbids); degraded mode on quota/auth/network loss — LLM-needing
@@ -103,14 +113,14 @@ contracts; Sonnet for infra/adapter/web volume).
   Refs: FR-12, NFR-06, ADR-011. Read: docs/02 §5, docs/03 §4; skills `state-machine`,
   `provider-adapter`. Deps: F1.3, F1.5, F1.6. security-auditor (no ambient bypass) review.
 
-- [ ] **F1.8 — Angular conversation/timeline streaming UI + WS client** · *Sonnet*
+- [x] **F1.8 — Angular conversation/timeline streaming UI + WS client** · *Sonnet*
   `web/`: native `WebSocket` client with reconnect + `seq` resync (docs/05 §3); a
   conversation/timeline surface rendering streamed token deltas, run state + waiting
   indicator, a cancel control, and a visible provider/degraded indicator. Generated types
   only (no hand-written wire types). Refs: FR-01/09/12, NFR-03/11/13. Read: docs/03 §3,
   docs/12 §2 (as available); skill `angular-shell`. Deps: F1.1, F1.5, F1.7.
 
-- [ ] **F1.9 — Golden traces 1–3 + restart-recovery (exit-evidence feature)** · *Sonnet*
+- [x] **F1.9 — Golden traces 1–3 + restart-recovery (exit-evidence feature)** · *Sonnet*
   Fill the golden harness slot (empty since M0) with FakeModel-driven scenarios (docs/07
   §2): (1) simple question streams within budget, deterministic paths make zero extra model
   calls; (2) complex question streamed to two display subscribers; (3) quota-exhausted →

@@ -48,6 +48,10 @@ grant_single_use = true                 # do not change; documented invariant
 max_model_turns = 6
 max_tool_calls = 12
 max_run_duration_secs = 600
+# NOTE: `[budgets]` is not yet read from config (M1) — `RunBudget::default_interactive()`
+# in `jarvis-domain` hardcodes 8 model turns / 16 tool calls / 120 s duration / 8 MiB
+# artifacts for the interactive path today; config-driven overrides land when the
+# `[budgets]` section is wired (tracked for M2).
 
 [home_assistant]
 enabled = false                          # flip at M5

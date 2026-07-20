@@ -10,10 +10,11 @@ All exit evidence demonstrated; gate suite green. Two reviews returned no blocki
 against the invariants. Findings and deviations are recorded below (§3, §4).
 
 - **Milestone:** M1 Text vertical slice (docs/08 §1)
-- **Branch:** `claude/milestone-cny833-e3omzt` (PR #4)
+- **Branch:** `claude/milestone-cny833-e3omzt` (PR #4; follow-up fixes in PR #6)
 - **Date:** 2026-07-20
 - **Head commit at gate:** `94877bd`
 - **Previous gate tag:** `m0-complete` (M0 signed off 2026-07-19)
+- **Gate tag:** `m1-complete` (applied after PR #6 merge, commit `b6febe9`)
 - **Gate driver model:** Opus 4.8 (strong-model work per CLAUDE.md)
 
 ---
@@ -129,6 +130,7 @@ Eight failing CLAUDE.md gates (clippy, fmt, web lint, web build budget) were als
 - [x] **Owner approved M1 exit evidence** (§1) and deviations D1, D2 (§4) — "approve-with-fixes", 2026-07-20.
 - [x] PR #4 merged to `main` (merge `8f78dc4`); M1 row checked in docs/08 §1.
 - [x] Required follow-up fixes applied (§8); §5 remaining items carried into the M2 feature list.
+- [x] Follow-up fixes merged via PR #6 (merge `b6febe9`); milestone tagged `m1-complete`.
 
 ---
 

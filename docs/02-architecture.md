@@ -346,10 +346,15 @@ selects *which* sources; this governs *how* their claims are voiced.
 | Home Assistant | existing instance | Dedicated token, allowlisted capabilities. |
 | Tool/browser/coding workers | per-trust containers | Read-only mounts default; CPU/mem/time/network limits. |
 
-Startup order: Postgres healthy + migrations → `jarvisd` starts (degraded mode if optional
-adapters absent) → UI + agent connect; health page shows adapter states → local
-model/voice/HA adapters register asynchronously and update routing eligibility → scheduled
-work runs only when its required capabilities are healthy.
+Startup order: Postgres migrations are applied by ops (`sqlx migrate run`) before
+`jarvisd` starts. **Implementation note (M0/M1):** `jarvisd` itself starts even if
+Postgres is unreachable at boot — it uses a lazy connection pool and reports the
+database as a degraded adapter on the health endpoint rather than failing to start
+(`crates/jarvisd/src/main.rs`, `jarvis-infra::db::connect_lazy`); a restart re-runs
+pairing bootstrap once the database is reachable. UI + agent connect; health page shows
+adapter states → local model/voice/HA adapters register asynchronously and update
+routing eligibility → scheduled work runs only when its required capabilities are
+healthy.
 
 ## 13. Whole-house evolution
 
