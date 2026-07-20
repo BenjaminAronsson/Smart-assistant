@@ -6,7 +6,7 @@
 //! never rows; the mapping lives here.
 
 use jarvis_application::orchestrator::{CheckpointError, Checkpointer};
-use jarvis_application::ports::{RepositoryError, RunStore};
+use jarvis_application::ports::{RepositoryError, RunStore, RunView};
 use jarvis_domain::ids::{RunId, SessionId};
 use jarvis_domain::run::{Run, RunBudget, RunOutcome, RunOutcomeKind, RunState, RunUsage};
 use serde_json::json;
@@ -67,11 +67,16 @@ impl RunStore for PgRunStore {
     }
 
     async fn load(&self, id: &RunId) -> Result<Option<Run>, RepositoryError> {
+        Ok(self.view(id).await?.map(|v| v.run))
+    }
+
+    async fn view(&self, id: &RunId) -> Result<Option<RunView>, RepositoryError> {
         let row = sqlx::query!(
             r#"
             SELECT session_id, state, max_model_turns, max_tool_calls,
                    max_duration_secs, max_artifact_bytes, used_model_turns,
-                   used_tool_calls, outcome_kind, outcome_detail
+                   used_tool_calls, outcome_kind, outcome_detail,
+                   created_at, updated_at
             FROM orchestration.runs WHERE id = $1
             "#,
             id.as_str(),
@@ -83,30 +88,111 @@ impl RunStore for PgRunStore {
         let Some(r) = row else {
             return Ok(None);
         };
-        let session_id: SessionId = r
-            .session_id
-            .parse()
-            .map_err(|e| RepositoryError::Storage(format!("stored session id invalid: {e}")))?;
-        Ok(Some(Run {
+        let run = build_run(RunRow {
             id: id.clone(),
-            session_id,
-            state: state_from(&r.state)?,
-            budget: RunBudget {
-                max_model_turns: u8::try_from(r.max_model_turns).unwrap_or(u8::MAX),
-                max_tool_calls: u16::try_from(r.max_tool_calls).unwrap_or(u16::MAX),
-                max_duration: Duration::from_secs(u64::try_from(r.max_duration_secs).unwrap_or(0)),
-                max_artifact_bytes: u64::try_from(r.max_artifact_bytes).unwrap_or(0),
-            },
-            usage: RunUsage {
-                model_turns: u8::try_from(r.used_model_turns).unwrap_or(u8::MAX),
-                tool_calls: u16::try_from(r.used_tool_calls).unwrap_or(u16::MAX),
-                // Recomputed by the orchestrator from the run start on resume.
-                elapsed: Duration::ZERO,
-                artifact_bytes: 0,
-            },
-            outcome: outcome_from(r.outcome_kind.as_deref(), r.outcome_detail)?,
+            session_id: r.session_id,
+            state: r.state,
+            max_model_turns: r.max_model_turns,
+            max_tool_calls: r.max_tool_calls,
+            max_duration_secs: r.max_duration_secs,
+            max_artifact_bytes: r.max_artifact_bytes,
+            used_model_turns: r.used_model_turns,
+            used_tool_calls: r.used_tool_calls,
+            outcome_kind: r.outcome_kind,
+            outcome_detail: r.outcome_detail,
+        })?;
+        Ok(Some(RunView {
+            run,
+            created_at: r.created_at.into(),
+            updated_at: r.updated_at.into(),
         }))
     }
+
+    async fn load_unfinished(&self) -> Result<Vec<Run>, RepositoryError> {
+        // Non-terminal == no recorded outcome (the outcome is written exactly on
+        // the terminal transition). Oldest-first so recovery is deterministic.
+        // Runs once at startup (docs/02 §12); the result is bounded by how many
+        // runs were in flight at the last crash — a handful in M1 (single-flight
+        // lands in F1.6). If concurrent-run scale grows this should page (LIMIT +
+        // cursor) rather than load every row (perf-warden F1.5 advisory).
+        let rows = sqlx::query!(
+            r#"
+            SELECT id, session_id, state, max_model_turns, max_tool_calls,
+                   max_duration_secs, max_artifact_bytes, used_model_turns,
+                   used_tool_calls, outcome_kind, outcome_detail
+            FROM orchestration.runs
+            WHERE outcome_kind IS NULL
+            ORDER BY created_at ASC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+
+        rows.into_iter()
+            .map(|r| {
+                let id: RunId = r
+                    .id
+                    .parse()
+                    .map_err(|e| RepositoryError::Storage(format!("stored run id invalid: {e}")))?;
+                build_run(RunRow {
+                    id,
+                    session_id: r.session_id,
+                    state: r.state,
+                    max_model_turns: r.max_model_turns,
+                    max_tool_calls: r.max_tool_calls,
+                    max_duration_secs: r.max_duration_secs,
+                    max_artifact_bytes: r.max_artifact_bytes,
+                    used_model_turns: r.used_model_turns,
+                    used_tool_calls: r.used_tool_calls,
+                    outcome_kind: r.outcome_kind,
+                    outcome_detail: r.outcome_detail,
+                })
+            })
+            .collect()
+    }
+}
+
+/// The persisted columns of a run row, shared by the read paths so the
+/// row → domain mapping lives in exactly one place.
+struct RunRow {
+    id: RunId,
+    session_id: String,
+    state: String,
+    max_model_turns: i32,
+    max_tool_calls: i32,
+    max_duration_secs: i64,
+    max_artifact_bytes: i64,
+    used_model_turns: i32,
+    used_tool_calls: i32,
+    outcome_kind: Option<String>,
+    outcome_detail: Option<String>,
+}
+
+fn build_run(r: RunRow) -> Result<Run, RepositoryError> {
+    let session_id: SessionId = r
+        .session_id
+        .parse()
+        .map_err(|e| RepositoryError::Storage(format!("stored session id invalid: {e}")))?;
+    Ok(Run {
+        id: r.id,
+        session_id,
+        state: state_from(&r.state)?,
+        budget: RunBudget {
+            max_model_turns: u8::try_from(r.max_model_turns).unwrap_or(u8::MAX),
+            max_tool_calls: u16::try_from(r.max_tool_calls).unwrap_or(u16::MAX),
+            max_duration: Duration::from_secs(u64::try_from(r.max_duration_secs).unwrap_or(0)),
+            max_artifact_bytes: u64::try_from(r.max_artifact_bytes).unwrap_or(0),
+        },
+        usage: RunUsage {
+            model_turns: u8::try_from(r.used_model_turns).unwrap_or(u8::MAX),
+            tool_calls: u16::try_from(r.used_tool_calls).unwrap_or(u16::MAX),
+            // Recomputed by the orchestrator from the run start on resume.
+            elapsed: Duration::ZERO,
+            artifact_bytes: 0,
+        },
+        outcome: outcome_from(r.outcome_kind.as_deref(), r.outcome_detail)?,
+    })
 }
 
 #[async_trait::async_trait]

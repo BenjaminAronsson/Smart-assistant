@@ -88,16 +88,26 @@ impl AppState {
     }
 }
 
+/// The authenticated run surface (docs/05 §1): the run REST endpoints and the
+/// WebSocket hub, wired together (both share the engine + hub). Passed as a unit
+/// so a caller cannot mount the REST routes without the matching WS route.
+pub struct RunWiring {
+    pub runs: crate::runs::RunApi,
+    pub ws: crate::ws::WsState,
+}
+
 pub fn router(state: AppState) -> Router {
-    router_with(state, None, None)
+    router_with(state, None, None, None)
 }
 
 /// Full router: unauthenticated surface (loopback health + pair), the
-/// authenticated session API behind the bearer middleware, and optional
-/// static web assets (docs/03 §3: Angular built assets served by jarvisd).
+/// authenticated session/run APIs + WebSocket hub behind the bearer middleware,
+/// and optional static web assets (docs/03 §3: Angular built assets served by
+/// jarvisd).
 pub fn router_with(
     state: AppState,
     sessions: Option<crate::sessions::SessionApi>,
+    runs: Option<RunWiring>,
     web_assets: Option<std::path::PathBuf>,
 ) -> Router {
     // Health and pair are unauthenticated by design but loopback-only:
@@ -108,20 +118,49 @@ pub fn router_with(
             "/api/v1/auth/pair",
             axum::routing::post(crate::auth::pair).with_state(auth.clone()),
         );
+        // One protected sub-router merges every authenticated surface (each
+        // keeps its own typed state); the bearer middleware wraps them once.
+        let mut protected = Router::new();
         if let Some(api) = sessions {
-            let protected = Router::new()
-                .route(
-                    "/api/v1/sessions",
-                    axum::routing::post(crate::sessions::create).get(crate::sessions::list),
-                )
-                .route("/api/v1/sessions/{id}", get(crate::sessions::get))
-                .with_state(api)
-                .layer(axum::middleware::from_fn_with_state(
-                    auth.clone(),
-                    crate::auth::require_device,
-                ));
-            router = router.merge(protected);
+            protected = protected.merge(
+                Router::new()
+                    .route(
+                        "/api/v1/sessions",
+                        axum::routing::post(crate::sessions::create).get(crate::sessions::list),
+                    )
+                    .route("/api/v1/sessions/{id}", get(crate::sessions::get))
+                    .with_state(api),
+            );
         }
+        if let Some(RunWiring { runs, ws }) = runs {
+            protected = protected
+                .merge(
+                    Router::new()
+                        .route(
+                            "/api/v1/sessions/{id}/messages",
+                            axum::routing::post(crate::runs::submit_message),
+                        )
+                        .route(
+                            "/api/v1/sessions/{id}/timeline",
+                            get(crate::runs::get_timeline),
+                        )
+                        .route("/api/v1/runs/{id}", get(crate::runs::get_run))
+                        .route(
+                            "/api/v1/runs/{id}/cancel",
+                            axum::routing::post(crate::runs::cancel_run),
+                        )
+                        .with_state(runs),
+                )
+                .merge(
+                    Router::new()
+                        .route("/ws/v1", get(crate::ws::ws_upgrade))
+                        .with_state(ws),
+                );
+        }
+        router = router.merge(protected.layer(axum::middleware::from_fn_with_state(
+            auth.clone(),
+            crate::auth::require_device,
+        )));
     }
     if let Some(assets) = web_assets {
         // Unknown API paths must stay problem-body 404s — only non-API paths

@@ -13,14 +13,18 @@
 use serde_json::Value;
 use sqlx::PgPool;
 use sqlx::postgres::PgListener;
+use time::OffsetDateTime;
 use tokio_util::sync::CancellationToken;
 
-/// One committed outbox event handed to the publisher.
+/// One committed outbox event handed to the publisher. `created_at` is the row's
+/// commit timestamp — the true occurrence time the WS/timeline surface as
+/// `occurredAt`, so a replayed event keeps its original time rather than "now".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutboxRecord {
     pub id: i64,
     pub event_type: String,
     pub payload: Value,
+    pub created_at: OffsetDateTime,
 }
 
 /// A publisher failure (e.g. the WS hub could not accept the event). Returning
@@ -62,8 +66,11 @@ impl OutboxDispatcher {
     }
 
     /// Run until `cancel` fires. Drains the backlog once, then reacts to each
-    /// `NOTIFY`. Returns `Ok(())` on cancellation; a database/listener error
-    /// ends the loop with `Err` (the host restarts it).
+    /// `NOTIFY`. On cancellation it drains ONE more time before returning, so
+    /// events committed during a graceful shutdown (e.g. a run's terminal
+    /// `run.completed`) are still published live rather than only recovered by a
+    /// later `since`/timeline resync. A database/listener error ends the loop
+    /// with `Err` (the host restarts it).
     pub async fn run(
         &self,
         publisher: &dyn OutboxPublisher,
@@ -78,7 +85,8 @@ impl OutboxDispatcher {
         loop {
             tokio::select! {
                 biased;
-                _ = cancel.cancelled() => return Ok(()),
+                // Final drain publishes anything committed since the last wake.
+                _ = cancel.cancelled() => return self.drain(publisher).await,
                 recv = listener.recv() => {
                     recv?;
                     self.drain(publisher).await?;
@@ -94,7 +102,7 @@ impl OutboxDispatcher {
         loop {
             let rows = sqlx::query!(
                 r#"
-                SELECT id, event_type, payload
+                SELECT id, event_type, payload, created_at
                 FROM outbox.outbox_events
                 WHERE dispatched_at IS NULL
                 ORDER BY id ASC
@@ -118,6 +126,7 @@ impl OutboxDispatcher {
                         id: row.id,
                         event_type: row.event_type.clone(),
                         payload: row.payload.clone(),
+                        created_at: row.created_at,
                     })
                     .await?;
                 ids.push(row.id);

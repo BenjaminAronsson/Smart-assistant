@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                SELECT id, event_type, payload\n                FROM outbox.outbox_events\n                WHERE dispatched_at IS NULL\n                ORDER BY id ASC\n                LIMIT $1\n                ",
+  "query": "\n                SELECT id, event_type, payload, created_at\n                FROM outbox.outbox_events\n                WHERE dispatched_at IS NULL\n                ORDER BY id ASC\n                LIMIT $1\n                ",
   "describe": {
     "columns": [
       {
@@ -17,6 +17,11 @@
         "ordinal": 2,
         "name": "payload",
         "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
@@ -27,8 +32,9 @@
     "nullable": [
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "b64f4b204509b4bd5b52aad5b3759bd778d67e089b746d8c7cdd72c78049b4e5"
+  "hash": "c59f93befda67378cbf808fe0febb56c20d0a1dfb4a931e41a9a9a6226204bda"
 }

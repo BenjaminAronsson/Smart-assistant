@@ -18,8 +18,10 @@ jarvis-adapters.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
+async-trait = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "fs"] }
@@ -39,4 +41,11 @@ opentelemetry-otlp = { version = "0.30", features = ["grpc-tonic"] }
 
 [dev-dependencies]
 http-body-util = "0.1"
-async-trait = "0.1"
+# FakeModel + fake ports for the gateway integration tests (never in the binary).
+jarvis-application = { workspace = true, features = ["fixtures"] }
+# `#[sqlx::test]` throwaway DBs for the end-to-end streaming/resync test; the
+# extra features unify into the test build only (the binary stays lean).
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "macros", "migrate", "time"] }
+# WebSocket client for the real-socket streaming test (matches the version axum
+# already pulls in for its `ws` feature, so no duplicate build).
+tokio-tungstenite = "0.29"

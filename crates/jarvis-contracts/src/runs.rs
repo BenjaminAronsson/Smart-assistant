@@ -41,6 +41,28 @@ impl RunStateDto {
     }
 }
 
+/// The wire projection of the domain `RunState` (docs/02 §4). The gateway maps
+/// at the boundary and never conflates the two; kept exhaustive (no `_`) so a
+/// new domain state forces a decision here rather than silently projecting.
+impl From<jarvis_domain::run::RunState> for RunStateDto {
+    fn from(state: jarvis_domain::run::RunState) -> Self {
+        use jarvis_domain::run::RunState as S;
+        match state {
+            S::Received => Self::Received,
+            S::ContextReady => Self::ContextReady,
+            S::ModelRunning => Self::ModelRunning,
+            S::PolicyReview => Self::PolicyReview,
+            S::WaitingApproval => Self::WaitingApproval,
+            S::ToolRunning => Self::ToolRunning,
+            S::Replanning => Self::Replanning,
+            S::Responding => Self::Responding,
+            S::Completed => Self::Completed,
+            S::Failed => Self::Failed,
+            S::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
 /// Per-run resource caps (docs/05 §4, NFR-12). Durations are seconds on the
 /// wire (JSON has no duration type).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -68,6 +90,28 @@ pub enum RunOutcomeKind {
     Completed,
     Failed,
     Cancelled,
+}
+
+impl From<jarvis_domain::run::RunOutcomeKind> for RunOutcomeKind {
+    fn from(kind: jarvis_domain::run::RunOutcomeKind) -> Self {
+        use jarvis_domain::run::RunOutcomeKind as K;
+        match kind {
+            K::Completed => Self::Completed,
+            K::Failed => Self::Failed,
+            K::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+/// Project the domain outcome onto the wire shape. `detail` is a short human
+/// sentence written by the orchestrator, never raw provider text (docs/06 §5).
+impl From<&jarvis_domain::run::RunOutcome> for RunOutcome {
+    fn from(outcome: &jarvis_domain::run::RunOutcome) -> Self {
+        Self {
+            kind: outcome.kind.into(),
+            detail: outcome.detail.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

@@ -139,6 +139,58 @@ async fn terminal_checkpoint_records_outcome_and_completed_event(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn view_surfaces_persistence_timestamps(pool: PgPool) {
+    seed_session(&pool, SESSION_ID).await;
+    let store = PgRunStore::new(pool.clone());
+    store.create(&a_run()).await.unwrap();
+
+    let view = store
+        .view(&RUN_ID.parse().unwrap())
+        .await
+        .unwrap()
+        .expect("view finds the created run");
+    assert_eq!(view.run, a_run());
+    // created_at == updated_at at create time (both set to `now` in one INSERT).
+    assert_eq!(view.created_at, view.updated_at);
+
+    // Unknown run views as None, same as load.
+    assert_eq!(
+        store.view(&MSG_A.parse().unwrap()).await.unwrap(),
+        None,
+        "an id with no row views as None"
+    );
+}
+
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn load_unfinished_returns_only_non_terminal_runs(pool: PgPool) {
+    seed_session(&pool, SESSION_ID).await;
+    let store = PgRunStore::new(pool.clone());
+
+    // An active run (never checkpointed past Received) and a completed run.
+    let active = a_run();
+    store.create(&active).await.unwrap();
+
+    let mut done = Run::new(
+        MSG_A.parse::<RunId>().unwrap(),
+        SESSION_ID.parse::<SessionId>().unwrap(),
+        RunBudget::default_interactive(),
+    );
+    store.create(&done).await.unwrap();
+    done.apply(RunEvent::ContextAssembled).unwrap();
+    done.apply(RunEvent::ModelInvoked).unwrap();
+    done.apply(RunEvent::FinalResponseReceived).unwrap();
+    done.apply(RunEvent::ResponseCommitted).unwrap();
+    store.save(&done).await.unwrap();
+
+    let unfinished = store.load_unfinished().await.unwrap();
+    assert_eq!(
+        unfinished,
+        vec![active],
+        "only the run with no recorded outcome is a recovery candidate"
+    );
+}
+
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
 async fn message_append_then_list_round_trips(pool: PgPool) {
     seed_session(&pool, SESSION_ID).await;
     let store = PgMessageStore::new(pool.clone());

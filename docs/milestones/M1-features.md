@@ -65,13 +65,23 @@ contracts; Sonnet for infra/adapter/web volume).
   *recovery reconciliation* (re-driving a loaded run) is F1.5 host wiring; F1.4 provides
   the durable load path and proves reload.
 
-- [ ] **F1.5 — WS hub + run REST endpoints + timeline resync (jarvisd)** · *Sonnet*
+- [x] **F1.5 — WS hub + run REST endpoints + timeline resync (jarvisd)** · *Sonnet*
   `/ws/v1` token-authenticated hub (monotonic `seq`, gap/reconnect → REST snapshot
   resync, persisted events replayed since `since`, transient deltas not); wires the outbox
   dispatcher → broadcast. REST: `POST /sessions/{id}/messages` (start run, ack <100 ms),
   `GET /runs/{id}`, `POST /runs/{id}/cancel`, `GET /sessions/{id}/timeline`. Refs:
   FR-01/06/07, NFR-03/13. Read: docs/05 §1–§3; skill `ws-contracts`. Deps: F1.1, F1.4.
   security-auditor (gateway) review.
+  *Delivered:* `WsHub` (bounded `tokio::broadcast` fan-out; `OutboxPublisher` for committed
+  domain events with `seq`=outbox id, `RunEventSink` for transient `text.delta` — dropping
+  `StateChanged`/`Finished` to reconcile the F1.4 double-emit); `/ws/v1` upgrade with
+  `?since=` replay; `RunEngine` (tracked, cancellable per-run tasks; assistant message
+  committed on completion); the four REST endpoints; `RunState`→`RunStateDto` `From` mapping;
+  `RunStore::view`/`load_unfinished` + `PgEventLog` (timeline/since reads); restart recovery
+  re-drives unfinished runs from the top (M1 has no external tool effects, so re-run is
+  idempotent). End-to-end evidence: `crates/jarvisd/tests/ws_stream.rs` (a question streams
+  live, a reconnect resyncs the persisted history, no deltas replayed). Interim `EchoModel`
+  provider is replaced by the Claude CLI adapter in F1.6.
 
 - [ ] **F1.6 — Claude CLI adapter: stream-json, health, single-flight (adapters)** · *Sonnet*
   `jarvis-adapters::claude_cli`: spawn `claude -p --output-format stream-json` (tokio

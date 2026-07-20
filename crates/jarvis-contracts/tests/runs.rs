@@ -100,6 +100,49 @@ fn run_ack_round_trips() {
 }
 
 #[test]
+fn domain_run_state_projects_onto_the_wire_state() {
+    use jarvis_domain::run::RunState as S;
+    let cases = [
+        (S::Received, RunStateDto::Received),
+        (S::ContextReady, RunStateDto::ContextReady),
+        (S::ModelRunning, RunStateDto::ModelRunning),
+        (S::PolicyReview, RunStateDto::PolicyReview),
+        (S::WaitingApproval, RunStateDto::WaitingApproval),
+        (S::ToolRunning, RunStateDto::ToolRunning),
+        (S::Replanning, RunStateDto::Replanning),
+        (S::Responding, RunStateDto::Responding),
+        (S::Completed, RunStateDto::Completed),
+        (S::Failed, RunStateDto::Failed),
+        (S::Cancelled, RunStateDto::Cancelled),
+    ];
+    for (domain, wire) in cases {
+        assert_eq!(RunStateDto::from(domain), wire);
+    }
+}
+
+#[test]
+fn domain_outcome_projects_onto_the_wire_outcome() {
+    use jarvis_domain::run::{RunOutcome as DomainOutcome, RunOutcomeKind as DomainKind};
+    let domain = DomainOutcome {
+        kind: DomainKind::Failed,
+        detail: Some("budget exceeded: Duration".into()),
+    };
+    assert_eq!(
+        RunOutcome::from(&domain),
+        RunOutcome {
+            kind: RunOutcomeKind::Failed,
+            detail: Some("budget exceeded: Duration".into()),
+        }
+    );
+    // A completed run with no detail projects a bare kind.
+    let done = DomainOutcome {
+        kind: DomainKind::Completed,
+        detail: None,
+    };
+    assert_eq!(RunOutcome::from(&done).detail, None);
+}
+
+#[test]
 fn run_id_and_session_id_must_be_valid_ulids() {
     let bad = json!({
         "id": "not-a-ulid", "sessionId": SESSION, "state": "received",

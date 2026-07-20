@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT session_id, state, max_model_turns, max_tool_calls,\n                   max_duration_secs, max_artifact_bytes, used_model_turns,\n                   used_tool_calls, outcome_kind, outcome_detail\n            FROM orchestration.runs WHERE id = $1\n            ",
+  "query": "\n            SELECT session_id, state, max_model_turns, max_tool_calls,\n                   max_duration_secs, max_artifact_bytes, used_model_turns,\n                   used_tool_calls, outcome_kind, outcome_detail,\n                   created_at, updated_at\n            FROM orchestration.runs WHERE id = $1\n            ",
   "describe": {
     "columns": [
       {
@@ -52,6 +52,16 @@
         "ordinal": 9,
         "name": "outcome_detail",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
@@ -69,8 +79,10 @@
       false,
       false,
       true,
-      true
+      true,
+      false,
+      false
     ]
   },
-  "hash": "d27893775fc4ac8fb86483769c6179e5007c5ccb607c334e2e4e1675414e3ec5"
+  "hash": "94201d695154a1967d82579676e9578426a9e852f2534e2879ce49d26768c9d6"
 }

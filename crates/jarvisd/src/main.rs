@@ -2,6 +2,17 @@
 //! jarvisd entry point: config → telemetry → serve → graceful shutdown
 //! (docs/02 §12). Cold start to healthy must stay < 2 s (NFR-15).
 
+use std::sync::Arc;
+
+use jarvis_application::orchestrator::RunInput;
+use jarvis_application::ports::{MessageStore, RunStore};
+use jarvis_domain::conversations::MessageRole;
+use jarvis_domain::ids::SessionId;
+use jarvis_domain::run::Run;
+use jarvis_infra::dispatcher::OutboxDispatcher;
+use jarvisd::api::RunWiring;
+use jarvisd::runs::{EchoModel, PassthroughAssembler, RunApi, RunEngine, SystemClock};
+use jarvisd::ws::{WsHub, WsState};
 use tokio_util::sync::CancellationToken;
 use tower_http::trace::TraceLayer;
 
@@ -21,16 +32,68 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     // degraded and the health probe reports it (docs/02 §12).
     let db_url = jarvisd::config::resolve_secret_ref(&config.database.url_secret)?;
     let pool = jarvis_infra::db::connect_lazy(db_url.expose(), config.database.max_connections)?;
-    let identity = std::sync::Arc::new(jarvis_infra::identity::PgIdentityStore::new(pool.clone()));
-    let auth = jarvisd::auth::AuthState::bootstrap(identity).await;
-    let sessions = jarvisd::sessions::SessionApi::new(std::sync::Arc::new(
-        jarvis_infra::sessions::PgSessionStore::new(pool.clone()),
-    ));
-    let state = jarvisd::api::AppState::with_database(pool, auth);
 
+    let identity = Arc::new(jarvis_infra::identity::PgIdentityStore::new(pool.clone()));
+    let auth = jarvisd::auth::AuthState::bootstrap(identity).await;
+
+    // Persistence adapters behind the application ports.
+    let session_store = Arc::new(jarvis_infra::sessions::PgSessionStore::new(pool.clone()));
+    let message_store = Arc::new(jarvis_infra::messages::PgMessageStore::new(pool.clone()));
+    let run_store = Arc::new(jarvis_infra::runs::PgRunStore::new(pool.clone()));
+    let event_log = Arc::new(jarvis_infra::events::PgEventLog::new(pool.clone()));
+    let sessions = jarvisd::sessions::SessionApi::new(session_store.clone());
+
+    // The WS hub is both the outbox publisher (committed domain events) and the
+    // orchestrator's run-event sink (transient deltas).
+    let hub = WsHub::new();
+
+    // Two shutdown tokens so the outbox dispatcher outlives the runs it must
+    // publish for: `serve_shutdown` stops the HTTP server and cancels in-flight
+    // runs; the dispatcher only stops once those runs have drained.
+    let serve_shutdown = CancellationToken::new();
+    let dispatch_shutdown = CancellationToken::new();
+    spawn_signal_listener(serve_shutdown.clone());
+
+    let engine = RunEngine::new(
+        Arc::new(EchoModel::default()), // interim provider; Claude CLI adapter lands in F1.6
+        Arc::new(PassthroughAssembler),
+        run_store.clone(),
+        message_store.clone(),
+        hub.clone(),
+        Arc::new(SystemClock),
+        serve_shutdown.clone(),
+    );
+
+    let run_api = RunApi::new(
+        session_store,
+        message_store.clone(),
+        run_store.clone(),
+        event_log.clone(),
+        engine.clone(),
+    );
+    let ws_state = WsState {
+        hub: hub.clone(),
+        events: event_log,
+        shutdown: serve_shutdown.clone(),
+    };
+
+    // Start the event-driven outbox dispatcher (LISTEN/NOTIFY, not polling) and
+    // re-drive any runs left unfinished by a previous crash (NFR-05).
+    let dispatcher_task = tokio::spawn(run_dispatcher(
+        pool.clone(),
+        hub.clone(),
+        dispatch_shutdown.clone(),
+    ));
+    recover_unfinished_runs(&engine, run_store.as_ref(), message_store.as_ref()).await;
+
+    let state = jarvisd::api::AppState::with_database(pool, auth);
     let app = jarvisd::api::router_with(
         state,
         Some(sessions),
+        Some(RunWiring {
+            runs: run_api,
+            ws: ws_state,
+        }),
         config.server.web_assets.clone(),
     )
     .layer(
@@ -39,19 +102,16 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         }),
     );
 
-    let shutdown = CancellationToken::new();
-    spawn_signal_listener(shutdown.clone());
-
     let listener = tokio::net::TcpListener::bind(config.bind_addr()).await?;
     tracing::info!(bind = %config.bind_addr(), "jarvisd listening");
 
-    let cancel = shutdown.clone();
+    let cancel = serve_shutdown.clone();
     let serve =
         axum::serve(listener, app).with_graceful_shutdown(async move { cancel.cancelled().await });
     // Bounded drain (invariant 4): a wedged in-flight request must not block
     // shutdown — after the signal, connections get DRAIN_DEADLINE to finish.
     let deadline = async {
-        shutdown.cancelled().await;
+        serve_shutdown.cancelled().await;
         tokio::time::sleep(DRAIN_DEADLINE).await;
     };
     tokio::select! {
@@ -59,9 +119,86 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         _ = deadline => tracing::warn!("drain deadline exceeded; forcing exit"),
     }
 
+    // Runs were signalled to cancel with `serve_shutdown`; wait (bounded) for
+    // them to checkpoint their terminal state, THEN stop the dispatcher so those
+    // final events are still published.
+    let _ = tokio::time::timeout(DRAIN_DEADLINE, engine.drain()).await;
+    dispatch_shutdown.cancel();
+    let _ = tokio::time::timeout(DRAIN_DEADLINE, dispatcher_task).await;
+
     tracing::info!("jarvisd draining telemetry and exiting");
     telemetry.shutdown();
     Ok(())
+}
+
+/// Restart backoff so a persistent dispatcher failure cannot hot-loop (CPU +
+/// log flood); short enough that recovery from a transient blip stays prompt.
+const DISPATCH_RESTART_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Run the outbox dispatcher, restarting it if a transient database/publish
+/// error ends the loop; a cancelled `shutdown` ends it for good.
+async fn run_dispatcher(pool: sqlx::PgPool, hub: Arc<WsHub>, shutdown: CancellationToken) {
+    while !shutdown.is_cancelled() {
+        let dispatcher = OutboxDispatcher::new(pool.clone());
+        match dispatcher.run(&*hub, shutdown.clone()).await {
+            Ok(()) => return, // cancelled
+            Err(error) => {
+                tracing::error!(%error, "outbox dispatcher stopped; restarting");
+                // Back off before reconnecting, but wake immediately on shutdown.
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    _ = tokio::time::sleep(DISPATCH_RESTART_BACKOFF) => {}
+                }
+            }
+        }
+    }
+}
+
+/// Re-drive runs the previous process left mid-flight (NFR-05, docs/02 §12).
+///
+/// M1 has no external tool effects (invariant 1), so re-running the model
+/// interaction is idempotent from the outside — the reconciliation is to restart
+/// each run from its input rather than resume from a half-state with a lost model
+/// stream. The input is the session's latest user message (M1 runs one exchange
+/// at a time); a run whose input cannot be found re-drives with empty input and
+/// completes trivially rather than hanging. Precise run→message linkage arrives
+/// when runs reference their originating message (a later schema addition).
+async fn recover_unfinished_runs(
+    engine: &Arc<RunEngine>,
+    runs: &dyn RunStore,
+    messages: &dyn MessageStore,
+) {
+    let unfinished = match runs.load_unfinished().await {
+        Ok(unfinished) => unfinished,
+        Err(error) => {
+            // A degraded start (DB unreachable) simply recovers nothing now; a
+            // later restart re-runs this sweep (docs/02 §12).
+            tracing::warn!(%error, "restart recovery skipped — runs unreadable");
+            return;
+        }
+    };
+    for run in unfinished {
+        let text = latest_user_text(messages, &run.session_id).await;
+        tracing::info!(run_id = %run.id, "re-driving unfinished run after restart");
+        // Restart from the top: same id/session/budget, fresh Received state; the
+        // durable row re-converges as the orchestrator re-checkpoints.
+        let fresh = Run::new(run.id, run.session_id, run.budget);
+        engine.spawn(fresh, RunInput { text });
+    }
+}
+
+async fn latest_user_text(messages: &dyn MessageStore, session: &SessionId) -> String {
+    messages
+        .list_by_session(session, 100)
+        .await
+        .ok()
+        .and_then(|msgs| {
+            msgs.into_iter()
+                .rev()
+                .find(|m| m.role == MessageRole::User)
+                .map(|m| m.text)
+        })
+        .unwrap_or_default()
 }
 
 const DRAIN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);

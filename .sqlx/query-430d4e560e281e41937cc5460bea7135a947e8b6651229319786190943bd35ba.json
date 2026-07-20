@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT o.id, o.event_type, o.payload, o.created_at\n            FROM outbox.outbox_events o\n            LEFT JOIN orchestration.runs r ON o.payload ->> 'runId' = r.id\n            WHERE o.id > $1\n              AND (\n                  $2 = o.payload ->> 'sessionId'\n                  OR $2 = o.payload -> 'message' ->> 'sessionId'\n                  OR $2 = r.session_id\n              )\n            ORDER BY o.id ASC\n            LIMIT $3\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "event_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "payload",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "430d4e560e281e41937cc5460bea7135a947e8b6651229319786190943bd35ba"
+}

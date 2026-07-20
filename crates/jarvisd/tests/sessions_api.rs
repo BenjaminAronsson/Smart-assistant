@@ -113,6 +113,7 @@ async fn app_with_token() -> (Router, Arc<FakeSessionStore>, String) {
         AppState::new().with_auth(auth),
         Some(SessionApi::new(store.clone())),
         None,
+        None,
     );
     // Pair through the real endpoint to get a live token.
     let response = app
