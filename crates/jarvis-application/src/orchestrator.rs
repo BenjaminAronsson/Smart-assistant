@@ -148,8 +148,12 @@ impl StepError {
         match self {
             Self::Context(_) => "context assembly failed".to_owned(),
             Self::Model(ModelError::Unavailable(msg)) => {
-                // Preserve the reason prefix from adapter: "timeout:", "network_error:", etc.
-                format!("provider unavailable: {}", msg)
+                // Reduce to a STABLE reason code — never the adapter's raw text,
+                // which may carry provider/driver/OS detail (invariant #5,
+                // docs/06 §5). The host matches this same "provider unavailable:"
+                // prefix for degraded-mode queueing; the code (not the raw tail)
+                // is what reaches the WS/timeline/run snapshot.
+                format!("provider unavailable: {}", crate::health::reason_code(msg))
             }
             Self::Model(ModelError::Malformed(_)) => "model stream malformed".to_owned(),
             Self::StreamEnded => "model stream ended before completion".to_owned(),

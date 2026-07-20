@@ -22,23 +22,36 @@ pub enum HealthState {
     Unavailable,
 }
 
-/// Maps a model error to a health state and reason code.
+/// The stable, non-sensitive reason codes an [`Unavailable`](ModelError::Unavailable)
+/// error can carry. This is the ONLY provider-error text allowed to cross the trust
+/// boundary (persisted outcome detail, WS, timeline, `GET /providers`) — never the
+/// adapter's raw message, which may embed driver/OS/URL detail (invariant #5,
+/// docs/06 §5).
+const REASON_CODES: [&str; 4] = ["timeout", "network_error", "auth_failed", "quota_exhausted"];
+
+/// Reduce a raw adapter `Unavailable` message to a stable reason code. Adapters
+/// prefix their message with one of [`REASON_CODES`] (e.g.
+/// `"quota_exhausted: reset in 60s"`); anything else maps to `"unavailable"`.
+///
+/// Idempotent: a message that is ALREADY a bare code (`"quota_exhausted"`) maps to
+/// itself, so this can be applied a second time (e.g. after the host has stripped
+/// the raw tail) without drift.
+pub fn reason_code(msg: &str) -> &'static str {
+    REASON_CODES
+        .into_iter()
+        .find(|code| match msg.strip_prefix(code) {
+            // Bare code, or `code:<detail>` — the `:` guards against a code that is
+            // merely a prefix of a longer unrelated token.
+            Some(rest) => rest.is_empty() || rest.starts_with(':'),
+            None => false,
+        })
+        .unwrap_or("unavailable")
+}
+
+/// Maps a model error to a health state and stable reason code.
 pub fn classify(error: &ModelError) -> (HealthState, String) {
     match error {
-        ModelError::Unavailable(msg) => {
-            // Classify based on error prefixes set by adapters.
-            if msg.starts_with("timeout:") {
-                (HealthState::Unavailable, "timeout".to_owned())
-            } else if msg.starts_with("network_error:") {
-                (HealthState::Unavailable, "network_error".to_owned())
-            } else if msg.starts_with("auth_failed:") {
-                (HealthState::Unavailable, "auth_failed".to_owned())
-            } else if msg.starts_with("quota_exhausted:") {
-                (HealthState::Unavailable, "quota_exhausted".to_owned())
-            } else {
-                (HealthState::Unavailable, "unavailable".to_owned())
-            }
-        }
+        ModelError::Unavailable(msg) => (HealthState::Unavailable, reason_code(msg).to_owned()),
         ModelError::Malformed(_) => (HealthState::Degraded, "malformed".to_owned()),
     }
 }

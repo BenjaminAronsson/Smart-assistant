@@ -22,6 +22,11 @@ import type {
 } from '../generated/api-types';
 import { ApiService } from './api.service';
 
+/** Cap on the live streaming preview buffer (NIT 4). The durable message that
+ * arrives on completion is authoritative, so trimming the transient preview to
+ * the most recent characters is safe. Generous vs. any real single response. */
+const MAX_STREAMING_CHARS = 100_000;
+
 /**
  * Conversation/timeline view (F1.8): displays messages and run events,
  * including queued/waiting runs to show degraded mode (visible queueing).
@@ -153,10 +158,15 @@ export class Conversation implements OnInit, OnDestroy {
     if (env.channel !== 'session') return;
 
     // Transient token delta: accumulate into the live response bubble. A durable
-    // `message.created` follows on completion and replaces it.
+    // `message.created` follows on completion and replaces it. Capped so a
+    // runaway/hostile stream can't grow the buffer without bound (NIT 4); the
+    // durable message is the source of truth, so a trimmed live preview is fine.
     if (env.type === 'text.delta') {
       const delta = (env.payload as { text?: string }).text ?? '';
-      this.streamingText.update((prev) => prev + delta);
+      this.streamingText.update((prev) => {
+        const next = prev + delta;
+        return next.length > MAX_STREAMING_CHARS ? next.slice(-MAX_STREAMING_CHARS) : next;
+      });
       return;
     }
 

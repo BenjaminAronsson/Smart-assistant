@@ -267,18 +267,15 @@ async fn quota_exhausted_marks_provider_unavailable() {
     let outcome = final_run.outcome.expect("terminal outcome");
     assert_eq!(outcome.kind, RunOutcomeKind::Failed);
 
-    // The detail preserves the error prefix for classification and display.
-    // The host layer (jarvisd::runs) checks for "provider unavailable:" to enqueue
-    // instead of returning an error to the user.
+    // The detail carries the "provider unavailable:" prefix (host queueing hook)
+    // plus the STABLE reason code — and NOTHING ELSE. The adapter's raw tail
+    // ("rate limit reset in 60s") must never reach the persisted/emitted detail
+    // (invariant #5, docs/06 §5 — security-auditor SHOULD-FIX 1).
     let detail = outcome.detail.unwrap();
+    assert_eq!(detail, "provider unavailable: quota_exhausted");
     assert!(
-        detail.contains("provider unavailable:"),
-        "detail should mark provider unavailability: {}",
-        detail
-    );
-    assert!(
-        detail.contains("quota_exhausted"),
-        "detail should preserve reason code for UI display: {}",
+        !detail.contains("reset in 60s"),
+        "raw adapter tail must not leak into the outcome detail: {}",
         detail
     );
 }
@@ -304,8 +301,13 @@ async fn auth_failure_marks_provider_unavailable() {
         .await;
 
     let detail = final_run.outcome.expect("terminal outcome").detail.unwrap();
-    assert!(detail.contains("provider unavailable:"));
-    assert!(detail.contains("auth_failed"));
+    assert_eq!(detail, "provider unavailable: auth_failed");
+    // The raw adapter tail ("invalid token") must not leak (invariant #5).
+    assert!(
+        !detail.contains("invalid token"),
+        "raw tail leaked: {}",
+        detail
+    );
 }
 
 // Golden trace 3 complete flow: degraded mode recovery scenario

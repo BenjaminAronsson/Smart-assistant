@@ -813,10 +813,11 @@ mod tests {
         use jarvis_application::health::{HealthState, classify};
         use jarvis_application::model::ModelError;
 
-        // Exactly what jarvis_application::orchestrator formats.
-        let detail = "provider unavailable: quota_exhausted: reset in 60s";
+        // Exactly what jarvis_application::orchestrator now formats: the STABLE
+        // reason code only, no raw adapter tail (SHOULD-FIX 1, invariant #5).
+        let detail = "provider unavailable: quota_exhausted";
         let reason = unavailable_reason(detail).expect("recognized as unavailable");
-        assert_eq!(reason, "quota_exhausted: reset in 60s", "no leading space");
+        assert_eq!(reason, "quota_exhausted", "no leading space, no raw tail");
 
         let (state, code) = classify(&ModelError::Unavailable(reason.to_owned()));
         assert_eq!(state, HealthState::Unavailable);

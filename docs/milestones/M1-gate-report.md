@@ -1,10 +1,13 @@
 # M1 Text vertical slice — Gate Report
 
-**Status: AWAITING HUMAN SIGN-OFF.** All exit evidence demonstrated; gate suite green.
-Two reviews returned no blocking findings against the invariants. Four non-blocking
-findings and two deviations are recorded below (§3, §4) for the gate owner's decision —
-this gate is **not** passed silently with exceptions. Do not tag `m1-complete` or check
-the roadmap until sign-off.
+**Status: SIGNED OFF (approve-with-fixes), 2026-07-20.** The owner approved the M1 exit
+evidence and deviations D1/D2, with the security findings to be fixed as follow-up. PR #4
+merged to `main` (merge `8f78dc4`). The three actionable review findings (SHOULD-FIX 1,
+NIT 3, NIT 4) were then fixed on the restarted branch as a fresh follow-up change (§8);
+NIT 2 (durable queue) remains tracked for M2 per accepted deviation D2.
+
+All exit evidence demonstrated; gate suite green. Two reviews returned no blocking findings
+against the invariants. Findings and deviations are recorded below (§3, §4).
 
 - **Milestone:** M1 Text vertical slice (docs/08 §1)
 - **Branch:** `claude/milestone-cny833-e3omzt` (PR #4)
@@ -123,6 +126,27 @@ Eight failing CLAUDE.md gates (clippy, fmt, web lint, web build budget) were als
 
 ## 7. Sign-off
 
-- [ ] **Owner approves M1 exit evidence** (§1) and the deviations D1, D2 (§4).
-- [ ] On approval: tag `m1-complete` at `94877bd` (or the merge commit), check the M1 row in docs/08 §1, and open the §5 items in the M2 feature list.
-- [ ] If any item is rejected: it returns to the M1 feature list — the gate is not passed.
+- [x] **Owner approved M1 exit evidence** (§1) and deviations D1, D2 (§4) — "approve-with-fixes", 2026-07-20.
+- [x] PR #4 merged to `main` (merge `8f78dc4`); M1 row checked in docs/08 §1.
+- [x] Required follow-up fixes applied (§8); §5 remaining items carried into the M2 feature list.
+
+---
+
+## 8. Post-sign-off follow-up fixes (approve-with-fixes)
+
+Applied on the restarted branch (the merged PR #4 is finished and not reused), each with a
+regression test:
+
+- **SHOULD-FIX 1 — DONE.** `orchestrator.rs::user_detail` now reduces an `Unavailable`
+  error to a stable reason code via the new `health::reason_code` (shared with `classify`,
+  idempotent), so the persisted/emitted run outcome detail is `provider unavailable: <code>`
+  — the adapter's raw driver/OS tail no longer crosses the trust boundary (invariant #5).
+  Tests assert the exact detail and that the raw tail is absent; the host round-trip and
+  degraded-mode integration tests still pass (health records the specific code).
+- **NIT 3 — DONE.** The Claude CLI adapter caps each stream-json line read at
+  `MAX_LINE_BYTES` (1 MiB) via `Take`; an unbounded line is treated as malformed and the
+  child is killed (resource-DoS bound).
+- **NIT 4 — DONE.** The Angular conversation view caps the transient streaming preview at
+  `MAX_STREAMING_CHARS` (100k); the durable `message.created` remains authoritative.
+- **NIT 2 — DEFERRED to M2** (durable degraded queue), consistent with accepted deviation
+  D2. Tracked in the M2 feature list (§5 item 2).
