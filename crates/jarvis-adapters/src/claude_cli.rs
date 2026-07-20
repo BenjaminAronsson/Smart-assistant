@@ -9,7 +9,7 @@ use jarvis_application::model::{
 use serde::Deserialize;
 use serde_json::json;
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Child;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -70,6 +70,13 @@ enum ContentBlock {
 /// The idle timeout for reading from claude CLI output. If no event arrives
 /// within this window, the run is cancelled and marked unhealthy (NFR-03).
 const PROVIDER_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Per-line read cap for the provider's stream-json output. A well-formed event
+/// is a few KiB; this bounds the memory a malfunctioning or hostile provider can
+/// force by emitting a very long newline-less line (resource DoS, docs/06 §5). A
+/// line that hits the cap is parsed as truncated JSON → `Malformed` → the child
+/// is killed, same as any other garbage.
+const MAX_LINE_BYTES: u64 = 1 << 20; // 1 MiB
 
 /// Claude CLI adapter: spawns the binary, reads streaming JSON, handles cancellation.
 pub struct ClaudeCliModel {
@@ -188,10 +195,16 @@ impl ReadState {
             }
 
             let mut line = String::new();
-            let deadline =
-                tokio::time::timeout(PROVIDER_IDLE_TIMEOUT, self.reader.read_line(&mut line));
+            // Cap each line read so one unbounded line can't exhaust memory
+            // within the idle window (NIT 3). `Take` bounds this single read; a
+            // fresh cap applies each iteration. Scoped so the `&mut self.reader`
+            // borrow ends before the match arms move `self`.
+            let deadline = {
+                let mut capped = (&mut self.reader).take(MAX_LINE_BYTES);
+                tokio::time::timeout(PROVIDER_IDLE_TIMEOUT, capped.read_line(&mut line)).await
+            };
 
-            match deadline.await {
+            match deadline {
                 Ok(Ok(0)) => {
                     // EOF: process finished normally
                     self.finished = true;
