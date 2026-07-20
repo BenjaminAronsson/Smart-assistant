@@ -239,3 +239,76 @@ async fn empty_response_still_completes() {
             .any(|u| matches!(u, RunUpdate::Finished { .. }))
     );
 }
+
+// Golden trace 3 (F1.7): quota exhausted → run outcome marked unavailable for queueing
+#[tokio::test]
+async fn quota_exhausted_marks_provider_unavailable() {
+    let model = FakeModel::fails_open(ModelError::Unavailable(
+        "quota_exhausted: rate limit reset in 60s".into(),
+    ));
+    let asm = EchoAssembler;
+    let cp = RecordingCheckpointer::default();
+    let sink = RecordingSink::default();
+    let clock = ManualClock::at_unix(1_000_000);
+    let orch = orchestrator(&model, &asm, &cp, &sink, &clock);
+
+    let final_run = orch
+        .drive(
+            new_run(RunBudget::default_interactive()),
+            RunInput {
+                text: "question".into(),
+            },
+            CancellationToken::new(),
+        )
+        .await;
+
+    // Outcome is Failed (orchestrator classifies all provider errors as failures).
+    assert_eq!(final_run.state, RunState::Failed);
+    let outcome = final_run.outcome.expect("terminal outcome");
+    assert_eq!(outcome.kind, RunOutcomeKind::Failed);
+
+    // The detail preserves the error prefix for classification and display.
+    // The host layer (jarvisd::runs) checks for "provider unavailable:" to enqueue
+    // instead of returning an error to the user.
+    let detail = outcome.detail.unwrap();
+    assert!(
+        detail.contains("provider unavailable:"),
+        "detail should mark provider unavailability: {}",
+        detail
+    );
+    assert!(
+        detail.contains("quota_exhausted"),
+        "detail should preserve reason code for UI display: {}",
+        detail
+    );
+}
+
+// Golden trace 3 (F1.7): auth failure also marks provider unavailable
+#[tokio::test]
+async fn auth_failure_marks_provider_unavailable() {
+    let model =
+        FakeModel::fails_open(ModelError::Unavailable("auth_failed: invalid token".into()));
+    let asm = EchoAssembler;
+    let cp = RecordingCheckpointer::default();
+    let sink = RecordingSink::default();
+    let clock = ManualClock::at_unix(1_000_000);
+    let orch = orchestrator(&model, &asm, &cp, &sink, &clock);
+
+    let final_run = orch
+        .drive(
+            new_run(RunBudget::default_interactive()),
+            RunInput {
+                text: "question".into(),
+            },
+            CancellationToken::new(),
+        )
+        .await;
+
+    let detail = final_run
+        .outcome
+        .expect("terminal outcome")
+        .detail
+        .unwrap();
+    assert!(detail.contains("provider unavailable:"));
+    assert!(detail.contains("auth_failed"));
+}
