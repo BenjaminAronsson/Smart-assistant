@@ -9,10 +9,11 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { ActivatedRoute, RouterLink } from '@angular/router';
+import { ActivatedRoute } from '@angular/router';
 import type {
   SessionDto,
   DomainEvent,
+  TimelineItem,
   TimelineResponse,
   MessageDto,
   ProviderState,
@@ -20,13 +21,6 @@ import type {
   RunStateDto,
 } from '../generated/api-types';
 import { ApiService } from './api.service';
-
-interface TimelineItem {
-  type: 'message' | 'run_event';
-  message?: MessageDto;
-  event?: DomainEvent;
-  timestamp?: string;
-}
 
 /**
  * Conversation/timeline view (F1.8): displays messages and run events,
@@ -36,7 +30,7 @@ interface TimelineItem {
 @Component({
   selector: 'app-conversation',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink],
+  imports: [CommonModule, FormsModule],
   templateUrl: './conversation.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './conversation.scss',
@@ -99,17 +93,9 @@ export class Conversation implements OnInit, OnDestroy {
     if (!this.sessionId) return;
     try {
       const resp = await this.api.getTimeline(this.sessionId, this.resyncCursor);
-      const items: TimelineItem[] = resp.items.map((item) => {
-        if ('message' in item) {
-          return { type: 'message' as const, message: item.message };
-        } else {
-          return { type: 'run_event' as const, event: item.event };
-        }
-      });
-      this.timeline.set(items);
-      // Use the next_since cursor if provided for future fetches
-      if (resp.next_since) {
-        this.resyncCursor = resp.next_since;
+      this.timeline.set(resp.items);
+      if (resp.nextSince !== null && resp.nextSince !== undefined) {
+        this.resyncCursor = resp.nextSince;
       }
     } catch (err) {
       this.error.set('Failed to load timeline');
@@ -222,10 +208,6 @@ export class Conversation implements OnInit, OnDestroy {
     return this.getProviderState() === 'unavailable';
   }
 
-  protected isRunQueued(event: DomainEvent): boolean {
-    return event.type === 'run.queued';
-  }
-
   protected getRunState(event: DomainEvent): RunStateDto | null {
     if (event.type === 'run.state_changed') {
       return (event as any).state as RunStateDto;
@@ -235,6 +217,13 @@ export class Conversation implements OnInit, OnDestroy {
 
   protected getMessageRole(msg: MessageDto): string {
     return msg.role === 'assistant' ? 'Jarvis' : 'You';
+  }
+
+  protected getMessageText(msg: MessageDto): string {
+    return msg.content
+      .filter((block) => block.type === 'text')
+      .map((block) => (block as any).text || '')
+      .join('');
   }
 
   protected trackByIndex(index: number): number {

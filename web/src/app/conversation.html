@@ -23,34 +23,41 @@
             <strong>{{ getMessageRole(item.message!) }}</strong>
             <span class="timestamp">{{ item.message!.createdAt }}</span>
           </div>
-          <div class="message-body">{{ item.message!.text }}</div>
+          <div class="message-body">{{ getMessageText(item.message!) }}</div>
         </div>
       } @else if (item.type === 'run_event') {
         <div class="run-event-item" [class]="item.event!.type">
-          @if (isRunQueued(item.event!)) {
-            <!-- Queued run: visible degraded mode (F1.8) -->
-            <div class="queued-indicator">
-              <span class="icon">⏳</span>
-              <span class="label">Run Queued</span>
-              <span class="reason">{{ (item.event! as any).reason }}</span>
-            </div>
-            <p class="queued-note">
-              Waiting for provider to recover. Your message will be processed when available.
-            </p>
-          } @else if (item.event!.type === 'run.state_changed') {
-            <div class="state-change">
-              <span class="state-badge">{{ getRunState(item.event!) }}</span>
-            </div>
-          } @else if (item.event!.type === 'run.completed') {
-            <div class="completion">
-              <span class="icon">✓</span>
-              Run completed
-            </div>
-          } @else if (item.event!.type === 'run.started') {
-            <div class="start-indicator">
-              <span class="icon">▶</span>
-              Processing...
-            </div>
+          @switch (item.event!.type) {
+            @case ('run.queued') {
+              <!-- Queued run: visible degraded mode (F1.8) -->
+              <div class="queued-indicator">
+                <span class="icon">⏳</span>
+                <span class="label">Run Queued</span>
+                @if (item.event!.reason) {
+                  <span class="reason">{{ item.event!.reason }}</span>
+                }
+              </div>
+              <p class="queued-note">
+                Waiting for provider to recover. Your message will be processed when available.
+              </p>
+            }
+            @case ('run.state_changed') {
+              <div class="state-change">
+                <span class="state-badge">{{ getRunState(item.event!) }}</span>
+              </div>
+            }
+            @case ('run.completed') {
+              <div class="completion">
+                <span class="icon">✓</span>
+                Run completed
+              </div>
+            }
+            @case ('run.started') {
+              <div class="start-indicator">
+                <span class="icon">▶</span>
+                Processing...
+              </div>
+            }
           }
         </div>
       }

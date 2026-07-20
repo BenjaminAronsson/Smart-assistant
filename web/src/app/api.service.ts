@@ -66,7 +66,7 @@ export class ApiService {
   }
 
   getTimeline(sessionId: string, since: number = 0): Promise<TimelineResponse> {
-    const params = since > 0 ? { since } : {};
+    const params: { [key: string]: string | number } = since > 0 ? { since } : {};
     return firstValueFrom(
       this.http.get<TimelineResponse>(`/api/v1/sessions/${sessionId}/timeline`, {
         params,
