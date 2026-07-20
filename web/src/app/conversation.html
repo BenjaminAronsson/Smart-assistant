@@ -1,0 +1,107 @@
+<div class="conversation-container">
+  <div class="conversation-header">
+    <h1>{{ session()?.title || 'Conversation' }}</h1>
+
+    <!-- Provider health indicator (F1.7) -->
+    <div class="provider-status" [class.unavailable]="isProviderUnavailable()">
+      <span class="status-dot" [class]="getProviderState()"></span>
+      <span class="status-text">
+        {{ getProviderState() === 'unavailable' ? 'Degraded Mode' : 'Healthy' }}
+      </span>
+      @if (getProviderReason()) {
+        <span class="reason">{{ getProviderReason() }}</span>
+      }
+    </div>
+  </div>
+
+  <!-- Timeline -->
+  <div class="timeline">
+    @for (item of timeline(); track trackByIndex($index)) {
+      @if (item.type === 'message') {
+        <div class="message-item">
+          <div class="message-header">
+            <strong>{{ getMessageRole(item.message!) }}</strong>
+            <span class="timestamp">{{ item.message!.createdAt }}</span>
+          </div>
+          <div class="message-body">{{ item.message!.text }}</div>
+        </div>
+      } @else if (item.type === 'run_event') {
+        <div class="run-event-item" [class]="item.event!.type">
+          @if (isRunQueued(item.event!)) {
+            <!-- Queued run: visible degraded mode (F1.8) -->
+            <div class="queued-indicator">
+              <span class="icon">⏳</span>
+              <span class="label">Run Queued</span>
+              <span class="reason">{{ (item.event! as any).reason }}</span>
+            </div>
+            <p class="queued-note">
+              Waiting for provider to recover. Your message will be processed when available.
+            </p>
+          } @else if (item.event!.type === 'run.state_changed') {
+            <div class="state-change">
+              <span class="state-badge">{{ getRunState(item.event!) }}</span>
+            </div>
+          } @else if (item.event!.type === 'run.completed') {
+            <div class="completion">
+              <span class="icon">✓</span>
+              Run completed
+            </div>
+          } @else if (item.event!.type === 'run.started') {
+            <div class="start-indicator">
+              <span class="icon">▶</span>
+              Processing...
+            </div>
+          }
+        </div>
+      }
+    }
+
+    @if (timeline().length === 0) {
+      <div class="empty-state">
+        <p>No messages yet. Start a conversation below.</p>
+      </div>
+    }
+  </div>
+
+  <!-- Input form -->
+  <div class="input-section">
+    @if (error()) {
+      <div class="error-message">{{ error() }}</div>
+    }
+
+    <div class="input-form">
+      <textarea
+        [(ngModel)]="messageText"
+        placeholder="Type your message..."
+        [disabled]="loading()"
+      ></textarea>
+
+      <div class="form-actions">
+        <button
+          (click)="submitMessage()"
+          [disabled]="!messageText().trim() || loading() || isProviderUnavailable()"
+          [title]="
+            isProviderUnavailable()
+              ? 'Provider is unavailable. Queued runs will resume when it recovers.'
+              : ''
+          "
+        >
+          @if (loading()) {
+            Sending...
+          } @else if (isProviderUnavailable()) {
+            Submit (Queued)
+          } @else {
+            Send
+          }
+        </button>
+
+        @if (isProviderUnavailable()) {
+          <p class="degraded-note">
+            <strong>⚠️ Degraded Mode:</strong> The provider is temporarily unavailable. Your
+            message will be queued and processed when service recovers.
+          </p>
+        }
+      </div>
+    </div>
+  </div>
+</div>

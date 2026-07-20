@@ -8,6 +8,9 @@ import type {
   PairResponse,
   SessionDto,
   SessionListResponse,
+  TimelineResponse,
+  SubmitMessageRequest,
+  ProvidersResponse,
 } from '../generated/api-types';
 
 const TOKEN_KEY = 'jarvis.deviceToken';
@@ -59,6 +62,33 @@ export class ApiService {
   listSessions(): Promise<SessionListResponse> {
     return firstValueFrom(
       this.http.get<SessionListResponse>('/api/v1/sessions', { headers: this.authHeaders() }),
+    );
+  }
+
+  getTimeline(sessionId: string, since: number = 0): Promise<TimelineResponse> {
+    const params = since > 0 ? { since } : {};
+    return firstValueFrom(
+      this.http.get<TimelineResponse>(`/api/v1/sessions/${sessionId}/timeline`, {
+        params,
+        headers: this.authHeaders(),
+      }),
+    );
+  }
+
+  submitMessage(sessionId: string, text: string): Promise<any> {
+    const request: SubmitMessageRequest = {
+      content: [{ type: 'text', text }],
+    };
+    return firstValueFrom(
+      this.http.post(`/api/v1/sessions/${sessionId}/messages`, request, {
+        headers: this.authHeaders(),
+      }),
+    );
+  }
+
+  getProviders(): Promise<ProvidersResponse> {
+    return firstValueFrom(
+      this.http.get<ProvidersResponse>('/api/v1/providers', { headers: this.authHeaders() }),
     );
   }
 

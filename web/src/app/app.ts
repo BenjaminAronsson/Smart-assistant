@@ -1,16 +1,17 @@
 import { KeyValuePipe } from '@angular/common';
 import { Component, OnInit, inject, signal, ChangeDetectionStrategy } from '@angular/core';
+import { RouterLink, RouterOutlet } from '@angular/router';
 import type { HealthResponse, SessionDto } from '../generated/api-types';
 import { ApiService } from './api.service';
 
 /**
  * Jarvis shell root (docs/03 §3). M0 scope: health page, first-run pairing,
  * and the session round-trip proving the persisted vertical slice (FR-02).
- * Conversation surfaces land in M1.
+ * Conversation surfaces land in M1 (F1.8).
  */
 @Component({
   selector: 'app-root',
-  imports: [KeyValuePipe],
+  imports: [KeyValuePipe, RouterLink, RouterOutlet],
   templateUrl: './app.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './app.scss',
