@@ -5,6 +5,7 @@
 pub mod model;
 pub mod orchestrator;
 pub mod ports;
+pub mod queue;
 
 #[cfg(any(test, feature = "fixtures"))]
 pub mod testing;
