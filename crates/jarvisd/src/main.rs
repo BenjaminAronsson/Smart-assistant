@@ -87,6 +87,14 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     ));
     recover_unfinished_runs(&engine, run_store.as_ref(), message_store.as_ref()).await;
 
+    // Start the health polling loop (F1.7): periodically try to dequeue and
+    // re-spawn runs when the provider recovers (minimal viable: no external checks).
+    let polling_engine = engine.clone();
+    let polling_shutdown = serve_shutdown.clone();
+    let _polling_task = tokio::spawn(async move {
+        poll_provider_health(polling_engine, polling_shutdown).await;
+    });
+
     let state = jarvisd::api::AppState::with_database(pool, auth);
     let app = jarvisd::api::router_with(
         state,
@@ -155,6 +163,26 @@ async fn run_dispatcher(pool: sqlx::PgPool, hub: Arc<WsHub>, shutdown: Cancellat
     }
 }
 
+/// Health polling loop (F1.7): periodically attempt to dequeue and re-spawn runs.
+/// For F1.7 minimal viable, we do not check external provider status; instead,
+/// we assume recovery has happened if we successfully dequeue and re-spawn a run.
+/// If the run succeeds, the provider is healthy; if it fails again, it re-queues
+/// and we try again next interval.
+async fn poll_provider_health(engine: Arc<RunEngine>, shutdown: CancellationToken) {
+    while !shutdown.is_cancelled() {
+        // Try to dequeue and re-spawn one run per interval
+        if let Some((run, input)) = engine.try_dequeue() {
+            tracing::debug!("dequeued and re-spawning run after provider recovery");
+            engine.spawn(run, input);
+        }
+        // Wait for the next poll interval or shutdown
+        tokio::select! {
+            _ = shutdown.cancelled() => return,
+            _ = tokio::time::sleep(HEALTH_POLL_INTERVAL) => {}
+        }
+    }
+}
+
 /// Re-drive runs the previous process left mid-flight (NFR-05, docs/02 §12).
 ///
 /// M1 has no external tool effects (invariant 1), so re-running the model
@@ -201,6 +229,11 @@ async fn latest_user_text(messages: &dyn MessageStore, session: &SessionId) -> S
         })
         .unwrap_or_default()
 }
+
+/// Health polling interval (F1.7): check if queued runs can resume. For F1.7
+/// minimal viable, this simply attempts to dequeue and re-spawn; the actual
+/// provider health signal comes from whether the run succeeds or fails.
+const HEALTH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
 const DRAIN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
 

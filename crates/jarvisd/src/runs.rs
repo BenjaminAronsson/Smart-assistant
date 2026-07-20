@@ -25,6 +25,7 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use axum::{Extension, Json};
 use futures_util::stream::BoxStream;
+use jarvis_application::health::ProviderHealthTracker;
 use jarvis_application::model::{
     FinishReason, ModelError, ModelEvent, ModelProvider, ModelRequest, ProfileId,
 };
@@ -33,6 +34,7 @@ use jarvis_application::orchestrator::{
     RunEventSink, RunInput, RunUpdate,
 };
 use jarvis_application::ports::{MessageStore, RepositoryError, RunStore, SessionStore};
+use jarvis_application::queue::{RunPriority, RunQueue};
 use jarvis_contracts::content::ContentBlock;
 use jarvis_contracts::errors::ErrorCode;
 use jarvis_contracts::events::DomainEvent;
@@ -75,6 +77,10 @@ pub struct RunEngine {
     /// Single-flight queue (F1.6): only one run can invoke the model at a time
     /// (prevent concurrent quota consumption, auth conflicts, billing issues).
     model_permit: Semaphore,
+    /// Run queue (F1.7): park runs when provider unavailable, dequeue on recovery.
+    queue: Mutex<RunQueue>,
+    /// Provider health tracker (F1.7): classify errors, track state per profile.
+    health: Arc<ProviderHealthTracker>,
 }
 
 impl RunEngine {
@@ -99,6 +105,8 @@ impl RunEngine {
             tracker: TaskTracker::new(),
             shutdown,
             model_permit: Semaphore::new(1),
+            queue: Mutex::new(RunQueue::new(100)),
+            health: ProviderHealthTracker::new(),
         })
     }
 
@@ -126,6 +134,19 @@ impl RunEngine {
     pub async fn drain(&self) {
         self.tracker.close();
         self.tracker.wait().await;
+    }
+
+    /// Get the current health state for the primary provider.
+    pub fn get_provider_health(&self) -> (jarvis_application::health::HealthState, String) {
+        let (state, reason) = self.health.get(&self.model.id());
+        (state, reason)
+    }
+
+    /// Dequeue the next queued run (if any). Returns true if a run was dequeued.
+    /// Caller is responsible for spawning the dequeued run (if any).
+    pub fn try_dequeue(&self) -> Option<(Run, RunInput)> {
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        queue.dequeue().map(|q| (q.run, q.input))
     }
 
     async fn drive(&self, run: Run, input: RunInput, cancel: CancellationToken) {
@@ -159,9 +180,30 @@ impl RunEngine {
         };
 
         let terminal = orchestrator
-            .drive(run, input, cancel)
+            .drive(run, input.clone(), cancel.clone())
             .instrument(span.clone())
             .await;
+
+        // F1.7: if the run failed due to provider unavailability, enqueue it instead of failing.
+        if terminal.state == RunState::Failed {
+            if let Some(outcome) = &terminal.outcome {
+                if let Some(detail) = &outcome.detail {
+                    if detail.starts_with("provider unavailable:") {
+                        // Record the error in health tracker
+                        self.health
+                            .record_error(&self.model.id(), &ModelError::Unavailable(
+                                detail[21..].to_owned(), // strip "provider unavailable: " prefix
+                            ));
+                        // Enqueue the run at ContextReady checkpoint for retry (F1.7).
+                        // F1.7 treats all queued runs as interactive (user-initiated).
+                        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+                        queue.enqueue(terminal, input, RunPriority::Interactive);
+                        // Don't commit the assistant message; the run will retry when provider recovers
+                        return;
+                    }
+                }
+            }
+        }
 
         if terminal.state == RunState::Completed {
             self.commit_assistant_message(&session_id, sink.take_text())
@@ -547,6 +589,36 @@ fn truncate_to_micros(t: SystemTime) -> SystemTime {
         Ok(d) => std::time::UNIX_EPOCH + std::time::Duration::from_micros(d.as_micros() as u64),
         Err(_) => t,
     }
+}
+
+/// `GET /api/v1/providers` — return current health state for all known providers (F1.7).
+pub async fn get_providers(
+    State(api): State<RunApi>,
+    Extension(_device): Extension<DeviceContext>,
+) -> Result<Json<jarvis_contracts::providers::ProvidersResponse>, Response> {
+    use jarvis_application::health::HealthState;
+    use jarvis_contracts::providers::{ProviderDto, ProviderState};
+
+    let (app_state, reason) = api.engine.get_provider_health();
+    let model_id = api.engine.model.id();
+
+    // Convert from application HealthState to wire ProviderState
+    let wire_state = match app_state {
+        HealthState::Healthy => ProviderState::Healthy,
+        HealthState::Degraded => ProviderState::Degraded,
+        HealthState::Unavailable => ProviderState::Unavailable,
+    };
+
+    let provider_dto = ProviderDto {
+        id: model_id.0.clone(),
+        state: wire_state,
+        quota: None, // F1.7 does not track quota windows yet
+        reason: if reason.is_empty() { None } else { Some(reason) },
+    };
+
+    Ok(Json(jarvis_contracts::providers::ProvidersResponse {
+        providers: vec![provider_dto],
+    }))
 }
 
 // ---------------------------------------------------------------------------

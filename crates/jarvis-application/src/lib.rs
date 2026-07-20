@@ -2,6 +2,7 @@
 //! Use cases, orchestrator state machine, context assembler, router, policy
 //! engine, and the ports (traits) adapters implement (docs/02 §3).
 
+pub mod health;
 pub mod model;
 pub mod orchestrator;
 pub mod ports;

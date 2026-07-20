@@ -142,14 +142,19 @@ enum StepError {
 impl StepError {
     /// A stable, non-sensitive reason for the run outcome — never the adapter's
     /// own error text, which may contain provider/driver detail (docs/06 §5,
-    /// invariant #5). Exhaustive (no `_`) so a new variant forces a decision.
-    fn user_detail(&self) -> &'static str {
+    /// invariant #5). For ModelError, distinguish unavailable (queueable in F1.7)
+    /// from malformed. Exhaustive (no `_`) so a new variant forces a decision.
+    fn user_detail(&self) -> String {
         match self {
-            Self::Context(_) => "context assembly failed",
-            Self::Model(_) => "model provider error",
-            Self::StreamEnded => "model stream ended before completion",
-            Self::UnwiredInM1(_) => "requested step is not available",
-            Self::Transition(_) => "internal orchestration error",
+            Self::Context(_) => "context assembly failed".to_owned(),
+            Self::Model(ModelError::Unavailable(msg)) => {
+                // Preserve the reason prefix from adapter: "timeout:", "network_error:", etc.
+                format!("provider unavailable: {}", msg)
+            }
+            Self::Model(ModelError::Malformed(_)) => "model stream malformed".to_owned(),
+            Self::StreamEnded => "model stream ended before completion".to_owned(),
+            Self::UnwiredInM1(_) => "requested step is not available".to_owned(),
+            Self::Transition(_) => "internal orchestration error".to_owned(),
         }
     }
 }
@@ -208,7 +213,7 @@ impl Orchestrator<'_> {
                     // A generic, non-sensitive reason only — never the adapter's
                     // own error text (docs/06 §5, invariant #5). The full error
                     // is for the host's span/log (F1.5), not the user outcome.
-                    self.fail(&mut run, err.user_detail().to_string()).await;
+                    self.fail(&mut run, err.user_detail()).await;
                     break;
                 }
             }

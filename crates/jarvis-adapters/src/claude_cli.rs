@@ -106,12 +106,15 @@ impl ModelProvider for ClaudeCliModel {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| ModelError::Unavailable(format!("failed to spawn claude: {}", e)))?;
+            .map_err(|e| {
+                // Classify spawn failures: network error on command lookup
+                ModelError::Unavailable(format!("network_error: failed to spawn claude: {}", e))
+            })?;
 
         let mut stdin = child
             .stdin
             .take()
-            .ok_or_else(|| ModelError::Unavailable("failed to capture stdin".to_owned()))?;
+            .ok_or_else(|| ModelError::Unavailable("network_error: failed to capture stdin".to_owned()))?;
 
         // Send the request as JSON over stdin.
         let request_json = json!({
@@ -124,13 +127,13 @@ impl ModelProvider for ClaudeCliModel {
         let json_str = format!("{}\n", request_json);
         if let Err(e) = stdin.write_all(json_str.as_bytes()).await {
             return Err(ModelError::Unavailable(format!(
-                "failed to write request: {}",
+                "network_error: failed to write request: {}",
                 e
             )));
         }
         if let Err(e) = stdin.shutdown().await {
             return Err(ModelError::Unavailable(format!(
-                "failed to close stdin: {}",
+                "network_error: failed to close stdin: {}",
                 e
             )));
         }
@@ -138,7 +141,7 @@ impl ModelProvider for ClaudeCliModel {
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| ModelError::Unavailable("failed to capture stdout".to_owned()))?;
+            .ok_or_else(|| ModelError::Unavailable("network_error: failed to capture stdout".to_owned()))?;
 
         // Read streaming events from stdout using unfold to create a boxed stream.
         let stream = unfold(ReadState::new(child, stdout, cancel), |state| async move {
@@ -267,7 +270,7 @@ impl ReadState {
                     self.finished = true;
                     return Some((
                         ModelEvent::Error(ModelError::Unavailable(
-                            "provider idle timeout".to_owned(),
+                            "timeout: provider idle timeout".to_owned(),
                         )),
                         self,
                     ));
