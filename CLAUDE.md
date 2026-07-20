@@ -57,12 +57,12 @@ cargo xtask arch-test                  # dependency-direction rules
 cargo xtask golden                     # golden trace scenarios (fake adapters)
 cargo clippy --workspace -- -D warnings
 cargo fmt --check
-cargo sqlx prepare --check             # offline query verification
+cargo sqlx prepare --check             # offline query verification --database-url postgres://jarvis:jarvis-dev-only@127.0.0.1:5432/jarvis
 (cd web && npm run lint && npm test && npm run build)
 docker compose -f infra/compose/dev.yml up -d   # postgres+pgvector, otel
 ```
 
-On low-power dev hosts use `cargo check` as the inner loop, mold as linker, and sccache;
+On low-power dev hosts use `cargo check` as the inner loop, mold as linker, and cache;
 see `docs/09-operations.md` §5. CI is GitHub Actions (`.github/workflows/ci.yml`); every PR runs the full loop above plus
 `cargo deny check` and container scans. Do not merge with warnings.
 
