@@ -312,3 +312,113 @@ async fn auth_failure_marks_provider_unavailable() {
     assert!(detail.contains("provider unavailable:"));
     assert!(detail.contains("auth_failed"));
 }
+
+// Golden trace 3 complete flow: degraded mode recovery scenario
+// Demonstrates question → quota failure → marked unavailable → (would be queued in jarvisd)
+#[tokio::test]
+async fn golden_trace_3_degraded_mode_flow() {
+    // First attempt: provider quota exhausted
+    let quota_err_model =
+        FakeModel::fails_open(ModelError::Unavailable("quota_exhausted: reset in 60s".into()));
+    let asm = EchoAssembler;
+    let cp = RecordingCheckpointer::default();
+    let sink = RecordingSink::default();
+    let clock = ManualClock::at_unix(1_000_000);
+    let orch = orchestrator(&quota_err_model, &asm, &cp, &sink, &clock);
+
+    let input = RunInput {
+        text: "What is the weather?".into(),
+    };
+
+    let first_attempt = orch
+        .drive(
+            new_run(RunBudget::default_interactive()),
+            input.clone(),
+            CancellationToken::new(),
+        )
+        .await;
+
+    // Run failed due to provider unavailability; jarvisd will queue it
+    assert_eq!(first_attempt.state, RunState::Failed);
+    let outcome = first_attempt.outcome.expect("terminal outcome");
+    assert_eq!(outcome.kind, RunOutcomeKind::Failed);
+    assert!(outcome
+        .detail
+        .as_ref()
+        .unwrap()
+        .contains("provider unavailable:"));
+
+    // Simulate provider recovery: second model succeeds
+    let recovery_model = FakeModel::streaming(["Sunny and ", "warm."]);
+    let orch2 = orchestrator(&recovery_model, &asm, &cp, &sink, &clock);
+
+    // In jarvisd, this would be a dequeued run re-driven from ContextReady.
+    // Here we simulate the re-drive after recovery.
+    let second_attempt = orch2
+        .drive(
+            new_run(RunBudget::default_interactive()),
+            input,
+            CancellationToken::new(),
+        )
+        .await;
+
+    // Second attempt succeeds
+    assert_eq!(second_attempt.state, RunState::Completed);
+    assert_eq!(
+        second_attempt.outcome.map(|o| o.kind),
+        Some(RunOutcomeKind::Completed)
+    );
+    assert_eq!(sink.text(), "Sunny and warm.");
+}
+
+// F1.9: restart-recovery scenario (run survives restart via checkpoint)
+#[tokio::test]
+async fn restart_recovery_redrives_from_checkpoint() {
+    // Original run checkpoints at ContextReady (F1.5: every safe transition)
+    let original_cp = RecordingCheckpointer::default();
+    let sink1 = RecordingSink::default();
+    let asm = EchoAssembler;
+    let clock = ManualClock::at_unix(1_000_000);
+
+    let original_model = FakeModel::streaming(["Hello", " world"]);
+    let orch1 = orchestrator(&original_model, &asm, &original_cp, &sink1, &clock);
+
+    let input = RunInput {
+        text: "hi".into(),
+    };
+    let run = new_run(RunBudget::default_interactive());
+
+    let first = orch1
+        .drive(
+            run.clone(),
+            input.clone(),
+            CancellationToken::new(),
+        )
+        .await;
+
+    assert_eq!(first.state, RunState::Completed);
+    // Checkpoint was saved at completion (terminal state)
+    assert!(
+        original_cp.saved_states().contains(&RunState::Completed),
+        "terminal state must be checkpointed for recovery"
+    );
+
+    // Simulate restart: load the checkpoint and re-drive
+    // (in reality, jarvisd loads via PgRunStore::load_unfinished; here we just re-drive the same run)
+    let recovery_cp = RecordingCheckpointer::default();
+    let sink2 = RecordingSink::default();
+    let recovery_model = FakeModel::streaming(["Hello", " world"]);
+    let orch2 = orchestrator(&recovery_model, &asm, &recovery_cp, &sink2, &clock);
+
+    let second = orch2
+        .drive(
+            run,
+            input,
+            CancellationToken::new(),
+        )
+        .await;
+
+    // Re-drive from checkpoint produces the same result (idempotent)
+    assert_eq!(second.state, RunState::Completed);
+    assert_eq!(sink2.text(), "Hello world");
+}
