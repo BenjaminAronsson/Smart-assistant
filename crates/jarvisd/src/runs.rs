@@ -214,10 +214,21 @@ impl RunEngine {
             // Record the error in the health tracker (drives the providers endpoint).
             let error = ModelError::Unavailable(reason.to_owned());
             self.health.record_error(&self.model.id(), &error);
-            // Enqueue the run for retry when the profile recovers (F1.7). All
-            // queued runs are interactive (user-initiated) in M1.
+            // Enqueue a FRESH run (Received, no outcome) for retry on recovery.
+            // Re-queuing the *terminal* Failed run would be inert: the orchestrator
+            // loop guard is `while !state.is_terminal()`, so re-driving it returns
+            // immediately with the same "provider unavailable" outcome and it re-
+            // queues forever — the run would never recover. M1 has no external
+            // effects, so replaying from the top is idempotent (mirrors restart
+            // recovery in `main::recover_unfinished_runs`). All queued runs are
+            // interactive (user-initiated) in M1.
+            let retry = Run::new(
+                terminal.id.clone(),
+                terminal.session_id.clone(),
+                terminal.budget,
+            );
             let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
-            queue.enqueue(terminal, input, RunPriority::Interactive);
+            queue.enqueue(retry, input, RunPriority::Interactive);
             // Don't commit an assistant message; the run retries on recovery.
             return;
         }
@@ -819,5 +830,159 @@ mod tests {
     fn unavailable_reason_ignores_non_provider_failures() {
         // A budget-exhaustion detail must not be mistaken for a queueable error.
         assert!(unavailable_reason("budget exhausted: ModelTurns").is_none());
+    }
+
+    // ---- Host-level degraded-mode integration (golden trace 3) ----------------
+    //
+    // Drives the real `RunEngine` through the full quota-exhausted → queued →
+    // recovered → completed loop — the path exercised in production by
+    // `submit_message` (spawn→drive) and `main::poll_provider_health`
+    // (try_dequeue→spawn). Unlike the orchestrator-level simulations in
+    // jarvis-application, this asserts the HOST behaviour: the reason code the
+    // providers endpoint reports, that no assistant message is committed while
+    // queued, and that the recovered run actually completes and commits its
+    // answer (which only works because the retry is re-queued as a FRESH run —
+    // re-driving the terminal Failed run would loop forever).
+
+    use std::str::FromStr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use futures_util::StreamExt;
+    use jarvis_application::health::HealthState;
+    use jarvis_application::testing::{EchoAssembler, ManualClock, RecordingCheckpointer};
+
+    /// A provider that is unavailable on its first turn (quota) and healthy after
+    /// — the deterministic stand-in for "the profile recovered between polls".
+    struct FlakyModel {
+        id: ProfileId,
+        turns: AtomicUsize,
+        reply: Vec<&'static str>,
+    }
+
+    #[async_trait]
+    impl ModelProvider for FlakyModel {
+        fn id(&self) -> ProfileId {
+            self.id.clone()
+        }
+
+        async fn run(
+            &self,
+            _request: ModelRequest,
+            _cancel: CancellationToken,
+        ) -> Result<BoxStream<'static, ModelEvent>, ModelError> {
+            if self.turns.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(ModelError::Unavailable(
+                    "quota_exhausted: reset in 60s".to_owned(),
+                ));
+            }
+            let mut events: Vec<ModelEvent> = self
+                .reply
+                .iter()
+                .map(|s| ModelEvent::TextDelta((*s).to_owned()))
+                .collect();
+            events.push(ModelEvent::Done(FinishReason::Stop));
+            Ok(futures_util::stream::iter(events).boxed())
+        }
+    }
+
+    /// In-memory `MessageStore`: records committed messages so the test can assert
+    /// on what (if anything) the host persisted.
+    #[derive(Default)]
+    struct MemMessages {
+        appended: Mutex<Vec<Message>>,
+    }
+
+    #[async_trait]
+    impl MessageStore for MemMessages {
+        async fn append(&self, message: &Message) -> Result<(), RepositoryError> {
+            self.appended
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(message.clone());
+            Ok(())
+        }
+
+        async fn list_by_session(
+            &self,
+            _session_id: &SessionId,
+            _limit: u32,
+        ) -> Result<Vec<Message>, RepositoryError> {
+            Ok(self
+                .appended
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone())
+        }
+    }
+
+    fn engine_with(model: Arc<FlakyModel>, messages: Arc<MemMessages>) -> Arc<RunEngine> {
+        RunEngine::new(
+            model,
+            Arc::new(EchoAssembler),
+            Arc::new(RecordingCheckpointer::default()),
+            messages,
+            WsHub::new(),
+            Arc::new(ManualClock::at_unix(1_000_000)),
+            CancellationToken::new(),
+        )
+    }
+
+    #[tokio::test]
+    async fn degraded_run_queues_then_completes_on_recovery() {
+        let model = Arc::new(FlakyModel {
+            id: ProfileId::new("fake-claude"),
+            turns: AtomicUsize::new(0),
+            reply: vec!["Sunny ", "and warm."],
+        });
+        let messages = Arc::new(MemMessages::default());
+        let engine = engine_with(Arc::clone(&model), Arc::clone(&messages));
+
+        let session_id = SessionId::from_str(SESSION).unwrap();
+        let run = Run::new(
+            RunId::from_str(RUN).unwrap(),
+            session_id,
+            RunBudget::default_interactive(),
+        );
+        let input = RunInput {
+            text: "What is the weather?".to_owned(),
+        };
+
+        // Attempt 1 — provider quota-exhausted. The run must be parked, not
+        // surfaced to the user as a failure, and no answer committed.
+        engine.drive(run, input, CancellationToken::new()).await;
+
+        let (state, reason) = engine.get_provider_health();
+        assert_eq!(state, HealthState::Unavailable);
+        assert_eq!(
+            reason, "quota_exhausted",
+            "providers endpoint must show the specific reason, not the fallback"
+        );
+        assert!(
+            messages.appended.lock().unwrap().is_empty(),
+            "no assistant message while the run is queued"
+        );
+
+        // The poll loop dequeues exactly one parked run (provider assumed healthy).
+        let (queued_run, queued_input) = engine.try_dequeue().expect("run was queued");
+        assert!(
+            engine.try_dequeue().is_none(),
+            "exactly one run should have been queued"
+        );
+        // It must be re-queued FRESH (Received) so the re-drive actually runs.
+        assert_eq!(queued_run.state, RunState::Received);
+
+        // Attempt 2 — provider recovered. The run completes and commits its answer.
+        engine
+            .drive(queued_run, queued_input, CancellationToken::new())
+            .await;
+
+        assert!(
+            engine.try_dequeue().is_none(),
+            "recovered run must not be re-queued"
+        );
+        let committed = messages.appended.lock().unwrap();
+        assert_eq!(committed.len(), 1, "assistant answer committed on recovery");
+        assert_eq!(committed[0].text, "Sunny and warm.");
+        assert_eq!(committed[0].role, MessageRole::Assistant);
     }
 }
