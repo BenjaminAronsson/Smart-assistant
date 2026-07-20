@@ -13,3 +13,6 @@ pub mod testing;
 
 #[cfg(test)]
 mod orchestrator_tests;
+
+#[cfg(test)]
+mod queue_tests;
