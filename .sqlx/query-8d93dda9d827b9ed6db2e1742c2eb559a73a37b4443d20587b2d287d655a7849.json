@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO tooling.grants\n                (grant_id, user_id, device_id, run_id, tool_id,\n                 tool_version_major, tool_version_minor, tool_version_patch,\n                 normalized_args_sha256, target_resource, expires_at, single_use, minted_at)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Bool",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8d93dda9d827b9ed6db2e1742c2eb559a73a37b4443d20587b2d287d655a7849"
+}
