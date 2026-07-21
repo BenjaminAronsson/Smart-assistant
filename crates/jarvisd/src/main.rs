@@ -65,8 +65,16 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     // and the grant mint/validate ports. `fs.read` is left unregistered — no
     // configured root is the stricter default (no ambient filesystem authority).
     let grant_store = Arc::new(jarvis_infra::grants::PgGrantStore::new(pool.clone()));
+    let mut registry = jarvisd::tools::build_registry(None)?;
+    // MCP tool servers (F2.7): none configured in M2, so no ambient MCP tool
+    // authority — the stricter default. `_mcp_hosts` must live for the process
+    // lifetime: each registered MCP executor holds a peer into its child, and
+    // dropping a host reaps that child. Held here in `run`'s scope until shutdown.
+    let _mcp_hosts =
+        jarvisd::tools::register_mcp_servers(&mut registry, Vec::new(), serve_shutdown.clone())
+            .await?;
     let tool_plane = jarvisd::runs::ToolPlane {
-        registry: Arc::new(jarvisd::tools::build_registry(None)?),
+        registry: Arc::new(registry),
         audit: Arc::new(jarvis_infra::audit_sink::PgAuditSink::new(pool.clone())),
         approval_gate: approval_gate.clone(),
         grant_minter: grant_store.clone(),
