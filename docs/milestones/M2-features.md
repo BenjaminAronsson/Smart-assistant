@@ -90,7 +90,7 @@ bypasses policy. Every feature below is written to preserve that.
   Read: docs/04 §3, docs/06 §5/§7; skills `sqlx-data`, `low-power`. Deps: F2.1, F2.3.
   contract-keeper (migrations) + security-auditor (audit/idempotency) mandatory.
 
-- [ ] **F2.5 — Approval surface: REST + WS events + Angular approval tray (contracts + jarvisd + web)** · *strong model (Angular part may be Sonnet)*
+- [x] **F2.5 — Approval surface: REST + WS events + Angular approval tray (contracts + jarvisd + web)** · *strong model (Angular part may be Sonnet)* — DONE (PR pending review). `ApprovalCardDto`/decision DTOs + `approval.requested`/`approval.resolved` WS events; `JarvisApprovalGate` + `POST /runs/{id}/approvals/{approval_id}` (approve/deny/edit → rebinds grant) with outbox+audit written in one tx; Angular `ApprovalTray` (verbatim exact-effect, optimistic block, timeline reconcile). NOTE: the **tool-proposal/result timeline events** (`run.tool.completed`) are DEFERRED to F2.6 — no producer until the executor lands (no-speculative-schema). Reviews: rust-reviewer + security-auditor (gateway) + contract-keeper, no BLOCKING; fixes applied; S1/edited-args logged as CF-8/CF-9. ToolStack→`RunEngine::drive` wiring also deferred to F2.6 (empty registry + ADR-004 ⇒ inert).
   `jarvis-contracts`: `ApprovalCardDto` carrying the **exact effect** (real target — entity
   id + friendly name / file path / recipient — and real payload, not a summary), grant
   outcome DTOs, tool-proposal/result timeline events; `xtask codegen` → committed TS.

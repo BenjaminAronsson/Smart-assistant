@@ -19,8 +19,11 @@ import type {
   ProviderState,
   ProvidersResponse,
   RunStateDto,
+  ApprovalCardDto,
+  ApprovalDecisionDto,
 } from '../generated/api-types';
 import { ApiService } from './api.service';
+import { ApprovalTray } from './approval-tray';
 
 /** Cap on the live streaming preview buffer (NIT 4). The durable message that
  * arrives on completion is authoritative, so trimming the transient preview to
@@ -35,7 +38,7 @@ const MAX_STREAMING_CHARS = 100_000;
 @Component({
   selector: 'app-conversation',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, ApprovalTray],
   templateUrl: './conversation.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './conversation.scss',
@@ -53,6 +56,14 @@ export class Conversation implements OnInit, OnDestroy {
   /** Live-accumulated token deltas for the in-progress response (transient,
    * never persisted — docs/05 §3). Cleared when the durable message arrives. */
   protected readonly streamingText = signal('');
+  /** Pending R2/R3 approvals interrupting the surface (docs/12 §2.3). Populated
+   * from live `approval.requested`/`approval.resolved` and reconciled from the
+   * timeline snapshot on reconnect — approvals persist until decided (docs/12
+   * §4: exempt from TTL), so a reconnect must restore them. */
+  protected readonly pendingApprovals = signal<ApprovalCardDto[]>([]);
+  /** Approval ids whose decision is in flight — optimistic-block until the
+   * durable `approval.resolved` event removes the card (angular-shell §4). */
+  protected readonly resolving = signal<ReadonlySet<string>>(new Set());
 
   private sessionId: string | null = null;
   private ws: WebSocket | null = null;
@@ -101,7 +112,12 @@ export class Conversation implements OnInit, OnDestroy {
     if (!this.sessionId) return;
     try {
       const resp = await this.api.getTimeline(this.sessionId, this.resyncCursor);
-      this.timeline.set(resp.items);
+      // Approvals persist until decided (docs/12 §4), so rebuild the pending set
+      // from the snapshot before rendering — a reconnect must not drop a card.
+      this.reconcilePendingFromTimeline(resp.items);
+      // Approval events drive the interrupt tray, not the scrolling history, so
+      // keep them out of the displayed timeline (they render as cards instead).
+      this.timeline.set(resp.items.filter((item) => !this.isApprovalEvent(item)));
       if (resp.nextSince !== null && resp.nextSince !== undefined) {
         this.resyncCursor = resp.nextSince;
       }
@@ -193,6 +209,77 @@ export class Conversation implements OnInit, OnDestroy {
       case 'provider.health_changed':
         void this.loadProviders();
         break;
+      case 'approval.requested':
+        this.addPendingApproval(event.card);
+        break;
+      case 'approval.resolved':
+        // The durable decision is the source of truth — drop the card and clear
+        // any optimistic block, whether this client or another decided it.
+        this.removePendingApproval(event.approvalId);
+        break;
+    }
+  }
+
+  /** A human decided an approval; block the card and POST the decision. The card
+   * is removed only when the durable `approval.resolved` event confirms it. */
+  protected async onDecide(card: ApprovalCardDto, decision: ApprovalDecisionDto): Promise<void> {
+    if (this.resolving().has(card.approvalId)) return;
+    this.resolving.update((ids) => new Set(ids).add(card.approvalId));
+    try {
+      await this.api.resolveApproval(card.runId, card.approvalId, decision);
+    } catch {
+      // The decision did not land — unblock so the human can retry.
+      this.resolving.update((ids) => {
+        const next = new Set(ids);
+        next.delete(card.approvalId);
+        return next;
+      });
+      this.error.set('Failed to send decision');
+    }
+  }
+
+  protected isResolving(approvalId: string): boolean {
+    return this.resolving().has(approvalId);
+  }
+
+  protected trackByApprovalId(_index: number, card: ApprovalCardDto): string {
+    return card.approvalId;
+  }
+
+  private isApprovalEvent(item: TimelineItem): boolean {
+    return (
+      item.type === 'run_event' &&
+      (item.event.type === 'approval.requested' || item.event.type === 'approval.resolved')
+    );
+  }
+
+  private addPendingApproval(card: ApprovalCardDto): void {
+    this.pendingApprovals.update((cards) =>
+      cards.some((existing) => existing.approvalId === card.approvalId) ? cards : [...cards, card],
+    );
+  }
+
+  private removePendingApproval(approvalId: string): void {
+    this.pendingApprovals.update((cards) => cards.filter((c) => c.approvalId !== approvalId));
+    this.resolving.update((ids) => {
+      if (!ids.has(approvalId)) return ids;
+      const next = new Set(ids);
+      next.delete(approvalId);
+      return next;
+    });
+  }
+
+  /** Fold a timeline snapshot's approval events into the pending set: a
+   * `requested` with no later `resolved` is still awaiting the human. */
+  private reconcilePendingFromTimeline(items: TimelineItem[]): void {
+    for (const item of items) {
+      if (item.type !== 'run_event') continue;
+      const event = item.event;
+      if (event.type === 'approval.requested') {
+        this.addPendingApproval(event.card);
+      } else if (event.type === 'approval.resolved') {
+        this.removePendingApproval(event.approvalId);
+      }
     }
   }
 

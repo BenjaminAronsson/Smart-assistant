@@ -27,6 +27,8 @@ const REQUIRED_DEFINITIONS: &[&str] = &[
     "ProvidersResponse",
     "DomainEvent",
     "TransientEvent",
+    "ApprovalCardDto",
+    "ApprovalDecisionDto",
 ];
 
 fn snapshot_path() -> std::path::PathBuf {

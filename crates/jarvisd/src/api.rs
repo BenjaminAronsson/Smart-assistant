@@ -149,6 +149,10 @@ pub fn router_with(
                             "/api/v1/runs/{id}/cancel",
                             axum::routing::post(crate::runs::cancel_run),
                         )
+                        .route(
+                            "/api/v1/runs/{id}/approvals/{approval_id}",
+                            axum::routing::post(crate::runs::resolve_approval),
+                        )
                         .route("/api/v1/providers", get(crate::runs::get_providers))
                         .with_state(runs),
                 )

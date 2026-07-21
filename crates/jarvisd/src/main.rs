@@ -68,12 +68,17 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         serve_shutdown.clone(),
     );
 
+    // The human-approval seam (F2.5). Shared so the REST surface can resolve
+    // pending approvals; the orchestrator side that parks them is wired in F2.6.
+    let approval_gate = jarvisd::approvals::JarvisApprovalGate::new(pool.clone());
+
     let run_api = RunApi::new(
         session_store,
         message_store.clone(),
         run_store.clone(),
         event_log.clone(),
         engine.clone(),
+        approval_gate,
     );
     let ws_state = WsState {
         hub: hub.clone(),

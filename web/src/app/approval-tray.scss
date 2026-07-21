@@ -1,0 +1,195 @@
+// Approval card (docs/12 §2.3). Amber is exclusive to "waiting on you" — it must
+// not appear on any non-approval surface (docs/12 §2.1 amber-exclusivity).
+$amber: #ff9800;
+$amber-strong: #b26a00;
+$deny: #f44336;
+$approve: #2e7d32;
+
+.approval-card {
+  border: 2px solid $amber;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  margin: 0.75rem 0;
+  background: var(--approval-bg, #fff8ec);
+  color: var(--text-primary, #000);
+  // Urgency pulse; paused for users who prefer reduced motion (docs/12 §6, NFR-11).
+  animation: approval-pulse 2s ease-in-out infinite;
+}
+
+@keyframes approval-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 152, 0, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(255, 152, 0, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .approval-card {
+    animation: none;
+  }
+}
+
+// Visible, verbatim to assistive tech; not a layout-affecting hidden element.
+.approval-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+.approval-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+
+.waiting-badge {
+  font-weight: 700;
+  color: $amber-strong;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 0.8rem;
+}
+
+.risk-badge,
+.egress-badge,
+.reversible-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.1rem 0.4rem;
+  border-radius: 0.25rem;
+  border: 1px solid currentColor;
+}
+
+.risk-badge {
+  color: $deny; // R2/R3 both warrant a human — keep the badge assertive.
+}
+
+.egress-badge.egress-external {
+  color: $deny;
+}
+
+.reversible-badge.irreversible {
+  color: $deny;
+}
+
+.tool-id {
+  margin: 0 0 0.4rem;
+
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.9rem;
+  }
+}
+
+// The mandate: the effect the human approves is shown exactly, wrapping rather
+// than truncating (no ellipsis, no max-height clip) — docs/06 §3, docs/12 §2.3.
+.exact-effect {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--code-bg, #f3f3f3);
+  border-radius: 0.25rem;
+  padding: 0.6rem;
+  margin: 0 0 0.6rem;
+}
+
+.args-label {
+  display: block;
+  font-size: 0.8rem;
+  margin-bottom: 0.25rem;
+}
+
+.args-editor {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  padding: 0.5rem;
+  border: 1px solid var(--border-color, #ccc);
+  border-radius: 0.25rem;
+  resize: vertical;
+}
+
+.args-error {
+  color: $deny;
+  font-size: 0.8rem;
+  margin: 0.3rem 0 0;
+}
+
+.args-view {
+  margin-bottom: 0.6rem;
+
+  summary {
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+
+  .args-json {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    background: var(--code-bg, #f3f3f3);
+    border-radius: 0.25rem;
+    padding: 0.5rem;
+    margin: 0.4rem 0 0;
+  }
+}
+
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+
+  button {
+    padding: 0.5rem 1rem;
+    border-radius: 0.25rem;
+    border: 1px solid transparent;
+    font-weight: 600;
+    cursor: pointer;
+
+    &:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    // Keyboard operation must be visibly focused (NFR-11, docs/12 §8).
+    &:focus-visible {
+      outline: 3px solid $amber;
+      outline-offset: 2px;
+    }
+  }
+
+  .approve {
+    background: $approve;
+    color: #fff;
+  }
+
+  .deny {
+    background: $deny;
+    color: #fff;
+  }
+
+  .edit-toggle {
+    background: transparent;
+    border-color: var(--border-color, #ccc);
+    color: var(--text-primary, #000);
+  }
+
+  .pending-note {
+    font-size: 0.8rem;
+    color: $amber-strong;
+  }
+}

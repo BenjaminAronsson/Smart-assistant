@@ -196,6 +196,13 @@ async fn app_with_token(model: FakeModel, run_store: Arc<FakeRunStore>) -> (Rout
         Arc::new(SystemClock),
         CancellationToken::new(),
     );
+    // A lazy pool that never connects: these tests exercise the run REST surface,
+    // not the approval endpoint, so the gate is constructed but never used.
+    let pool = jarvis_infra::db::connect_lazy(
+        "postgres://jarvis:jarvis-dev-only@127.0.0.1:5432/jarvis",
+        1,
+    )
+    .expect("lazy pool");
     let run_api = RunApi::new(
         Arc::new(FakeSessionStore {
             known: SESSION.parse().unwrap(),
@@ -204,6 +211,7 @@ async fn app_with_token(model: FakeModel, run_store: Arc<FakeRunStore>) -> (Rout
         run_store,
         Arc::new(EmptyEventReader),
         engine,
+        jarvisd::approvals::JarvisApprovalGate::new(pool),
     );
     let ws = WsState {
         hub: WsHub::new(),

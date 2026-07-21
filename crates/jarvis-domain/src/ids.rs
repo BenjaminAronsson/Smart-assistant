@@ -99,3 +99,11 @@ ulid_id!(
     /// Immutable conversation message identifier (docs/04 §2).
     MessageId
 );
+ulid_id!(
+    /// A single pending human-approval request (F2.5, docs/06 §3). Minted at the
+    /// approval-gate boundary (host owns randomness) so the WS `approval.requested`
+    /// event and the `POST /runs/{id}/approvals/{approval_id}` decision can be
+    /// correlated to exactly one parked run — a stale or replayed decision for a
+    /// different id resolves nothing.
+    ApprovalId
+);

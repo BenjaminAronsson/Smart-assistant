@@ -8,6 +8,47 @@
  */
 export type AdapterState = "up" | "down" | "disabled";
 /**
+ * Wire projection of [`jarvis_domain::policy::DataEgress`] (docs/06 §5): how far
+ * the tool's data may travel, surfaced so the human approves egress knowingly.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "DataEgressDto".
+ */
+export type DataEgressDto = "none" | "local" | "external";
+/**
+ * Wire projection of [`jarvis_domain::policy::RiskLevel`] (docs/06 §3). An
+ * approval card only ever carries `R2`/`R3` — `R0`/`R1` auto-authorize and `R4`
+ * is rejected outright — but the projection is total (no `_`) so a new tier
+ * forces a decision here rather than silently mapping.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "RiskLevelDto".
+ */
+export type RiskLevelDto = "r0" | "r1" | "r2" | "r3" | "r4";
+/**
+ * ULID: 26 chars of uppercase Crockford base32
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "UlidString".
+ */
+export type UlidString = string;
+/**
+ * The verb a human answers a card with (docs/05 §4). Distinct from
+ * [`ApprovalResolutionDto`]'s past-tense outcome: this is the request input.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ApprovalDecision".
+ */
+export type ApprovalDecision = "approve" | "deny";
+/**
+ * How an approval was resolved (docs/05 §3), carried by the `approval.resolved`
+ * event. Past tense to the [`ApprovalDecision`] request verb.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ApprovalResolutionDto".
+ */
+export type ApprovalResolutionDto = "approved" | "denied";
+/**
  * One WebSocket replaces v1's three hubs; `channel` discriminates (docs/05 §1).
  *
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
@@ -90,14 +131,19 @@ export type DomainEvent =
       state: RunStateDto;
       type: "run.checkpoint_saved";
       [k: string]: unknown;
+    }
+  | {
+      card: ApprovalCardDto;
+      type: "approval.requested";
+      [k: string]: unknown;
+    }
+  | {
+      approvalId: UlidString;
+      outcome: ApprovalResolutionDto;
+      runId: UlidString;
+      type: "approval.resolved";
+      [k: string]: unknown;
     };
-/**
- * ULID: 26 chars of uppercase Crockford base32
- *
- * This interface was referenced by `JarvisContracts`'s JSON-Schema
- * via the `definition` "UlidString".
- */
-export type UlidString = string;
 /**
  * Wire projection of `jarvis_domain::RunState` (docs/02 §4). The policy/tool/
  * approval states exist on the wire from M1 but are only produced once their
@@ -212,6 +258,51 @@ export interface JarvisContracts {
 export interface AdapterHealth {
   detail?: string | null;
   state: AdapterState;
+  [k: string]: unknown;
+}
+/**
+ * What a human is asked to approve (docs/06 §3). Carries the exact effect and
+ * the real proposed arguments so the approval binds precisely what is shown.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ApprovalCardDto".
+ */
+export interface ApprovalCardDto {
+  /**
+   * The pending approval this card asks about; echoed back on the decision.
+   */
+  approvalId: string;
+  egress: DataEgressDto;
+  /**
+   * A human-readable rendering of exactly what will execute — the real target
+   * and payload, never a summary (docs/06 §3). Snapshot-tested.
+   */
+  exactEffect: string;
+  proposedArguments: unknown;
+  /**
+   * Whether the tool registered a compensating undo (docs/06 §4).
+   */
+  reversible: boolean;
+  risk: RiskLevelDto;
+  runId: UlidString;
+  /**
+   * The namespaced tool identifier (e.g. `message.send`).
+   */
+  toolId: string;
+  [k: string]: unknown;
+}
+/**
+ * Body of `POST /api/v1/runs/{id}/approvals/{approval_id}` (docs/05 §4). On
+ * `approve`, `editedArguments` (when present) replaces the proposed arguments —
+ * the grant binds the edited set, so executing the original would fail
+ * validation (invalidation by hash, not a flag; docs/06 §4). Ignored on `deny`.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ApprovalDecisionDto".
+ */
+export interface ApprovalDecisionDto {
+  decision: ApprovalDecision;
+  editedArguments?: unknown;
   [k: string]: unknown;
 }
 /**

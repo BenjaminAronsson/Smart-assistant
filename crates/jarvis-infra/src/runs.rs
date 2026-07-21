@@ -238,7 +238,7 @@ impl Checkpointer for PgRunStore {
     }
 }
 
-async fn insert_outbox(
+pub(crate) async fn insert_outbox(
     conn: &mut sqlx::PgConnection,
     event_type: &str,
     payload: serde_json::Value,
