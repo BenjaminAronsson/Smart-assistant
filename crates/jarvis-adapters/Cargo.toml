@@ -21,9 +21,11 @@ tracing = "0.1"
 futures-util = "0.3"
 async-trait = "0.1"
 # MCP host (client) role only (F2.7, docs/03 §MCP, docs/06 §5): Jarvis launches
-# and drives out-of-process tool servers; it never runs a server. Default
-# features carry the async-rw transport used to speak to the child over stdio.
-rmcp = { version = "2.2.0", features = ["client", "transport-child-process"] }
+# and drives out-of-process tool servers; it never runs a server. `default-features
+# = false` keeps rmcp's default `server` role out of the host — a smaller compile
+# and attack surface at the Z3 boundary. `transport-child-process` transitively
+# pulls the async-rw transport used to speak to the child over stdio.
+rmcp = { version = "2.2.0", default-features = false, features = ["client", "transport-child-process"] }
 
 [dev-dependencies]
 # Async unit tests (`#[tokio::test]`) for the tool executors; the current-thread

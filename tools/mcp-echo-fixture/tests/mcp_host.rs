@@ -53,12 +53,12 @@ fn host_table() -> HostPolicyTable {
 
 #[tokio::test]
 async fn imports_only_sanctioned_tools_with_host_policy() {
-    let host = McpHost::connect(fixture_command())
+    let host = McpHost::connect(fixture_command(), CancellationToken::new())
         .await
         .expect("connect to fixture");
 
     let mut descriptors = host
-        .import_tools(&host_table())
+        .import_tools(&host_table(), CancellationToken::new())
         .await
         .expect("import tools");
     descriptors.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
@@ -84,11 +84,11 @@ async fn imports_only_sanctioned_tools_with_host_policy() {
 
 #[tokio::test]
 async fn imported_executor_round_trips_a_call_to_the_child() {
-    let host = McpHost::connect(fixture_command())
+    let host = McpHost::connect(fixture_command(), CancellationToken::new())
         .await
         .expect("connect to fixture");
     let descriptors = host
-        .import_tools(&host_table())
+        .import_tools(&host_table(), CancellationToken::new())
         .await
         .expect("import tools");
 

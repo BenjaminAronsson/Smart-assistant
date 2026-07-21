@@ -24,8 +24,9 @@
 //! Result validation (schema/size/control-char hardening) and cancellation
 //! reaping the child are F2.7 Slice 2; jarvisd wiring is Slice 3.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use jarvis_application::policy::{ToolDescriptor, ToolExecutor};
@@ -47,6 +48,22 @@ use tokio_util::sync::CancellationToken;
 /// depth against tool-result smuggling (docs/06 §5). Slice 2 adds full
 /// control-char stripping / schema validation; this cap is the Slice-1 floor.
 const MAX_MCP_RESULT_BYTES: usize = 16 * 1024;
+
+/// Wall-clock bound on the MCP initialize handshake. A wedged or hostile child
+/// (docs/06 §5) must not hang host startup indefinitely (invariant #4): if the
+/// handshake does not complete in time the transport is dropped, which reaps the
+/// child.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Wall-clock bound on importing the server's tool list. `list_all_tools`
+/// follows MCP pagination, so a malicious server could otherwise stream pages
+/// forever; the timeout caps that, and [`MAX_IMPORTED_TOOLS`] caps how many
+/// tools are accepted.
+const LIST_TOOLS_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Upper bound on the number of tools imported from one server — a defensive cap
+/// at the untrusted Z3 boundary so a server cannot flood the host catalogue.
+const MAX_IMPORTED_TOOLS: usize = 256;
 
 /// Why the host could not talk to an MCP tool server. Carries no server-supplied
 /// content beyond a short diagnostic string (invariant #5).
@@ -137,10 +154,11 @@ pub fn overlay_policy<'a>(
 
 /// A running MCP tool-server child the host drives. Owning the
 /// [`RunningService`] keeps the child process and its IO task alive; dropping
-/// `McpHost` tears the child down (invariant #4 — Slice 2 makes cancellation
-/// reap it deterministically). The child runs under the host's identity for now;
-/// OS-identity/container isolation (docs/06 §5) is ops/host configuration
-/// applied when the child is launched (Slice 3).
+/// `McpHost` reaps the child — rmcp's child-process transport kills it on drop —
+/// and [`McpHost::shutdown`] is the graceful cancel-then-reap path (invariant
+/// #4). The child runs under the host's identity for now; OS-identity/container
+/// isolation (docs/06 §5) is ops/host configuration applied when the child is
+/// launched (Slice 3).
 pub struct McpHost {
     service: RunningService<RoleClient, ()>,
     child_pid: Option<u32>,
@@ -151,17 +169,34 @@ impl McpHost {
     /// complete the MCP initialize handshake. `command` is host-authored
     /// (pinned binary/args — docs/06 §5 "pinned version/hash"); this adapter
     /// never derives the command from model or tool text.
-    pub async fn connect(command: tokio::process::Command) -> Result<Self, McpHostError> {
+    ///
+    /// The handshake is bounded by [`CONNECT_TIMEOUT`] and cancelled by `cancel`
+    /// (invariant #4): a wedged or hostile child cannot hang host startup — on
+    /// timeout or cancellation the transport is dropped, reaping the child.
+    pub async fn connect(
+        command: tokio::process::Command,
+        cancel: CancellationToken,
+    ) -> Result<Self, McpHostError> {
         let transport = TokioChildProcess::new(command).map_err(McpHostError::Spawn)?;
-        // Capture the pid before the transport is consumed by `serve`, so Slice 2
-        // can assert the child is reaped on cancellation.
+        // Capture the pid before the transport is consumed by `serve`, so the
+        // child can be identified for lifecycle/tests.
         let child_pid = transport.id();
         // `()` is the no-op client handler: the host issues requests and does not
-        // serve any back to the child.
-        let service =
-            ().serve(transport)
-                .await
-                .map_err(|e| McpHostError::Initialize(e.to_string()))?;
+        // serve any back to the child. Passing `cancel` lets an external cancel
+        // abort the handshake (and later tear the service down).
+        let service = match tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            ().serve_with_ct(transport, cancel),
+        )
+        .await
+        {
+            Err(_elapsed) => {
+                return Err(McpHostError::Initialize(
+                    "initialize handshake timed out".to_owned(),
+                ));
+            }
+            Ok(result) => result.map_err(|e| McpHostError::Initialize(e.to_string()))?,
+        };
         Ok(Self { service, child_pid })
     }
 
@@ -174,18 +209,40 @@ impl McpHost {
     /// registrable [`ToolDescriptor`] for every server tool the host sanctions,
     /// dropping the rest. Each descriptor carries host [`ToolPolicy`] and an
     /// executor bound to this host's peer.
+    ///
+    /// The list fetch is bounded by [`LIST_TOOLS_TIMEOUT`], cancelled by
+    /// `cancel`, and capped at [`MAX_IMPORTED_TOOLS`] — a hostile server can
+    /// neither hang the import nor flood the catalogue (invariant #4, docs/06
+    /// §5). Duplicate server tool names are de-duplicated (keep first) so a
+    /// server cannot smuggle a second mapping for one host [`ToolId`].
     pub async fn import_tools(
         &self,
         table: &HostPolicyTable,
+        cancel: CancellationToken,
     ) -> Result<Vec<ToolDescriptor>, McpHostError> {
-        let server_tools = self
-            .service
-            .peer()
-            .list_all_tools()
-            .await
-            .map_err(|e| McpHostError::ListTools(e.to_string()))?;
+        let server_tools = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                return Err(McpHostError::ListTools("cancelled".to_owned()));
+            }
+            result = tokio::time::timeout(LIST_TOOLS_TIMEOUT, self.service.peer().list_all_tools()) => {
+                match result {
+                    Err(_elapsed) => {
+                        return Err(McpHostError::ListTools("list_tools timed out".to_owned()));
+                    }
+                    Ok(listing) => listing.map_err(|e| McpHostError::ListTools(e.to_string()))?,
+                }
+            }
+        };
 
-        let names: Vec<&str> = server_tools.iter().map(|t| t.name.as_ref()).collect();
+        // Cap and de-duplicate at the untrusted boundary before overlaying policy.
+        let mut seen = BTreeSet::new();
+        let names: Vec<&str> = server_tools
+            .iter()
+            .map(|t| t.name.as_ref())
+            .filter(|name| seen.insert(*name))
+            .take(MAX_IMPORTED_TOOLS)
+            .collect();
         let kept = overlay_policy(names.iter().copied(), table);
 
         let peer = self.service.peer().clone();
