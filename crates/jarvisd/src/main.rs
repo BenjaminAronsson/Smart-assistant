@@ -55,6 +55,24 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     let dispatch_shutdown = CancellationToken::new();
     spawn_signal_listener(serve_shutdown.clone());
 
+    // The human-approval seam (F2.5), shared by the REST surface (resolve) and
+    // the orchestrator's tool plane (park), so both rendezvous on the same
+    // pending-approval map.
+    let approval_gate = jarvisd::approvals::JarvisApprovalGate::new(pool.clone());
+
+    // The live tool plane (F2.6): a registry with every executor timeout-wrapped
+    // at its single registration site (`jarvisd::tools`), the durable audit sink,
+    // and the grant mint/validate ports. `fs.read` is left unregistered — no
+    // configured root is the stricter default (no ambient filesystem authority).
+    let grant_store = Arc::new(jarvis_infra::grants::PgGrantStore::new(pool.clone()));
+    let tool_plane = jarvisd::runs::ToolPlane {
+        registry: Arc::new(jarvisd::tools::build_registry(None)?),
+        audit: Arc::new(jarvis_infra::audit_sink::PgAuditSink::new(pool.clone())),
+        approval_gate: approval_gate.clone(),
+        grant_minter: grant_store.clone(),
+        grant_validator: grant_store,
+    };
+
     let engine = RunEngine::new(
         Arc::new(ClaudeCliModel::with_config(
             "claude-cli",
@@ -66,11 +84,8 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         hub.clone(),
         Arc::new(SystemClock),
         serve_shutdown.clone(),
+        Some(tool_plane),
     );
-
-    // The human-approval seam (F2.5). Shared so the REST surface can resolve
-    // pending approvals; the orchestrator side that parks them is wired in F2.6.
-    let approval_gate = jarvisd::approvals::JarvisApprovalGate::new(pool.clone());
 
     let run_api = RunApi::new(
         session_store,
@@ -181,7 +196,9 @@ async fn poll_provider_health(engine: Arc<RunEngine>, shutdown: CancellationToke
         // Try to dequeue and re-spawn one run per interval
         if let Some((run, input)) = engine.try_dequeue() {
             tracing::debug!("dequeued and re-spawning run after provider recovery");
-            engine.spawn(run, input);
+            // A requeued run carries no device identity → no tool authority
+            // (invariant #1); it re-runs the model turn that failed on quota.
+            engine.spawn(run, input, None);
         }
         // Wait for the next poll interval or shutdown
         tokio::select! {
@@ -220,7 +237,9 @@ async fn recover_unfinished_runs(
         // Restart from the top: same id/session/budget, fresh Received state; the
         // durable row re-converges as the orchestrator re-checkpoints.
         let fresh = Run::new(run.id, run.session_id, run.budget);
-        engine.spawn(fresh, RunInput { text });
+        // A crash-recovered run has no device identity → no tool authority
+        // (invariant #1); M1/M2 runs re-drive the model turn idempotently.
+        engine.spawn(fresh, RunInput { text }, None);
     }
 }
 
