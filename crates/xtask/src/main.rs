@@ -22,32 +22,34 @@ fn main() -> anyhow::Result<()> {
 /// layer, which form the executable specification. A build failure here means a
 /// trace scenario failed.
 fn golden() -> anyhow::Result<()> {
-    println!("Running golden traces 1–3 (F1.9)...");
+    println!("Running golden traces 1–5...");
     println!("  Trace 1: simple question streams within budget");
     println!("  Trace 2: complex question (placeholder for M1)");
     println!("  Trace 3: quota-exhausted → degraded mode → recovery");
+    println!("  Trace 4: R0/R1 auto tool → observe → replan (F2.2)");
+    println!("  Trace 5: R2 approval → grant → execute (+ deny/edit/reject) (F2.3/F2.6)");
 
-    let status = Command::new("cargo")
-        .args(["test", "--lib", "orchestrator_tests", "--", "--nocapture"])
-        .status()?;
-
-    if !status.success() {
-        anyhow::bail!("orchestrator golden traces failed");
+    // Each suite is executed as `cargo test`; the tests ARE the executable
+    // trace specification. A failure here means a trace scenario regressed.
+    for (suite, label) in [
+        ("orchestrator_tests", "orchestrator golden traces"),
+        ("policy_tests", "policy / auto-tool golden traces"),
+        ("approval_tests", "approval / grant golden traces"),
+        ("queue_tests", "queue golden traces"),
+    ] {
+        let status = Command::new("cargo")
+            .args(["test", "--lib", suite, "--", "--nocapture"])
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("{label} failed");
+        }
     }
 
-    let status = Command::new("cargo")
-        .args(["test", "--lib", "queue_tests", "--", "--nocapture"])
-        .status()?;
-
-    if !status.success() {
-        anyhow::bail!("queue golden traces failed");
-    }
-
-    println!("✓ Golden traces 1–3 passed");
+    println!("✓ Golden traces 1–5 passed");
     println!("  - Orchestrator: simple/complex question, degraded mode recovery");
+    println!("  - Policy: R0/R1 auto tool path, result sanitization, denial");
+    println!("  - Approval: R2 approve/deny/edit, grant mint/validate, adversarial text");
     println!("  - Queue: priority, eviction, capacity management");
-    println!("  - Health: classification, state tracking");
-    println!("  - Restart: recovery from checkpoint");
     Ok(())
 }
 

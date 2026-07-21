@@ -15,17 +15,19 @@
 //!     grant is not consumed, a `grant.rejected` event is recorded, and the
 //!     executor is never reached.
 //!
-//! Fault handling: the F2.3 ports are infallible (`mint` returns
-//! `ExecutionGrant`, `validate` returns only `GrantError`), so an infra/DB fault
-//! has no error channel. Every such fault therefore panics the task, which is
-//! FAIL-SAFE — a panicked mint/validate authorizes nothing. Graceful
-//! `RunState::Failed` routing needs the ports to gain an error arm; tracked as
-//! CF-6, to revisit when the live tool path is wired (F2.6).
+//! Fault handling: `mint` returns `Result<ExecutionGrant, GrantMintError>`
+//! (CF-6, F2.6) so an infra/DB fault routes the run to `RunState::Failed`
+//! gracefully instead of panicking the task — and, because the fault returns
+//! *before* `tx.commit`, the transaction rolls back and no grant is persisted
+//! (still FAIL-SAFE: a failed mint authorizes nothing, invariant #1). The
+//! `GrantMintError` message is non-sensitive and never carries the raw driver
+//! text (invariant #5). `validate` still returns only `GrantError`; a fault
+//! there remains an `.expect` (its own error arm is a later carry-forward).
 
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use jarvis_application::policy::{GrantBinding, GrantMinter, GrantValidator};
+use jarvis_application::policy::{GrantBinding, GrantMintError, GrantMinter, GrantValidator};
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::grants::{ExecutionGrant, GrantError, GrantId, Sha256 as ArgsHash};
 use jarvis_domain::tools::{ToolInvocation, ToolVersion, canonical_form};
@@ -60,9 +62,10 @@ fn i64_ver(v: u64) -> i64 {
 
 #[async_trait]
 impl GrantMinter for PgGrantStore {
-    async fn mint(&self, binding: GrantBinding) -> ExecutionGrant {
+    async fn mint(&self, binding: GrantBinding) -> Result<ExecutionGrant, GrantMintError> {
         let mut id_bytes = [0u8; 32];
-        getrandom::fill(&mut id_bytes).expect("system CSPRNG unavailable");
+        getrandom::fill(&mut id_bytes)
+            .map_err(|_| GrantMintError("system CSPRNG unavailable".to_owned()))?;
         let grant = ExecutionGrant {
             grant_id: GrantId::from_bytes(id_bytes),
             user_id: binding.user_id,
@@ -76,7 +79,14 @@ impl GrantMinter for PgGrantStore {
             single_use: true,
         };
 
-        let mut tx = self.pool.begin().await.expect("grant mint: begin");
+        // Any fault below returns before `commit`, so the tx rolls back and no
+        // grant row nor audit event persists (fail-safe). Messages are stable and
+        // non-sensitive — never the raw driver text (invariant #5).
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| GrantMintError("grant mint: begin failed".to_owned()))?;
         let minted_at = OffsetDateTime::now_utc();
         let expires_at = OffsetDateTime::from(grant.expires_at);
         let grant_id = grant.grant_id.to_string();
@@ -104,13 +114,15 @@ impl GrantMinter for PgGrantStore {
         )
         .execute(&mut *tx)
         .await
-        .expect("grant mint: insert");
+        .map_err(|_| GrantMintError("grant mint: insert failed".to_owned()))?;
 
         crate::audit::append(&mut tx, &grant_event(&grant, "grant.minted", None))
             .await
-            .expect("grant mint: audit");
-        tx.commit().await.expect("grant mint: commit");
-        grant
+            .map_err(|_| GrantMintError("grant mint: audit failed".to_owned()))?;
+        tx.commit()
+            .await
+            .map_err(|_| GrantMintError("grant mint: commit failed".to_owned()))?;
+        Ok(grant)
     }
 }
 

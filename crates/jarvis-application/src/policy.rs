@@ -36,6 +36,18 @@ pub trait ToolExecutor: Send + Sync {
         grant: Option<ExecutionGrant>,
         cancel: CancellationToken,
     ) -> Result<ToolResult, ToolError>;
+
+    /// Validate a set of arguments *before* a grant binds them (CF-9, docs/06
+    /// §4). The orchestrator calls this on the human's *approved* arguments —
+    /// which may have been edited away from the proposal — so a malformed edit
+    /// is caught at approval time and never mints a grant, rather than only
+    /// failing later inside [`Self::execute`]. The default accepts everything;
+    /// a tool with an argument schema overrides it to reject shape violations.
+    /// Returning `Ok` is not authority to execute — the policy/grant gates still
+    /// apply (invariant #1); this only rejects arguments the tool cannot honour.
+    fn validate_args(&self, _arguments: &CanonicalValue) -> Result<(), ToolError> {
+        Ok(())
+    }
 }
 
 /// Append-only audit sink (invariant #6, docs/06 §7). F2.4 implements this to
@@ -267,7 +279,13 @@ pub trait ApprovalGate: Send + Sync {
 /// cryptographically random id, the SHA-256 of `canonical_form(arguments)`, and
 /// `expires_at = now + ttl`; the application never computes crypto itself
 /// (domain/application dep rule).
-#[derive(Debug, Clone)]
+///
+/// `Debug` is **manual** and redacts `arguments` (CF-7, invariant #5): the raw
+/// approved arguments may carry a secret (a recipient, a file path, a message
+/// body), so a `tracing` field or accidental `{:?}` on a binding must never
+/// spill them into a log. The field renders as `<redacted>`; the argument
+/// *hash* is what the audit trail records instead (see the grant lifecycle).
+#[derive(Clone)]
 pub struct GrantBinding {
     pub user_id: UserId,
     pub device_id: DeviceId,
@@ -279,11 +297,40 @@ pub struct GrantBinding {
     pub ttl: Duration,
 }
 
+impl std::fmt::Debug for GrantBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GrantBinding")
+            .field("user_id", &self.user_id)
+            .field("device_id", &self.device_id)
+            .field("run_id", &self.run_id)
+            .field("tool_id", &self.tool_id)
+            .field("tool_version", &self.tool_version)
+            // Never render the raw arguments — they may be secret (invariant #5).
+            .field("arguments", &"<redacted>")
+            .field("target_resource", &self.target_resource)
+            .field("ttl", &self.ttl)
+            .finish()
+    }
+}
+
+/// An infra fault that prevented a grant from being minted (docs/06 §4, CF-6).
+/// The grant ports were infallible through F2.3, so a DB fault in the store
+/// `panic`ked the task — FAIL-SAFE (a panicked mint authorizes nothing) but not
+/// graceful. This error arm lets the orchestrator route such a fault to
+/// [`RunState::Failed`](jarvis_domain::run::RunState) instead of aborting. The
+/// message is for the host span/log only, never the user outcome (invariant #5).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("grant mint failed: {0}")]
+pub struct GrantMintError(pub String);
+
 /// Mints a single-use grant on approval (docs/06 §4). Implemented in infra
 /// (F2.4) with real randomness + SHA-256; a test fake mints deterministically.
+/// Returns [`GrantMintError`] on an infra fault so the orchestrator fails the
+/// run gracefully rather than panicking (CF-6). A mint failure authorizes
+/// nothing — no grant, no execution (invariant #1).
 #[async_trait]
 pub trait GrantMinter: Send + Sync {
-    async fn mint(&self, binding: GrantBinding) -> ExecutionGrant;
+    async fn mint(&self, binding: GrantBinding) -> Result<ExecutionGrant, GrantMintError>;
 }
 
 /// Validates + consumes a grant immediately before execution (docs/06 §4).

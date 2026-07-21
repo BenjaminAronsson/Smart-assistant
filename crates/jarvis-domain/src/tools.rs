@@ -234,6 +234,58 @@ pub struct ToolResult {
     pub compensation: Option<String>,
 }
 
+/// The largest tool-result content the orchestrator folds into a model prompt
+/// (docs/06 §5 tool-result smuggling). Bounds prompt growth from a single tool
+/// call independently of any per-executor read cap — a compromised or buggy
+/// executor cannot force unbounded context by ignoring its own limit.
+pub const MAX_RESULT_PROMPT_BYTES: usize = 16 * 1024;
+
+/// The outcome of [`sanitize_result_content`]: the cleaned text and whether the
+/// byte cap truncated it. `truncated` is the flag the orchestrator ORs into the
+/// observation so the model is told its view of the result is partial.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SanitizedContent {
+    pub text: String,
+    pub truncated: bool,
+}
+
+/// Neutralize untrusted tool-result content before it is folded into a model
+/// prompt (docs/06 §5, invariant #1: tool output is data, never instructions).
+/// This is the single result validator CF-3 requires — owned here in the domain
+/// and applied by the orchestrator, never trusted per-executor:
+///   * strips C0/C1 control characters and DEL (`char::is_control`) *except*
+///     `\n` and `\t`, which structure legitimate text — so a result cannot
+///     smuggle terminal escapes or other control bytes into the context;
+///   * hard-caps the length at `max_bytes`, truncating on a UTF-8 char boundary
+///     (a `char` is pushed only if it fits wholly), so no partial code unit and
+///     no unbounded prompt growth.
+///
+/// Pure: no allocation beyond the returned string, deterministic, and unaware of
+/// any specific tool — a control byte is stripped whatever produced it.
+///
+/// Bounds: this caps the *output* at `max_bytes` but still scans the whole
+/// `content` (stripped chars never advance the cap), so the input size is the
+/// real bound — kept in check upstream by the executor's own read cap
+/// (`MAX_READ_BYTES`, CF-11), not here. Only C0/C1/DEL controls are stripped;
+/// Unicode bidi/zero-width spoofing (CF-13) is out of this validator's scope.
+pub fn sanitize_result_content(content: &str, max_bytes: usize) -> SanitizedContent {
+    let mut text = String::new();
+    let mut truncated = false;
+    for ch in content.chars() {
+        // Drop smuggled control bytes; \n and \t are legitimate structure.
+        if ch.is_control() && ch != '\n' && ch != '\t' {
+            continue;
+        }
+        // Cap on a whole-char boundary: stop before a char would overflow.
+        if text.len() + ch.len_utf8() > max_bytes {
+            truncated = true;
+            break;
+        }
+        text.push(ch);
+    }
+    SanitizedContent { text, truncated }
+}
+
 /// Terminal outcomes of an attempted tool execution. Grant-specific failures
 /// live in [`crate::grants::GrantError`]; this covers the execution itself.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]

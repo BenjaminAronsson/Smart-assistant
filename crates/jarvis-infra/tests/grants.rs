@@ -70,7 +70,7 @@ async fn consumed_at(pool: &PgPool, grant: &ExecutionGrant) -> Option<time::Offs
 async fn mint_then_validate_consumes_once_and_replay_is_rejected(pool: PgPool) {
     let store = PgGrantStore::new(pool.clone());
 
-    let grant = store.mint(binding()).await;
+    let grant = store.mint(binding()).await.unwrap();
     // Minted, unspent, and bound to real arguments (a hash, never the raw args).
     assert!(consumed_at(&pool, &grant).await.is_none());
     assert_eq!(grant.tool_id, tool());
@@ -105,7 +105,7 @@ async fn concurrent_validation_consumes_exactly_once(pool: PgPool) {
     // Consumed. Anything else (two successes) would be a double-execution.
     let store_a = PgGrantStore::new(pool.clone());
     let store_b = PgGrantStore::new(pool.clone());
-    let grant = store_a.mint(binding()).await;
+    let grant = store_a.mint(binding()).await.unwrap();
     let now = SystemTime::now();
     let inv = matching_invocation();
 
@@ -128,7 +128,7 @@ async fn concurrent_validation_consumes_exactly_once(pool: PgPool) {
 #[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
 async fn edited_arguments_fail_validation_and_do_not_consume(pool: PgPool) {
     let store = PgGrantStore::new(pool.clone());
-    let grant = store.mint(binding()).await;
+    let grant = store.mint(binding()).await.unwrap();
 
     // The model proposes a DIFFERENT recipient than was approved.
     let edited = ToolInvocation {
@@ -152,7 +152,7 @@ async fn edited_arguments_fail_validation_and_do_not_consume(pool: PgPool) {
 #[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
 async fn a_grant_bound_to_another_run_is_rejected(pool: PgPool) {
     let store = PgGrantStore::new(pool.clone());
-    let grant = store.mint(binding()).await;
+    let grant = store.mint(binding()).await.unwrap();
 
     // Tamper the in-memory grant to point at a different run.
     let mut tampered = grant.clone();
@@ -169,7 +169,7 @@ async fn a_grant_bound_to_another_run_is_rejected(pool: PgPool) {
 #[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
 async fn an_expired_grant_is_rejected(pool: PgPool) {
     let store = PgGrantStore::new(pool.clone());
-    let grant = store.mint(binding()).await;
+    let grant = store.mint(binding()).await.unwrap();
 
     // A clock past the grant's expiry.
     let past_expiry = grant.expires_at + Duration::from_secs(1);
