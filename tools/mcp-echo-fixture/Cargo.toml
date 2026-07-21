@@ -1,0 +1,36 @@
+# A trivial in-workspace MCP tool server used as a **test fixture** for the MCP
+# host adapter (F2.7, docs/06 §5). It is not a shipping tool: it exists so the
+# host's descriptor-import, policy-overlay, cancellation, and result-validation
+# paths can be exercised against a real child process without a network or a
+# third-party server. The host-side integration test lives here (in this
+# crate's `tests/`) so `CARGO_BIN_EXE_mcp-echo-fixture` resolves to the built
+# binary; it dev-depends on `jarvis-adapters` to drive `McpHost`.
+[package]
+name = "mcp-echo-fixture"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "mcp-echo-fixture"
+path = "src/main.rs"
+
+[dependencies]
+# Server role only: this fixture *is* an MCP tool server. The default features
+# carry the async-rw transport the stdio tuple uses.
+rmcp = { version = "2.2.0", features = ["server"] }
+tokio = { version = "1", features = ["rt", "macros", "io-std", "io-util"] }
+serde_json.workspace = true
+anyhow = "1"
+
+[dev-dependencies]
+jarvis-adapters.workspace = true
+jarvis-application.workspace = true
+jarvis-domain.workspace = true
+tokio = { version = "1", features = ["rt", "macros", "process", "time"] }
+tokio-util = { version = "0.7", default-features = false }

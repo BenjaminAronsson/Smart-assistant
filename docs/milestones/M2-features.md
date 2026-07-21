@@ -102,7 +102,7 @@ bypasses policy. Every feature below is written to preserve that.
   docs/12 §2 (as available); skills `ws-contracts`, `policy-grants`, `angular-shell`.
   Deps: F2.3, F2.4. contract-keeper + security-auditor (gateway) mandatory.
 
-- [ ] **F2.6 — Native + example tier tools: `fs.read` (R0), reversible R1, fake R2 (adapters)** · *strong model*
+- [x] **F2.6 — Native + example tier tools: `fs.read` (R0), reversible R1, fake R2 (adapters)** · *strong model* — DONE (PRs #12–#15 merged to main). `fs.read` R0 within allowlisted root (traversal-denied), reversible `example.light` R1 with registered undo, fake `message.send` R2 (approval→grant→execute→edit-invalidation). Live `ToolStack` wired into jarvisd via `build_registry` (single site, every executor `TimeoutExecutor`-wrapped) + `PgAuditSink`; tools lent only to an attributable run (`should_wire_tools`). Carry-forwards CF-3/4/6/7/9/11 discharged; CF-2 durability half closed (atomicity half + CF-8/10/14/15 tracked). Reviews: rust-reviewer + security-auditor per slice, no BLOCKING. Remaining dormant: Slice 3c (CF-8 `model_permit` bracketing — inert, CLI adapter proposes no tools).
   `jarvis-adapters`: `fs.read` — read a project file within an allowlisted root, R0,
   read-only, scoped, path-traversal-denied (real native tool → **exit evidence #1**). A
   **reversible R1 example tool** with a registered compensating undo (stand-in for the M5

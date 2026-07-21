@@ -228,6 +228,17 @@ const RULES: &[Rule] = &[
         workspace_allowed: &["jarvis-contracts"],
         external_allowed: None,
     },
+    Rule {
+        krate: "mcp-echo-fixture",
+        // Test-fixture MCP tool server (F2.7, tools/): an out-of-process child the
+        // MCP host adapter drives in its integration tests. Its only
+        // workspace-internal edges are dev-dependencies on the adapter under test
+        // and the domain/application types that test drives — never a production
+        // edge. Not purity-constrained (it is not a domain layer), so external
+        // deps (rmcp server, tokio) are unrestricted.
+        workspace_allowed: &["jarvis-domain", "jarvis-application", "jarvis-adapters"],
+        external_allowed: None,
+    },
 ];
 
 fn arch_test() -> anyhow::Result<()> {
@@ -375,6 +386,11 @@ mod tests {
             ),
             ("jarvis-agent", &["jarvis-contracts"], &["anyhow"]),
             ("xtask", &[], &["anyhow", "serde_json"]),
+            (
+                "mcp-echo-fixture",
+                &["jarvis-domain", "jarvis-application", "jarvis-adapters"],
+                &["rmcp"],
+            ),
         ])
     }
 
