@@ -96,11 +96,12 @@ const LOCATION_MARKERS: &[&str] = &[
     "near me",
     "near here",
     "close by",
-    "closest",
     "around here",
     "in my area",
     "walking distance",
     "near my location",
+    "closest to me",
+    "nearest to me",
 ];
 
 /// Whether a query is location-dependent (case-insensitive substring match on the
@@ -122,7 +123,14 @@ pub fn is_location_dependent(query: &str) -> bool {
 pub fn localize_query(query: &str, location: Option<&Location>) -> String {
     match location {
         Some(loc) if is_location_dependent(query) => {
-            format!("{query} near {:.4},{:.4}", loc.latitude, loc.longitude)
+            // An approximate (IP-geolocated, city-level) coordinate is rounded
+            // coarser (~1 km) than a precise fix (~11 m), so the query never
+            // over-states an approximate source as precise (ADR-015).
+            let precision = if loc.is_approximate() { 2 } else { 4 };
+            format!(
+                "{query} near {:.*},{:.*}",
+                precision, loc.latitude, precision, loc.longitude
+            )
         }
         _ => query.to_owned(),
     }
@@ -167,16 +175,21 @@ mod tests {
     fn classifies_nearby_phrasing_as_location_dependent() {
         assert!(is_location_dependent("find a lunch place nearby"));
         assert!(is_location_dependent("coffee near me"));
-        assert!(is_location_dependent("Closest pharmacy"));
-        // Not location-dependent: no "where" is needed.
+        assert!(is_location_dependent("pharmacy walking distance"));
+        // Not location-dependent: no "where" is needed. Bare "closest"/"nearest"
+        // are ordinary English words and must NOT over-trigger (NFR-02) — else a
+        // home coordinate would be appended to an unrelated cloud search.
         assert!(!is_location_dependent("who is the president"));
         assert!(!is_location_dependent("weather in Paris"));
+        assert!(!is_location_dependent("what is the closest star to Earth"));
+        assert!(!is_location_dependent("Lincoln's closest advisor"));
     }
 
     #[test]
     fn localize_attaches_coordinates_only_when_nearby_and_available() {
         let home = Location::new(59.3293, 18.0686, LocationSource::HomeCoordinate);
-        // Nearby + location → coordinates reach the query (F2.9 exit evidence).
+        // Nearby + precise location → coordinates reach the query (F2.9 exit
+        // evidence), at ~11 m precision.
         let localized = localize_query("lunch nearby", Some(&home));
         assert!(localized.contains("near 59.3293,18.0686"), "{localized}");
         // Nearby but NO location → sent as-is, never a guessed place (ADR-015).
@@ -185,6 +198,18 @@ mod tests {
         assert_eq!(
             localize_query("who is the president", Some(&home)),
             "who is the president"
+        );
+    }
+
+    #[test]
+    fn an_approximate_coordinate_is_localized_coarser() {
+        let ip = Location::new(59.3293, 18.0686, LocationSource::IpGeolocation);
+        // ~1 km (2 decimals), not the ~11 m a precise fix would emit.
+        let localized = localize_query("lunch nearby", Some(&ip));
+        assert!(localized.contains("near 59.33,18.07"), "{localized}");
+        assert!(
+            !localized.contains("59.3293"),
+            "approximate must not be precise"
         );
     }
 }
