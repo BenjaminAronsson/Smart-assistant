@@ -23,5 +23,7 @@ async-trait = "0.1"
 
 [dev-dependencies]
 # Async unit tests (`#[tokio::test]`) for the tool executors; the current-thread
-# runtime is enough — production code needs no `rt`/`macros`.
-tokio = { version = "1", features = ["rt", "macros"] }
+# runtime is enough — production code needs no `rt`/`macros`. `test-util` gives
+# the paused-clock (`start_paused`) the TimeoutExecutor tests use to assert a
+# deadline fires without sleeping in real time.
+tokio = { version = "1", features = ["rt", "macros", "test-util"] }
