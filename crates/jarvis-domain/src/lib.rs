@@ -7,6 +7,7 @@ pub mod conversations;
 pub mod grants;
 pub mod identity;
 pub mod ids;
+pub mod location;
 pub mod policy;
 pub mod run;
 pub mod secrecy;

@@ -3,6 +3,7 @@
 //! engine, and the ports (traits) adapters implement (docs/02 §3).
 
 pub mod health;
+pub mod location;
 pub mod model;
 pub mod orchestrator;
 pub mod policy;
