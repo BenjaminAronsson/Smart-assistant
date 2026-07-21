@@ -10,4 +10,5 @@ pub mod observability;
 pub mod problem;
 pub mod runs;
 pub mod sessions;
+pub mod tools;
 pub mod ws;

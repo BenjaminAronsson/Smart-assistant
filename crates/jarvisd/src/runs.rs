@@ -31,7 +31,10 @@ use jarvis_application::model::{
 };
 use jarvis_application::orchestrator::{
     AssembledContext, Checkpointer, Clock, ContextAssembler, ContextError, Orchestrator,
-    RunEventSink, RunInput, RunUpdate,
+    RunEventSink, RunInput, RunUpdate, ToolStack,
+};
+use jarvis_application::policy::{
+    ApprovalGate, AuditSink, GrantMinter, GrantValidator, PolicyContext, ToolRegistry,
 };
 use jarvis_application::ports::{MessageStore, RepositoryError, RunStore, SessionStore};
 use jarvis_application::queue::{RunPriority, RunQueue};
@@ -76,6 +79,19 @@ fn unavailable_reason(detail: &str) -> Option<&str> {
     detail.strip_prefix(PROVIDER_UNAVAILABLE_PREFIX)
 }
 
+/// The tool/policy ports the host owns and lends to the orchestrator for the
+/// duration of one run (F2.6). Held as `Arc`s so a fresh [`ToolStack`] can borrow
+/// them per run; `None` on an engine built for the text-only path (M1 tests, and
+/// any deployment whose model proposes no tools). Every executor in `registry`
+/// was timeout-wrapped at its single registration site (`crate::tools`).
+pub struct ToolPlane {
+    pub registry: Arc<ToolRegistry>,
+    pub audit: Arc<dyn AuditSink>,
+    pub approval_gate: Arc<dyn ApprovalGate>,
+    pub grant_minter: Arc<dyn GrantMinter>,
+    pub grant_validator: Arc<dyn GrantValidator>,
+}
+
 /// The host run engine: owns the orchestrator ports and the live-run registry.
 pub struct RunEngine {
     model: Arc<dyn ModelProvider>,
@@ -84,6 +100,9 @@ pub struct RunEngine {
     messages: Arc<dyn MessageStore>,
     hub: Arc<WsHub>,
     clock: Arc<dyn Clock>,
+    /// The tool/policy plane, if this deployment wires tools (F2.6). `None` keeps
+    /// the orchestrator on the text-only path with no ambient tool authority.
+    tools: Option<ToolPlane>,
     /// Active runs → their cancellation token, for `POST /runs/{id}/cancel`.
     active: Mutex<HashMap<RunId, CancellationToken>>,
     /// Tracks spawned run tasks so shutdown can drain them (invariant 4).
@@ -109,6 +128,7 @@ impl RunEngine {
         hub: Arc<WsHub>,
         clock: Arc<dyn Clock>,
         shutdown: CancellationToken,
+        tools: Option<ToolPlane>,
     ) -> Arc<Self> {
         Arc::new(Self {
             model,
@@ -117,6 +137,7 @@ impl RunEngine {
             messages,
             hub,
             clock,
+            tools,
             active: Mutex::new(HashMap::new()),
             tracker: TaskTracker::new(),
             shutdown,
@@ -128,16 +149,50 @@ impl RunEngine {
 
     /// Spawn a tracked task that drives `run` to a terminal state. The token is a
     /// child of the shutdown token, so a graceful drain cancels every run.
-    pub fn spawn(self: &Arc<Self>, run: Run, input: RunInput) {
+    ///
+    /// `policy` is the run's authorization context (actor + granted scopes),
+    /// present only when the run was started by an attributable request
+    /// ([`submit_message`]). A crash-recovered or degraded-requeued run carries
+    /// no device identity, so it is spawned with `None` and driven without tool
+    /// authority (invariant #1) — see [`Self::tool_stack`].
+    pub fn spawn(self: &Arc<Self>, run: Run, input: RunInput, policy: Option<PolicyContext>) {
         let run_id = run.id.clone();
         let cancel = self.shutdown.child_token();
         self.register(run_id.clone(), cancel.clone());
 
         let engine = Arc::clone(self);
         self.tracker.spawn(async move {
-            engine.drive(run, input, cancel).await;
+            engine.drive(run, input, cancel, policy).await;
             engine.deregister(&run_id);
         });
+    }
+
+    /// Whether a run may be lent the tool plane. Both a wired plane AND an
+    /// attributable [`PolicyContext`] are required: a run with no known
+    /// actor/scopes is driven with `tools: None` so no ambient tool authority is
+    /// ever synthesised for an unattributable run (invariant #1). Pure so the
+    /// safety property is unit-testable without a full engine.
+    fn should_wire_tools(has_plane: bool, has_context: bool) -> bool {
+        has_plane && has_context
+    }
+
+    /// Borrow the tool plane as a per-run [`ToolStack`], or `None` when this
+    /// engine has no plane or the run has no attributable context.
+    fn tool_stack(&self, policy: Option<PolicyContext>) -> Option<ToolStack<'_>> {
+        if !Self::should_wire_tools(self.tools.is_some(), policy.is_some()) {
+            return None;
+        }
+        // Both are `Some` per `should_wire_tools`; `?` keeps it panic-free.
+        let plane = self.tools.as_ref()?;
+        let context = policy?;
+        Some(ToolStack {
+            registry: &plane.registry,
+            audit: &*plane.audit,
+            context,
+            approval_gate: &*plane.approval_gate,
+            grant_minter: &*plane.grant_minter,
+            grant_validator: &*plane.grant_validator,
+        })
     }
 
     /// The token for an actively-driven run, if any.
@@ -165,7 +220,13 @@ impl RunEngine {
         queue.dequeue().map(|q| (q.run, q.input))
     }
 
-    async fn drive(&self, run: Run, input: RunInput, cancel: CancellationToken) {
+    async fn drive(
+        &self,
+        run: Run,
+        input: RunInput,
+        cancel: CancellationToken,
+        policy: Option<PolicyContext>,
+    ) {
         let run_id = run.id.clone();
         let session_id = run.session_id.clone();
         let span = tracing::info_span!("run", run_id = %run_id, session_id = %session_id);
@@ -193,10 +254,12 @@ impl RunEngine {
             checkpointer: &*self.checkpointer,
             sink: &sink,
             clock: &*self.clock,
-            // No tools wired yet: the Claude CLI reasoning profile has built-in
-            // tools disabled (ADR-004), so it never proposes a tool. Native and
-            // MCP tools are wired into the registry in F2.5/F2.6.
-            tools: None,
+            // Lend the tool plane only when both a plane is wired AND this run
+            // carries an attributable authorization context (F2.6). The Claude
+            // CLI reasoning profile disables built-in tools (ADR-004), so with
+            // that adapter no proposal arises and this stack is never entered;
+            // it becomes live for MCP-proposed tools (F2.7).
+            tools: self.tool_stack(policy),
         };
 
         let terminal = orchestrator
@@ -348,7 +411,7 @@ impl RunApi {
 pub async fn submit_message(
     State(api): State<RunApi>,
     Path(session_id): Path<String>,
-    Extension(_device): Extension<DeviceContext>,
+    Extension(device): Extension<DeviceContext>,
     Json(request): Json<SubmitMessageRequest>,
 ) -> Result<(StatusCode, Json<RunAck>), Response> {
     let session_id: SessionId = session_id
@@ -402,10 +465,30 @@ pub async fn submit_message(
         state: run.state.into(),
     };
     // Spawn AFTER the durable create so the run is recoverable even if the
-    // process dies before the first checkpoint.
-    api.engine.spawn(run, RunInput { text });
+    // process dies before the first checkpoint. The run carries the deciding
+    // device's authorization context (actor + granted scopes) — the only place a
+    // run acquires tool authority (invariant #1); never derived from the message.
+    api.engine
+        .spawn(run, RunInput { text }, Some(policy_context(&device)));
 
     Ok((StatusCode::ACCEPTED, Json(ack)))
+}
+
+/// Build the run's [`PolicyContext`] from the authenticated device. Scope
+/// strings that are not valid `<area>:<capability>` are dropped rather than
+/// invented — an unparseable grant confers nothing (invariant #1). The context
+/// is derived only from the paired device's identity, never from any message,
+/// model output, or tool result.
+fn policy_context(device: &DeviceContext) -> PolicyContext {
+    PolicyContext {
+        user_id: device.user_id.clone(),
+        device_id: device.device_id.clone(),
+        granted_scopes: device
+            .scopes
+            .iter()
+            .filter_map(|s| jarvis_domain::policy::Scope::new(s).ok())
+            .collect(),
+    }
 }
 
 /// `GET /api/v1/runs/{id}` — durable run snapshot.
@@ -885,6 +968,23 @@ mod tests {
         assert!(unavailable_reason("budget exhausted: ModelTurns").is_none());
     }
 
+    // The invariant-#1 gate on tool authority: a run is lent the tool plane ONLY
+    // when a plane is wired AND the run carries an attributable context. A run
+    // with a plane but no context (crash-recovered / degraded-requeued) must get
+    // NO tools — no ambient authority is ever synthesised for an unattributable
+    // run. The failing corner (true, false) is unreachable to assert through the
+    // full engine, so the predicate is pinned directly.
+    #[test]
+    fn tools_are_wired_only_with_both_a_plane_and_a_context() {
+        assert!(RunEngine::should_wire_tools(true, true));
+        assert!(
+            !RunEngine::should_wire_tools(true, false),
+            "a plane without an attributable context grants no tool authority"
+        );
+        assert!(!RunEngine::should_wire_tools(false, true));
+        assert!(!RunEngine::should_wire_tools(false, false));
+    }
+
     // ---- Host-level degraded-mode integration (golden trace 3) ----------------
     //
     // Drives the real `RunEngine` through the full quota-exhausted → queued →
@@ -977,6 +1077,7 @@ mod tests {
             WsHub::new(),
             Arc::new(ManualClock::at_unix(1_000_000)),
             CancellationToken::new(),
+            None, // text-only path: no tool plane wired for the degraded-mode test.
         )
     }
 
@@ -1002,7 +1103,9 @@ mod tests {
 
         // Attempt 1 — provider quota-exhausted. The run must be parked, not
         // surfaced to the user as a failure, and no answer committed.
-        engine.drive(run, input, CancellationToken::new()).await;
+        engine
+            .drive(run, input, CancellationToken::new(), None)
+            .await;
 
         let (state, reason) = engine.get_provider_health();
         assert_eq!(state, HealthState::Unavailable);
@@ -1026,7 +1129,7 @@ mod tests {
 
         // Attempt 2 — provider recovered. The run completes and commits its answer.
         engine
-            .drive(queued_run, queued_input, CancellationToken::new())
+            .drive(queued_run, queued_input, CancellationToken::new(), None)
             .await;
 
         assert!(

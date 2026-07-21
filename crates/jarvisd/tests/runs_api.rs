@@ -195,6 +195,7 @@ async fn app_with_token(model: FakeModel, run_store: Arc<FakeRunStore>) -> (Rout
         WsHub::new(),
         Arc::new(SystemClock),
         CancellationToken::new(),
+        None, // text-only path: the run REST surface tests wire no tool plane.
     );
     // A lazy pool that never connects: these tests exercise the run REST surface,
     // not the approval endpoint, so the gate is constructed but never used.

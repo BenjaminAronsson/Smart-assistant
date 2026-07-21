@@ -69,6 +69,7 @@ async fn start(pool: PgPool, model: FakeModel) -> Harness {
         hub.clone(),
         Arc::new(SystemClock),
         shutdown.clone(),
+        None, // text-only path: this WS-stream test wires no tool plane.
     );
     let approval_gate = jarvisd::approvals::JarvisApprovalGate::new(pool.clone());
     let run_api = RunApi::new(

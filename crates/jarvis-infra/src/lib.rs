@@ -4,6 +4,7 @@
 
 pub mod approvals;
 pub mod audit;
+pub mod audit_sink;
 pub mod db;
 pub mod dispatcher;
 pub mod events;
