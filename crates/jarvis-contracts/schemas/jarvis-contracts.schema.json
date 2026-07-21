@@ -27,6 +27,79 @@
       ],
       "type": "string"
     },
+    "ApprovalCardDto": {
+      "description": "What a human is asked to approve (docs/06 §3). Carries the exact effect and\nthe real proposed arguments so the approval binds precisely what is shown.",
+      "properties": {
+        "approvalId": {
+          "$ref": "#/definitions/UlidString",
+          "description": "The pending approval this card asks about; echoed back on the decision."
+        },
+        "egress": {
+          "$ref": "#/definitions/DataEgressDto"
+        },
+        "exactEffect": {
+          "description": "A human-readable rendering of exactly what will execute — the real target\nand payload, never a summary (docs/06 §3). Snapshot-tested.",
+          "type": "string"
+        },
+        "proposedArguments": {
+          "description": "The concrete arguments the model proposed, as opaque JSON. The human may\nedit these on the decision; doing so rebinds the grant (docs/06 §4)."
+        },
+        "reversible": {
+          "description": "Whether the tool registered a compensating undo (docs/06 §4).",
+          "type": "boolean"
+        },
+        "risk": {
+          "$ref": "#/definitions/RiskLevelDto"
+        },
+        "runId": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "toolId": {
+          "description": "The namespaced tool identifier (e.g. `message.send`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "approvalId",
+        "runId",
+        "toolId",
+        "exactEffect",
+        "proposedArguments",
+        "risk",
+        "reversible",
+        "egress"
+      ],
+      "type": "object"
+    },
+    "ApprovalDecision": {
+      "description": "The verb a human answers a card with (docs/05 §4). Distinct from\n[`ApprovalResolutionDto`]'s past-tense outcome: this is the request input.",
+      "enum": [
+        "approve",
+        "deny"
+      ],
+      "type": "string"
+    },
+    "ApprovalDecisionDto": {
+      "description": "Body of `POST /api/v1/runs/{id}/approvals/{approval_id}` (docs/05 §4). On\n`approve`, `editedArguments` (when present) replaces the proposed arguments —\nthe grant binds the edited set, so executing the original would fail\nvalidation (invalidation by hash, not a flag; docs/06 §4). Ignored on `deny`.",
+      "properties": {
+        "decision": {
+          "$ref": "#/definitions/ApprovalDecision"
+        },
+        "editedArguments": true
+      },
+      "required": [
+        "decision"
+      ],
+      "type": "object"
+    },
+    "ApprovalResolutionDto": {
+      "description": "How an approval was resolved (docs/05 §3), carried by the `approval.resolved`\nevent. Past tense to the [`ApprovalDecision`] request verb.",
+      "enum": [
+        "approved",
+        "denied"
+      ],
+      "type": "string"
+    },
     "Channel": {
       "description": "One WebSocket replaces v1's three hubs; `channel` discriminates (docs/05 §1).",
       "enum": [
@@ -79,6 +152,15 @@
         }
       },
       "type": "object"
+    },
+    "DataEgressDto": {
+      "description": "Wire projection of [`jarvis_domain::policy::DataEgress`] (docs/06 §5): how far\nthe tool's data may travel, surfaced so the human approves egress knowingly.",
+      "enum": [
+        "none",
+        "local",
+        "external"
+      ],
+      "type": "string"
     },
     "DomainEvent": {
       "description": "Persisted, replayable events (docs/05 §3 \"persisted event categories\").\nEvery variant must be representable in the timeline snapshot — a client that\nmissed it while disconnected recovers it via `GET /sessions/{id}/timeline`.\n\nThe `type` discriminator is **dotted-namespaced** (`run.started`,\n`message.created`), matching the envelope example in docs/05 §3\n(`run.tool.completed`) and the error-code scheme — clients route on this\nstring, so it is load-bearing and every tag is spelled explicitly below.\n\nThis union is intentionally **strict**: there is no `Unknown` catch-all\n(unlike [`crate::content::ContentBlock`], which is open-world because blocks\noriginate from external providers). Every `DomainEvent` is authored by\njarvisd itself, and the web shell is served by the same binary — so producer\nand consumer share one contract version and can never skew. A tag the reader\ndoes not recognize is therefore a genuine bug we want surfaced as a decode\nerror, not silently dropped from a resync page. New variants are added\nadditively within a version (docs/05 §3).",
@@ -214,6 +296,48 @@
             "type",
             "runId",
             "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An R2/R3 tool proposal is parked awaiting a human decision (F2.5,\ndocs/06 §3). Replayed so a client reconnecting while a run sits at\n`WaitingApproval` still sees the pending card and can act on it.",
+          "properties": {
+            "card": {
+              "$ref": "#/definitions/ApprovalCardDto"
+            },
+            "type": {
+              "const": "approval.requested",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "card"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A pending approval was answered (F2.5). Replayed so the resolved outcome\nsurvives reconnect and the client can retire the card it was showing.",
+          "properties": {
+            "approvalId": {
+              "$ref": "#/definitions/UlidString"
+            },
+            "outcome": {
+              "$ref": "#/definitions/ApprovalResolutionDto"
+            },
+            "runId": {
+              "$ref": "#/definitions/UlidString"
+            },
+            "type": {
+              "const": "approval.resolved",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "approvalId",
+            "runId",
+            "outcome"
           ],
           "type": "object"
         }
@@ -522,6 +646,17 @@
         }
       },
       "type": "object"
+    },
+    "RiskLevelDto": {
+      "description": "Wire projection of [`jarvis_domain::policy::RiskLevel`] (docs/06 §3). An\napproval card only ever carries `R2`/`R3` — `R0`/`R1` auto-authorize and `R4`\nis rejected outright — but the projection is total (no `_`) so a new tier\nforces a decision here rather than silently mapping.",
+      "enum": [
+        "r0",
+        "r1",
+        "r2",
+        "r3",
+        "r4"
+      ],
+      "type": "string"
     },
     "RunAck": {
       "description": "Acknowledgement returned by `POST /sessions/{id}/messages` (docs/05 §1):\nthe run has been accepted and persisted; streaming follows on the WS.",

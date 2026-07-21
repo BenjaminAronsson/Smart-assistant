@@ -6,6 +6,7 @@
 //! TypeScript client types are generated from these schemas by
 //! `cargo xtask codegen` — never hand-written twice.
 
+pub mod approvals;
 pub mod auth;
 pub mod content;
 pub mod envelope;

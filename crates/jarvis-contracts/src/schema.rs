@@ -48,6 +48,11 @@ pub fn export() -> Value {
     generator.subschema_for::<crate::providers::ProvidersResponse>();
     generator.subschema_for::<crate::events::DomainEvent>();
     generator.subschema_for::<crate::events::TransientEvent>();
+    // Approval surface (F2.5). The card rides in `DomainEvent::ApprovalRequested`,
+    // but the decision body is a REST request DTO referenced by no event — it must
+    // be registered as its own root or it ships absent from the wire schema.
+    generator.subschema_for::<crate::approvals::ApprovalCardDto>();
+    generator.subschema_for::<crate::approvals::ApprovalDecisionDto>();
 
     let definitions: Value =
         serde_json::to_value(generator.definitions()).expect("schemas are valid JSON");

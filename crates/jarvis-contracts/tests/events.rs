@@ -3,6 +3,9 @@
 //! deltas never do — and every DomainEvent must be representable in the
 //! timeline snapshot.
 
+use jarvis_contracts::approvals::{
+    ApprovalCardDto, ApprovalResolutionDto, DataEgressDto, RiskLevelDto,
+};
 use jarvis_contracts::events::{DomainEvent, TransientEvent};
 use jarvis_contracts::messages::{MessageDto, MessageRole};
 use jarvis_contracts::providers::{ProviderDto, ProviderState};
@@ -13,6 +16,7 @@ use serde_json::json;
 const RUN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const SESSION: &str = "01BX5ZZKBKACTAV9WEVGEMMVRZ";
 const MSG: &str = "01BX5ZZKBKACTAV9WEVGEMMVS0";
+const APPROVAL: &str = "01BX5ZZKBKACTAV9WEVGEMMVS1";
 
 fn every_domain_event() -> Vec<DomainEvent> {
     vec![
@@ -55,6 +59,23 @@ fn every_domain_event() -> Vec<DomainEvent> {
         DomainEvent::CheckpointSaved {
             run_id: RUN.parse().unwrap(),
             state: RunStateDto::Responding,
+        },
+        DomainEvent::ApprovalRequested {
+            card: ApprovalCardDto {
+                approval_id: APPROVAL.parse().unwrap(),
+                run_id: RUN.parse().unwrap(),
+                tool_id: "message.send".into(),
+                exact_effect: "message.send {to=\"bob@example.com\"}".into(),
+                proposed_arguments: json!({ "to": "bob@example.com" }),
+                risk: RiskLevelDto::R2,
+                reversible: false,
+                egress: DataEgressDto::External,
+            },
+        },
+        DomainEvent::ApprovalResolved {
+            approval_id: APPROVAL.parse().unwrap(),
+            run_id: RUN.parse().unwrap(),
+            outcome: ApprovalResolutionDto::Approved,
         },
     ]
 }
@@ -115,6 +136,8 @@ fn persisted_and_transient_type_tags_are_disjoint() {
     assert_eq!(
         sorted,
         [
+            "approval.requested",
+            "approval.resolved",
             "message.created",
             "provider.health_changed",
             "run.checkpoint_saved",

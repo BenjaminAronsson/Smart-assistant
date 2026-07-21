@@ -12,10 +12,11 @@
 //! [`crate::envelope::EventEnvelope`] and fills the envelope fields; payload
 //! authors never touch `seq`/`occurredAt`/etc.
 
+use crate::approvals::{ApprovalCardDto, ApprovalResolutionDto};
 use crate::messages::MessageDto;
 use crate::providers::ProviderDto;
 use crate::runs::{RunOutcome, RunStateDto};
-use jarvis_domain::ids::{RunId, SessionId};
+use jarvis_domain::ids::{ApprovalId, RunId, SessionId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -81,6 +82,21 @@ pub enum DomainEvent {
         run_id: RunId,
         state: RunStateDto,
     },
+    /// An R2/R3 tool proposal is parked awaiting a human decision (F2.5,
+    /// docs/06 §3). Replayed so a client reconnecting while a run sits at
+    /// `WaitingApproval` still sees the pending card and can act on it.
+    #[serde(rename = "approval.requested")]
+    ApprovalRequested { card: ApprovalCardDto },
+    /// A pending approval was answered (F2.5). Replayed so the resolved outcome
+    /// survives reconnect and the client can retire the card it was showing.
+    #[serde(rename = "approval.resolved")]
+    ApprovalResolved {
+        #[schemars(with = "crate::schema::UlidString")]
+        approval_id: ApprovalId,
+        #[schemars(with = "crate::schema::UlidString")]
+        run_id: RunId,
+        outcome: ApprovalResolutionDto,
+    },
 }
 
 impl DomainEvent {
@@ -96,6 +112,8 @@ impl DomainEvent {
             Self::MessageCreated { .. } => "message.created",
             Self::ProviderHealthChanged { .. } => "provider.health_changed",
             Self::CheckpointSaved { .. } => "run.checkpoint_saved",
+            Self::ApprovalRequested { .. } => "approval.requested",
+            Self::ApprovalResolved { .. } => "approval.resolved",
         }
     }
 }
