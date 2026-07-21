@@ -5,3 +5,4 @@
 pub mod claude_cli;
 pub mod mcp_host;
 pub mod tools;
+pub mod web;
