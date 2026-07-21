@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE tooling.grants\n        SET consumed_at = $2\n        WHERE grant_id = $1 AND consumed_at IS NULL\n        RETURNING grant_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grant_id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c8f1e6f6f4ed08e83caf6341e05ebde3252aa3ff93a768617f538d855065072c"
+}

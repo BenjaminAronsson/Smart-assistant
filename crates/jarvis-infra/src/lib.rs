@@ -6,6 +6,7 @@ pub mod audit;
 pub mod db;
 pub mod dispatcher;
 pub mod events;
+pub mod grants;
 pub mod identity;
 pub mod messages;
 pub mod runs;

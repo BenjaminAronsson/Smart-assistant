@@ -921,6 +921,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures-core",
+ "getrandom 0.3.4",
  "hex",
  "jarvis-application",
  "jarvis-domain",

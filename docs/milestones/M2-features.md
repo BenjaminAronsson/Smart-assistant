@@ -77,7 +77,8 @@ bypasses policy. Every feature below is written to preserve that.
   invariant 1. Read: docs/06 §4, docs/05 §4/§7; skills `policy-grants`, `state-machine`.
   Deps: F2.1, F2.2. security-auditor + rust-reviewer mandatory.
 
-- [ ] **F2.4 — Policy/grant/tool-invocation persistence + idempotency (infra)** · *strong model*
+- [x] **F2.4 — Policy/grant/tool-invocation persistence + idempotency (infra)** · *strong model* · PR #10
+  <br/>*Scope note: grant persistence + single-use consume (the R2+ replay guard) + transactional grant.\* audit landed. The general `tool_invocations` idempotency ledger is deferred to F2.6 with its executor/writer (no-speculative-schema precedent, migration 0006). CF-6/CF-7 logged.*
   Migrations for the `tooling`/`policy` schema (grants, approvals, tool_invocations) with
   **idempotency keys / external-operation IDs** for replay protection (docs/06 §5
   "Replay / duplicate mutation"). sqlx repos behind the F2.2/F2.3 ports (`GrantStore`,
