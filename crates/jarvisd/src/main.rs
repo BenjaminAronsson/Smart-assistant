@@ -73,6 +73,22 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     let _mcp_hosts =
         jarvisd::tools::register_mcp_servers(&mut registry, Vec::new(), serve_shutdown.clone())
             .await?;
+    // web.search/web.fetch (F2.8): registered ONLY when a provider is configured
+    // — that config presence is the external-egress consent gate (CF-5). Absent
+    // ⇒ no web tools, the stricter default.
+    if let Some(web) = &config.integrations.web_search {
+        anyhow::ensure!(
+            web.provider == "brave",
+            "integrations.web_search.provider {:?} is not supported (only \"brave\")",
+            web.provider
+        );
+        let api_key = jarvisd::config::resolve_secret_ref(&web.api_key_secret)?;
+        jarvisd::tools::register_web_tools(
+            &mut registry,
+            api_key.expose().to_owned(),
+            web.max_fetch_bytes,
+        )?;
+    }
     let tool_plane = jarvisd::runs::ToolPlane {
         registry: Arc::new(registry),
         audit: Arc::new(jarvis_infra::audit_sink::PgAuditSink::new(pool.clone())),

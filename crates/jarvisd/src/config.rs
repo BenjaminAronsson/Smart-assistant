@@ -19,6 +19,44 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub observability: ObservabilityConfig,
     pub providers: ProvidersConfig,
+    #[serde(default)]
+    pub integrations: IntegrationsConfig,
+}
+
+/// Optional integrations (docs/09 §1 `[integrations.*]`). Each is absent by
+/// default — an unconfigured integration registers no tools, the stricter
+/// default (no ambient authority until the host opts in).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntegrationsConfig {
+    /// `[integrations.web_search]`. Present ⇒ the `web.search`/`web.fetch` R0
+    /// tools are registered against the live provider; absent ⇒ they are not,
+    /// which is the external-egress consent gate (CF-5, docs/06 §5).
+    #[serde(default)]
+    pub web_search: Option<WebSearchConfig>,
+}
+
+/// `[integrations.web_search]` (docs/02 §11b, ADR-014). The API key is a secret
+/// *reference* resolved at the adapter boundary, never a literal in config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebSearchConfig {
+    /// Search provider — only `brave` is implemented in M2 (config-swappable).
+    #[serde(default = "default_web_provider")]
+    pub provider: String,
+    /// Secret reference (`env:VAR`/`keyring:…`) resolving to the provider API key.
+    pub api_key_secret: String,
+    /// Max bytes read from a fetched page before truncation (docs/06 §5).
+    #[serde(default = "default_max_fetch_bytes")]
+    pub max_fetch_bytes: usize,
+}
+
+fn default_web_provider() -> String {
+    "brave".to_owned()
+}
+
+fn default_max_fetch_bytes() -> usize {
+    2 * 1024 * 1024
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,6 +150,7 @@ impl Default for Config {
                     idle_timeout_secs: 60,
                 },
             },
+            integrations: IntegrationsConfig::default(),
         }
     }
 }

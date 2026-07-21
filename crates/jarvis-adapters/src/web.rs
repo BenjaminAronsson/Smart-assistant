@@ -426,6 +426,211 @@ impl<F: PageFetcher + 'static> ToolExecutor for WebFetchTool<F> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Live backends (F2.8 Slice 3): Brave search + an HTTP page fetcher. The tools
+// above depend only on the ports; these are the default production impls, wired
+// by jarvisd only when a provider is configured (config-gated egress consent —
+// CF-5). The network calls are thin; the parseable/guardable logic
+// (`parse_brave_response`, `is_blocked_host`) is pure and unit-tested.
+// ---------------------------------------------------------------------------
+
+/// The live Brave Search backend (docs/02 §11b default). Holds the resolved API
+/// key (a secret — sent only as the `X-Subscription-Token` header, never in the
+/// URL/query so it cannot leak via process args or logs, invariant #5).
+pub struct BraveSearchProvider {
+    client: reqwest::Client,
+    api_key: String,
+}
+
+impl BraveSearchProvider {
+    pub fn new(api_key: String) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            api_key,
+        }
+    }
+}
+
+#[async_trait]
+impl SearchProvider for BraveSearchProvider {
+    async fn search(
+        &self,
+        query: &str,
+        cancel: CancellationToken,
+    ) -> Result<Vec<SearchResult>, WebError> {
+        let request = self
+            .client
+            .get("https://api.search.brave.com/res/v1/web/search")
+            .query(&[("q", query)])
+            .header("Accept", "application/json")
+            .header("X-Subscription-Token", &self.api_key);
+
+        let response = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(WebError::Cancelled),
+            // Do not surface the raw reqwest error — it embeds the request URL
+            // (and thus the query); a short generic message keeps logs clean.
+            sent = request.send() => sent.map_err(|_| WebError::Provider("Brave request failed".to_owned()))?,
+        };
+        if !response.status().is_success() {
+            return Err(WebError::Provider(format!(
+                "Brave returned HTTP {}",
+                response.status().as_u16()
+            )));
+        }
+        let body = response
+            .text()
+            .await
+            .map_err(|_| WebError::Provider("Brave response was unreadable".to_owned()))?;
+        parse_brave_response(&body)
+    }
+}
+
+/// Parse a Brave web-search JSON body into [`SearchResult`]s. Pure — the seam
+/// that is fixture-tested without a network (mirrors the claude-cli fixture
+/// pattern). Missing `web.results` yields an empty list, not an error.
+fn parse_brave_response(json: &str) -> Result<Vec<SearchResult>, WebError> {
+    #[derive(serde::Deserialize)]
+    struct Response {
+        web: Option<Web>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Web {
+        #[serde(default)]
+        results: Vec<Hit>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Hit {
+        #[serde(default)]
+        title: String,
+        #[serde(default)]
+        url: String,
+        #[serde(default)]
+        description: String,
+    }
+
+    let parsed: Response = serde_json::from_str(json)
+        .map_err(|_| WebError::Provider("Brave response was not valid JSON".to_owned()))?;
+    Ok(parsed
+        .web
+        .map(|w| w.results)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|hit| SearchResult {
+            title: hit.title,
+            url: hit.url,
+            snippet: hit.description,
+        })
+        .collect())
+}
+
+/// The live HTTP page fetcher. Caps the response body at `max_bytes` (streamed,
+/// so an oversized page is bounded even if it lies about `Content-Length`) and
+/// refuses private/loopback/link-local targets (a first-line SSRF guard —
+/// [`is_blocked_host`]).
+pub struct HttpPageFetcher {
+    client: reqwest::Client,
+    max_bytes: usize,
+}
+
+impl HttpPageFetcher {
+    pub fn new(max_bytes: usize) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            max_bytes,
+        }
+    }
+}
+
+#[async_trait]
+impl PageFetcher for HttpPageFetcher {
+    async fn fetch(&self, url: &str, cancel: CancellationToken) -> Result<String, WebError> {
+        let parsed =
+            reqwest::Url::parse(url).map_err(|_| WebError::Provider("invalid URL".to_owned()))?;
+        if is_blocked_host(&parsed) {
+            return Err(WebError::Provider(
+                "refused to fetch a private/local host".to_owned(),
+            ));
+        }
+
+        let mut response = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(WebError::Cancelled),
+            sent = self.client.get(parsed).send() => sent.map_err(|_| WebError::Provider("fetch failed".to_owned()))?,
+        };
+        if !response.status().is_success() {
+            return Err(WebError::Provider(format!(
+                "fetch returned HTTP {}",
+                response.status().as_u16()
+            )));
+        }
+
+        // Stream chunks, capping total bytes so a hostile/huge page is bounded
+        // regardless of its declared length (docs/06 §5). Cancellable per chunk.
+        let mut body: Vec<u8> = Vec::new();
+        loop {
+            let chunk = tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Err(WebError::Cancelled),
+                next = response.chunk() => next.map_err(|_| WebError::Provider("fetch stream failed".to_owned()))?,
+            };
+            match chunk {
+                Some(bytes) => {
+                    let remaining = self.max_bytes.saturating_sub(body.len());
+                    if remaining == 0 {
+                        break;
+                    }
+                    let take = remaining.min(bytes.len());
+                    body.extend_from_slice(&bytes[..take]);
+                    if body.len() >= self.max_bytes {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
+        Ok(String::from_utf8_lossy(&body).into_owned())
+    }
+}
+
+/// Refuse a URL whose host is loopback/private/link-local/unspecified (SSRF
+/// first-line guard, docs/06 §5). A bare hostname is allowed here — full
+/// protection against DNS-rebinding to a private IP needs resolve-then-check at
+/// connect time, out of M2's scope (documented follow-up). Missing host ⇒ block.
+fn is_blocked_host(url: &reqwest::Url) -> bool {
+    use std::net::IpAddr;
+    let Some(host) = url.host_str() else {
+        return true;
+    };
+    let lower = host.to_ascii_lowercase();
+    if lower == "localhost" || lower.ends_with(".localhost") {
+        return true;
+    }
+    // An IPv6 literal is serialised with brackets (`[::1]`); strip them to parse.
+    let ip_str = host
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host);
+    match ip_str.parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+        }
+        Ok(IpAddr::V6(v6)) => {
+            let seg = v6.segments();
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || (seg[0] & 0xfe00) == 0xfc00 // fc00::/7 unique-local
+                || (seg[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
+        }
+        // A hostname (not a literal IP): allowed at this layer.
+        Err(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -741,5 +946,50 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::Cancelled), "got {err:?}");
+    }
+
+    // ---- live backends (pure parts) ----
+
+    #[test]
+    fn parses_a_brave_web_search_body() {
+        let json = r#"{"web":{"results":[
+            {"title":"Rust","url":"https://rust-lang.org","description":"A language"},
+            {"title":"Docs","url":"https://doc.rust-lang.org","description":"The book"}
+        ]}}"#;
+        let results = parse_brave_response(json).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "Rust");
+        assert_eq!(results[0].url, "https://rust-lang.org");
+        assert_eq!(results[1].snippet, "The book");
+    }
+
+    #[test]
+    fn a_brave_body_without_web_results_is_empty_not_an_error() {
+        assert!(
+            parse_brave_response(r#"{"query":{"original":"x"}}"#)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(parse_brave_response("not json").is_err());
+    }
+
+    #[test]
+    fn ssrf_guard_blocks_private_and_local_hosts() {
+        for blocked in [
+            "http://127.0.0.1/x",
+            "http://localhost/x",
+            "http://10.0.0.5/x",
+            "http://192.168.1.1/x",
+            "http://169.254.169.254/latest/meta-data", // cloud metadata
+            "http://[::1]/x",
+            "http://0.0.0.0/x",
+        ] {
+            let url = reqwest::Url::parse(blocked).unwrap();
+            assert!(is_blocked_host(&url), "{blocked} should be blocked");
+        }
+        for allowed in ["https://example.org/x", "https://93.184.216.34/x"] {
+            let url = reqwest::Url::parse(allowed).unwrap();
+            assert!(!is_blocked_host(&url), "{allowed} should be allowed");
+        }
     }
 }

@@ -22,6 +22,7 @@ use jarvis_adapters::tools::example_light::ExampleLightTool;
 use jarvis_adapters::tools::example_message::ExampleMessageTool;
 use jarvis_adapters::tools::fs_read::FsReadTool;
 use jarvis_adapters::tools::timeout::TimeoutExecutor;
+use jarvis_adapters::web::{BraveSearchProvider, HttpPageFetcher, WebFetchTool, WebSearchTool};
 use jarvis_application::policy::{ToolDescriptor, ToolRegistry};
 use tokio_util::sync::CancellationToken;
 
@@ -95,6 +96,30 @@ pub async fn register_mcp_servers(
     Ok(hosts)
 }
 
+/// Register the R0 `web.search`/`web.fetch` tools against the live Brave
+/// provider + HTTP fetcher (F2.8 Slice 3, docs/02 §11b, ADR-014). jarvisd calls
+/// this **only** when `[integrations.web_search]` is configured — the config
+/// presence IS the external-egress consent gate (CF-5, docs/06 §5): no configured
+/// provider ⇒ no web tools ⇒ no ambient external egress, the stricter default
+/// (mirrors `fs.read`'s unconfigured root and the empty MCP server list).
+/// `api_key` is a resolved secret (sent only as a provider header, never logged).
+/// Both executors are timeout-wrapped at this single registration site.
+pub fn register_web_tools(
+    registry: &mut ToolRegistry,
+    api_key: String,
+    max_fetch_bytes: usize,
+) -> anyhow::Result<()> {
+    let search = WebSearchTool::descriptor(BraveSearchProvider::new(api_key));
+    let fetch = WebFetchTool::descriptor(HttpPageFetcher::new(max_fetch_bytes));
+    registry
+        .register(wrap_with_timeout(search))
+        .map_err(|e| anyhow::anyhow!("registering web.search: {e}"))?;
+    registry
+        .register(wrap_with_timeout(fetch))
+        .map_err(|e| anyhow::anyhow!("registering web.fetch: {e}"))?;
+    Ok(())
+}
+
 /// Replace a descriptor's executor with one bounded by the tool's host-owned
 /// `ToolPolicy.timeout`. A descriptor with no policy is left untouched so the
 /// registry's own `MissingPolicy` refusal (not a silent unbounded execution) is
@@ -157,6 +182,34 @@ mod tests {
             Err(error) => assert!(error.to_string().contains("fs.read root"), "got {error:#}"),
             Ok(_) => panic!("expected an error for a missing fs.read root"),
         }
+    }
+
+    #[test]
+    fn web_tools_register_only_when_configured() {
+        // The default registry (no web config) has neither web tool — the CF-5
+        // external-egress gate: web tools exist only once a provider is wired.
+        let mut registry = build_registry(None).expect("builds");
+        assert!(
+            registry
+                .policy_of(&WebSearchTool::<BraveSearchProvider>::id())
+                .is_none()
+        );
+        assert!(
+            registry
+                .policy_of(&WebFetchTool::<HttpPageFetcher>::id())
+                .is_none()
+        );
+
+        register_web_tools(&mut registry, "fake-key".to_owned(), 1024).expect("registers");
+        let search = registry
+            .policy_of(&WebSearchTool::<BraveSearchProvider>::id())
+            .expect("web.search registered");
+        assert_eq!(search.egress, jarvis_domain::policy::DataEgress::External);
+        assert!(
+            registry
+                .resolve(&WebFetchTool::<HttpPageFetcher>::id())
+                .is_some()
+        );
     }
 
     #[tokio::test]
