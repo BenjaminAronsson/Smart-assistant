@@ -257,17 +257,28 @@ impl<F: PageFetcher + 'static> WebFetchTool<F> {
 /// Reject anything but an `http`/`https` URL — no `file:`, `javascript:`,
 /// `data:` or scheme-relative targets reach the fetcher (a first-line guard;
 /// the live fetcher additionally blocks private-IP/SSRF targets, Slice 3).
-fn validate_url(url: &str) -> Result<(), ToolError> {
+/// The trimmed URL iff it is a non-empty `http`/`https` URL (scheme compared
+/// case-insensitively). `None` for `file:`/`javascript:`/`data:`/scheme-relative
+/// or anything with nothing after the scheme. Used both to guard the fetch
+/// target and to drop a hostile non-http(s) image URL before it becomes an
+/// attribution link.
+fn http_url(url: &str) -> Option<&str> {
     let trimmed = url.trim();
-    let ok = (trimmed.starts_with("http://") && trimmed.len() > "http://".len())
-        || (trimmed.starts_with("https://") && trimmed.len() > "https://".len());
-    if ok {
-        Ok(())
-    } else {
-        Err(ToolError::SchemaInvalid(
-            "web.fetch requires an http(s) URL".to_owned(),
-        ))
-    }
+    let is_http = trimmed
+        .get(..7)
+        .is_some_and(|s| s.eq_ignore_ascii_case("http://") && trimmed.len() > 7);
+    let is_https = trimmed
+        .get(..8)
+        .is_some_and(|s| s.eq_ignore_ascii_case("https://") && trimmed.len() > 8);
+    (is_http || is_https).then_some(trimmed)
+}
+
+/// Guard the fetch target: return the trimmed http(s) URL or reject. The same
+/// trimmed value is what gets fetched and recorded as `source_url`, so the guard
+/// and the live fetcher's SSRF/private-IP checks (Slice 3) see identical bytes.
+fn validate_url(url: &str) -> Result<&str, ToolError> {
+    http_url(url)
+        .ok_or_else(|| ToolError::SchemaInvalid("web.fetch requires an http(s) URL".to_owned()))
 }
 
 /// Parse an untrusted HTML page into a [`FetchedPage`]. **Synchronous** and
@@ -289,8 +300,11 @@ fn extract_page(html: &str, source_url: &str) -> FetchedPage {
     let title = first_tag_text(&dom, parser, "title").unwrap_or_default();
 
     // A representative image: Open Graph `og:image` first, else the first `<img>`.
-    let primary_image_url =
-        og_image(&dom, parser).or_else(|| first_tag_attr(&dom, parser, "img", "src"));
+    // Drop a non-http(s) image URL (a hostile `og:image` could be `javascript:`
+    // or `data:`) so it never survives into the attribution link the HUD renders.
+    let primary_image_url = og_image(&dom, parser)
+        .or_else(|| first_tag_attr(&dom, parser, "img", "src"))
+        .filter(|u| http_url(u).is_some());
 
     // Main text: the body's text, whitespace-collapsed. Best-effort; a richer
     // main-content heuristic is out of M2 scope (ADR-014 best-effort quality).
@@ -341,9 +355,17 @@ fn og_image(dom: &VDom, parser: &Parser) -> Option<String> {
 }
 
 /// Collapse runs of ASCII whitespace to single spaces and trim — HTML text is
-/// full of layout whitespace; this keeps the forwarded body compact.
+/// full of layout whitespace; this keeps the forwarded body compact. Builds the
+/// output directly (no intermediate `Vec`), since the input can be a large body.
 fn collapse_whitespace(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
+    let mut out = String::new();
+    for word in s.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out
 }
 
 /// Render a fetched page into sanitised tool-result text (Z4). Every field is
@@ -387,8 +409,9 @@ impl<F: PageFetcher + 'static> ToolExecutor for WebFetchTool<F> {
         _grant: Option<ExecutionGrant>, // R0: auto-authorised by the policy engine.
         cancel: CancellationToken,
     ) -> Result<ToolResult, ToolError> {
-        let url = required_str(&invocation.arguments, "url")?;
-        validate_url(url)?;
+        // Guard + normalise once; the trimmed value is fetched AND recorded as
+        // source_url, so the fetcher and this guard see identical bytes.
+        let url = validate_url(required_str(&invocation.arguments, "url")?)?;
 
         let html = self.fetcher.fetch(url, cancel).await.map_err(|e| match e {
             WebError::Cancelled => ToolError::Cancelled,
@@ -397,7 +420,7 @@ impl<F: PageFetcher + 'static> ToolExecutor for WebFetchTool<F> {
             }
         })?;
 
-        // Parse synchronously (scraper is not Send) and drop `Html` before return.
+        // Parse synchronously (`tl::VDom` is not Send) and drop it before return.
         let page = extract_page(&html, url);
         Ok(render_page(&page))
     }
@@ -661,6 +684,49 @@ mod tests {
         // authority; the result is a plain String with no side effect performed.
         assert!(result.content.contains("Ignore previous instructions"));
         assert!(result.content.contains("https://evil.example/post"));
+    }
+
+    #[tokio::test]
+    async fn a_non_http_og_image_is_dropped() {
+        // A hostile page sets og:image to a javascript: URL; it must not survive
+        // into the attribution link (the M3 HUD would render it as an href/src).
+        let html = r#"<html><head><title>T</title>
+            <meta property="og:image" content="javascript:steal()">
+            </head><body><img src="data:text/html,x"><p>b</p></body></html>"#;
+        let tool = WebFetchTool::new(FixtureFetcher::Ok(html.to_owned()));
+        let result = tool
+            .execute(
+                fetch_invocation("https://example.org"),
+                None,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            !result.content.contains("javascript:"),
+            "{}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("data:text/html"),
+            "{}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("Image:"),
+            "no valid image → no Image line"
+        );
+    }
+
+    #[test]
+    fn http_url_normalises_and_rejects() {
+        assert_eq!(
+            http_url("  https://example.org/x  "),
+            Some("https://example.org/x")
+        );
+        assert_eq!(http_url("HTTP://Example.ORG"), Some("HTTP://Example.ORG"));
+        assert_eq!(http_url("http://"), None, "nothing after scheme");
+        assert_eq!(http_url("file:///etc/passwd"), None);
     }
 
     #[tokio::test]
