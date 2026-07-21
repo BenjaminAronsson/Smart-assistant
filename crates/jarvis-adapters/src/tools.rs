@@ -24,6 +24,7 @@
 pub mod example_light;
 pub mod example_message;
 pub mod fs_read;
+pub mod timeout;
 
 use jarvis_domain::tools::{CanonicalValue, ToolError};
 
@@ -45,5 +46,27 @@ fn required_str<'a>(args: &'a CanonicalValue, key: &str) -> Result<&'a str, Tool
         None => Err(ToolError::ExecutionFailed(format!(
             "missing required argument `{key}`"
         ))),
+    }
+}
+
+/// Assert an arguments object carries `key` as a string — the schema check a
+/// tool's `validate_args` runs (CF-9, docs/06 §4). The orchestrator calls
+/// `validate_args` on the human's *approved* (possibly edited) arguments BEFORE
+/// a grant binds, so a malformed edit is rejected at approval time rather than
+/// failing later inside `execute`. Returns [`ToolError::SchemaInvalid`] — the
+/// orchestrator maps it to a run failure — and echoes only the static argument
+/// name, never the value (invariant #5). Distinct from [`required_str`], which
+/// runs at execution time and yields [`ToolError::ExecutionFailed`].
+fn require_str_arg(args: &CanonicalValue, key: &str) -> Result<(), ToolError> {
+    match args {
+        CanonicalValue::Object(map) => match map.get(key) {
+            Some(CanonicalValue::Str(_)) => Ok(()),
+            _ => Err(ToolError::SchemaInvalid(format!(
+                "argument `{key}` must be a string"
+            ))),
+        },
+        _ => Err(ToolError::SchemaInvalid(
+            "arguments must be an object".to_owned(),
+        )),
     }
 }

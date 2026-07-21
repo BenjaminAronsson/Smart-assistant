@@ -605,6 +605,21 @@ impl Orchestrator<'_> {
             .take()
             .ok_or(StepError::Internal("tool run with no staged invocation"))?;
         let grant = active.grant.take();
+        // CF-11 defence in depth (invariant #1): the RunState machine routes an
+        // R2+ (grant-requiring) call through approval → mint before it can reach
+        // `ToolRunning`, so a grant-requiring tool arriving here without a grant is
+        // unreachable by construction. Assert it anyway at the executor boundary,
+        // so a future transition bug can never execute a grant-requiring tool with
+        // no grant — fail-safe: no grant ⇒ no execution, run fails.
+        let policy = stack
+            .registry
+            .policy_of(&invocation.tool_id)
+            .ok_or(StepError::Internal("invocation tool absent from registry"))?;
+        if !grant_presence_ok(policy.requires_grant(), grant.is_some()) {
+            return Err(StepError::Internal(
+                "grant-requiring tool reached execution without a grant",
+            ));
+        }
         let (_version, executor) = stack
             .registry
             .resolve(&invocation.tool_id)
@@ -777,6 +792,16 @@ impl Orchestrator<'_> {
     }
 }
 
+/// Defence-in-depth predicate for CF-11 (invariant #1): a grant-requiring tool
+/// may reach execution only with a grant present. Extracted so the boundary
+/// check is unit-testable — the state machine makes the failing case unreachable
+/// through [`Orchestrator::drive`] (an R2+ call is routed through approval + mint
+/// before `ToolRunning`), so a direct predicate test is the only way to pin the
+/// invariant against a future loop change.
+fn grant_presence_ok(requires_grant: bool, grant_present: bool) -> bool {
+    !requires_grant || grant_present
+}
+
 /// The result of racing an arbitrary future against cancellation.
 enum Ran<T> {
     Done(T),
@@ -835,4 +860,24 @@ async fn pull_or_cancel(
         }
     })
     .await
+}
+
+#[cfg(test)]
+mod grant_belt {
+    use super::grant_presence_ok;
+
+    // CF-11 (invariant #1): the executor boundary must reject a grant-requiring
+    // tool that arrives without a grant, and must not obstruct the auto (R0/R1)
+    // path, which legitimately carries none.
+    #[test]
+    fn grant_requiring_tool_needs_a_grant() {
+        assert!(grant_presence_ok(true, true));
+        assert!(!grant_presence_ok(true, false));
+    }
+
+    #[test]
+    fn auto_path_tool_needs_no_grant() {
+        assert!(grant_presence_ok(false, false));
+        assert!(grant_presence_ok(false, true));
+    }
 }
