@@ -21,11 +21,14 @@ use crate::orchestrator::{
     AssembledContext, CheckpointError, Checkpointer, Clock, ContextAssembler, ContextError,
     RunEventSink, RunInput, RunUpdate,
 };
-use crate::policy::{AuditSink, ToolExecutor};
+use crate::policy::{
+    ApprovalGate, ApprovalOutcome, ApprovalRequest, AuditSink, GrantBinding, GrantMinter,
+    GrantValidator, ToolExecutor,
+};
 use jarvis_domain::audit::AuditEvent;
-use jarvis_domain::grants::ExecutionGrant;
+use jarvis_domain::grants::{ExecutionGrant, GrantError, GrantId, Sha256};
 use jarvis_domain::run::{Run, RunState};
-use jarvis_domain::tools::{ToolError, ToolInvocation, ToolResult};
+use jarvis_domain::tools::{CanonicalValue, ToolError, ToolInvocation, ToolResult};
 
 /// A scripted [`ModelProvider`]: yields a fixed sequence of events, then either
 /// ends the stream or (for the cancellation test) hangs. Records what it saw so
@@ -318,7 +321,10 @@ impl Clock for ManualClock {
 pub struct FakeTool {
     content: String,
     fail: Option<ToolError>,
-    calls: Mutex<Vec<bool>>,
+    compensation: Option<String>,
+    /// Records, per call, the arguments and whether a grant was presented — so a
+    /// test can assert the *approved* (possibly edited) arguments are what ran.
+    calls: Mutex<Vec<(CanonicalValue, bool)>>,
 }
 
 impl FakeTool {
@@ -327,6 +333,17 @@ impl FakeTool {
         Arc::new(Self {
             content: content.into(),
             fail: None,
+            compensation: None,
+            calls: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// A reversible tool that registers a compensating undo with each result.
+    pub fn reversible(content: impl Into<String>, undo: impl Into<String>) -> Arc<Self> {
+        Arc::new(Self {
+            content: content.into(),
+            fail: None,
+            compensation: Some(undo.into()),
             calls: Mutex::new(Vec::new()),
         })
     }
@@ -336,6 +353,7 @@ impl FakeTool {
         Arc::new(Self {
             content: String::new(),
             fail: Some(error),
+            compensation: None,
             calls: Mutex::new(Vec::new()),
         })
     }
@@ -347,7 +365,17 @@ impl FakeTool {
 
     /// For each call, whether a grant was presented (`true`) or not (`false`).
     pub fn calls_with_grant(&self) -> Vec<bool> {
-        self.calls.lock().unwrap().clone()
+        self.calls.lock().unwrap().iter().map(|(_, g)| *g).collect()
+    }
+
+    /// The arguments passed to each call (to assert the executed args).
+    pub fn call_arguments(&self) -> Vec<CanonicalValue> {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(a, _)| a.clone())
+            .collect()
     }
 }
 
@@ -355,16 +383,20 @@ impl FakeTool {
 impl ToolExecutor for FakeTool {
     async fn execute(
         &self,
-        _invocation: ToolInvocation,
+        invocation: ToolInvocation,
         grant: Option<ExecutionGrant>,
         _cancel: CancellationToken,
     ) -> Result<ToolResult, ToolError> {
-        self.calls.lock().unwrap().push(grant.is_some());
+        self.calls
+            .lock()
+            .unwrap()
+            .push((invocation.arguments.clone(), grant.is_some()));
         match &self.fail {
             Some(error) => Err(error.clone()),
             None => Ok(ToolResult {
                 content: self.content.clone(),
                 truncated: false,
+                compensation: self.compensation.clone(),
             }),
         }
     }
@@ -397,5 +429,111 @@ impl RecordingAuditSink {
 impl AuditSink for RecordingAuditSink {
     async fn record(&self, event: AuditEvent) {
         self.events.lock().unwrap().push(event);
+    }
+}
+
+/// A scripted [`ApprovalGate`]: approve (echoing the proposed arguments),
+/// approve with *edited* arguments (to prove the approved args bind, not the
+/// proposal's), or deny.
+pub struct FakeApprovalGate {
+    mode: ApprovalMode,
+}
+
+enum ApprovalMode {
+    ApproveEcho,
+    ApproveEdited(CanonicalValue),
+    Deny,
+}
+
+impl FakeApprovalGate {
+    pub fn approving() -> Self {
+        Self {
+            mode: ApprovalMode::ApproveEcho,
+        }
+    }
+    pub fn approving_with(edited: CanonicalValue) -> Self {
+        Self {
+            mode: ApprovalMode::ApproveEdited(edited),
+        }
+    }
+    pub fn denying() -> Self {
+        Self {
+            mode: ApprovalMode::Deny,
+        }
+    }
+}
+
+#[async_trait]
+impl ApprovalGate for FakeApprovalGate {
+    async fn request(
+        &self,
+        request: ApprovalRequest,
+        _cancel: CancellationToken,
+    ) -> ApprovalOutcome {
+        match &self.mode {
+            ApprovalMode::ApproveEcho => ApprovalOutcome::Approved {
+                arguments: request.proposed_arguments,
+            },
+            ApprovalMode::ApproveEdited(args) => ApprovalOutcome::Approved {
+                arguments: args.clone(),
+            },
+            ApprovalMode::Deny => ApprovalOutcome::Denied,
+        }
+    }
+}
+
+/// A deterministic [`GrantMinter`]. The real sha2/random minter is F2.4 (infra);
+/// this fake proves the *flow* (a grant is minted on approval and threaded to
+/// the executor), so it uses placeholder id/hash and a far-future expiry.
+pub struct FakeGrantMinter;
+
+#[async_trait]
+impl GrantMinter for FakeGrantMinter {
+    async fn mint(&self, binding: GrantBinding) -> ExecutionGrant {
+        ExecutionGrant {
+            grant_id: GrantId::from_bytes([1u8; 32]),
+            user_id: binding.user_id,
+            device_id: binding.device_id,
+            run_id: binding.run_id,
+            tool_id: binding.tool_id,
+            tool_version: binding.tool_version,
+            normalized_args_sha256: Sha256::from_bytes([2u8; 32]),
+            target_resource: binding.target_resource,
+            expires_at: SystemTime::UNIX_EPOCH + Duration::from_secs(u32::MAX as u64) + binding.ttl,
+            single_use: true,
+        }
+    }
+}
+
+/// A [`GrantValidator`] that accepts or rejects by construction — enough to
+/// prove the orchestrator honours validation before execution (invariant #1).
+/// The real hash/expiry/consume logic + lifecycle table are F2.4 (infra).
+pub struct FakeGrantValidator {
+    reject: Option<GrantError>,
+}
+
+impl FakeGrantValidator {
+    pub fn accepting() -> Self {
+        Self { reject: None }
+    }
+    pub fn rejecting(error: GrantError) -> Self {
+        Self {
+            reject: Some(error),
+        }
+    }
+}
+
+#[async_trait]
+impl GrantValidator for FakeGrantValidator {
+    async fn validate(
+        &self,
+        _grant: &ExecutionGrant,
+        _invocation: &ToolInvocation,
+        _now: SystemTime,
+    ) -> Result<(), GrantError> {
+        match &self.reject {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
     }
 }

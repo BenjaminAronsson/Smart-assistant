@@ -11,16 +11,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use jarvis_domain::audit::AuditEvent;
-use jarvis_domain::grants::ExecutionGrant;
-use jarvis_domain::ids::{DeviceId, UserId};
-use jarvis_domain::policy::{Scope, ToolPolicy};
+use jarvis_domain::grants::{ExecutionGrant, GrantError};
+use jarvis_domain::ids::{DeviceId, RunId, UserId};
+use jarvis_domain::policy::{ResourcePattern, Scope, ToolPolicy};
 use jarvis_domain::tools::{
-    ToolError, ToolId, ToolInvocation, ToolProposal, ToolResult, ToolVersion,
+    CanonicalValue, ToolError, ToolId, ToolInvocation, ToolProposal, ToolResult, ToolVersion,
 };
 
 /// Executes one bounded tool call (docs/05 §4). Implemented by native adapters
@@ -224,4 +225,71 @@ fn render_value(value: &jarvis_domain::tools::CanonicalValue) -> String {
             format!("{{{}}}", inner.join(", "))
         }
     }
+}
+
+// ---- Approvals & execution grants (F2.3, docs/06 §4) ---------------------
+
+/// What a human is asked to approve (docs/06 §3). Carries the *exact effect* —
+/// the real tool and its concrete arguments — never a model paraphrase.
+#[derive(Debug, Clone)]
+pub struct ApprovalRequest {
+    pub run_id: RunId,
+    pub tool_id: ToolId,
+    pub exact_effect: String,
+    pub proposed_arguments: CanonicalValue,
+}
+
+/// A human's decision. `Approved` carries the *final* arguments the human
+/// authorized, which may differ from the proposal if they edited the effect —
+/// the grant binds these, so executing anything else fails validation
+/// (docs/06 §4). Editing is therefore invalidation-by-rebinding, not a flag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApprovalOutcome {
+    Approved { arguments: CanonicalValue },
+    Denied,
+}
+
+/// The seam to the human (F2.5 implements it over the WS/REST approval tray;
+/// tests script it). Blocks until a decision or cancellation (invariant #4).
+#[async_trait]
+pub trait ApprovalGate: Send + Sync {
+    async fn request(&self, request: ApprovalRequest, cancel: CancellationToken)
+    -> ApprovalOutcome;
+}
+
+/// Inputs to mint a grant (docs/06 §4). The minter (infra, F2.4) supplies the
+/// cryptographically random id, the SHA-256 of `canonical_form(arguments)`, and
+/// `expires_at = now + ttl`; the application never computes crypto itself
+/// (domain/application dep rule).
+#[derive(Debug, Clone)]
+pub struct GrantBinding {
+    pub user_id: UserId,
+    pub device_id: DeviceId,
+    pub run_id: RunId,
+    pub tool_id: ToolId,
+    pub tool_version: ToolVersion,
+    pub arguments: CanonicalValue,
+    pub target_resource: ResourcePattern,
+    pub ttl: Duration,
+}
+
+/// Mints a single-use grant on approval (docs/06 §4). Implemented in infra
+/// (F2.4) with real randomness + SHA-256; a test fake mints deterministically.
+#[async_trait]
+pub trait GrantMinter: Send + Sync {
+    async fn mint(&self, binding: GrantBinding) -> ExecutionGrant;
+}
+
+/// Validates + consumes a grant immediately before execution (docs/06 §4).
+/// Recomputes the argument hash, checks the full binding and expiry against
+/// `now`, and consumes `single_use` so a replay fails. Any failure ⇒ the
+/// executor is never called (invariant #1).
+#[async_trait]
+pub trait GrantValidator: Send + Sync {
+    async fn validate(
+        &self,
+        grant: &ExecutionGrant,
+        invocation: &ToolInvocation,
+        now: SystemTime,
+    ) -> Result<(), GrantError>;
 }

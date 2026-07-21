@@ -177,7 +177,12 @@ impl RunEventSink for WsHub {
             RunUpdate::TextDelta { run_id, text } => self.broadcast_delta(&run_id, &text),
             // Persisted by the checkpointer and delivered on the outbox path —
             // dropping them here is the double-emit reconciliation (F1.4).
-            RunUpdate::StateChanged { .. } | RunUpdate::Finished { .. } => {}
+            // CompensationRegistered (F2.3) is likewise a persisted domain event;
+            // its outbox delivery + approval-tray rendering lands in F2.5. No
+            // tools are wired into jarvisd yet (tools: None), so it never fires.
+            RunUpdate::StateChanged { .. }
+            | RunUpdate::Finished { .. }
+            | RunUpdate::CompensationRegistered { .. } => {}
         }
     }
 }

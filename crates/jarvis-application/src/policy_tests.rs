@@ -14,8 +14,8 @@ use crate::policy::{
     ToolRegistry, evaluate,
 };
 use crate::testing::{
-    EchoAssembler, FakeModel, FakeTool, ManualClock, RecordingAuditSink, RecordingCheckpointer,
-    RecordingSink,
+    EchoAssembler, FakeApprovalGate, FakeGrantMinter, FakeGrantValidator, FakeModel, FakeTool,
+    ManualClock, RecordingAuditSink, RecordingCheckpointer, RecordingSink,
 };
 use jarvis_domain::ids::{DeviceId, RunId, SessionId, UserId};
 use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
@@ -227,6 +227,9 @@ async fn r0_tool_proposal_auto_executes_and_replans_to_completed() {
     let sink = RecordingSink::default();
     let clock = ManualClock::at_unix(1_000_000);
     let audit = RecordingAuditSink::default();
+    let gate = FakeApprovalGate::approving();
+    let minter = FakeGrantMinter;
+    let validator = FakeGrantValidator::accepting();
 
     let tool = FakeTool::returning("hello");
     let mut registry = ToolRegistry::new();
@@ -248,6 +251,9 @@ async fn r0_tool_proposal_auto_executes_and_replans_to_completed() {
             registry: &registry,
             audit: &audit,
             context: ctx_with(&["files:read"]),
+            approval_gate: &gate,
+            grant_minter: &minter,
+            grant_validator: &validator,
         }),
     };
 
@@ -287,6 +293,9 @@ async fn prohibited_tool_is_denied_and_never_executes() {
     let sink = RecordingSink::default();
     let clock = ManualClock::at_unix(1_000_000);
     let audit = RecordingAuditSink::default();
+    let gate = FakeApprovalGate::approving();
+    let minter = FakeGrantMinter;
+    let validator = FakeGrantValidator::accepting();
 
     let tool = FakeTool::returning("SHOULD NOT RUN");
     let mut registry = ToolRegistry::new();
@@ -308,6 +317,9 @@ async fn prohibited_tool_is_denied_and_never_executes() {
             registry: &registry,
             audit: &audit,
             context: ctx_with(&[]),
+            approval_gate: &gate,
+            grant_minter: &minter,
+            grant_validator: &validator,
         }),
     };
 

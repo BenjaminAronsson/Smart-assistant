@@ -225,10 +225,13 @@ pub struct ToolInvocation {
 
 /// A tool's output (docs/02 §5 step 9). `truncated` records that the result
 /// validator size-capped the content (docs/06 §5 tool-result smuggling).
+/// `compensation` is a human-readable description of the undo a reversible R2
+/// tool registered with its result (docs/06 §4) — surfaced in the run timeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolResult {
     pub content: String,
     pub truncated: bool,
+    pub compensation: Option<String>,
 }
 
 /// Terminal outcomes of an attempted tool execution. Grant-specific failures
