@@ -66,7 +66,7 @@ impl From<jarvis_domain::policy::DataEgress> for DataEgressDto {
 
 /// What a human is asked to approve (docs/06 §3). Carries the exact effect and
 /// the real proposed arguments so the approval binds precisely what is shown.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalCardDto {
     /// The pending approval this card asks about; echoed back on the decision.
@@ -92,6 +92,26 @@ pub struct ApprovalCardDto {
     pub egress: DataEgressDto,
 }
 
+// CF-12: the wire twin of the redacted domain `ApprovalRequest`. `exact_effect`
+// (real target + payload the human sees) and `proposed_arguments` are the same
+// sensitive values the domain type redacts — keep them out of `Debug`, which can
+// reach logs on the REST/WS approval path (invariant #5). `Serialize` still
+// carries them to the UI verbatim; only `Debug` is redacted.
+impl std::fmt::Debug for ApprovalCardDto {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApprovalCardDto")
+            .field("approval_id", &self.approval_id)
+            .field("run_id", &self.run_id)
+            .field("tool_id", &self.tool_id)
+            .field("exact_effect", &"<redacted>")
+            .field("proposed_arguments", &"<redacted>")
+            .field("risk", &self.risk)
+            .field("reversible", &self.reversible)
+            .field("egress", &self.egress)
+            .finish()
+    }
+}
+
 /// The verb a human answers a card with (docs/05 §4). Distinct from
 /// [`ApprovalResolutionDto`]'s past-tense outcome: this is the request input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -105,12 +125,26 @@ pub enum ApprovalDecision {
 /// `approve`, `editedArguments` (when present) replaces the proposed arguments —
 /// the grant binds the edited set, so executing the original would fail
 /// validation (invalidation by hash, not a flag; docs/06 §4). Ignored on `deny`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalDecisionDto {
     pub decision: ApprovalDecision,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edited_arguments: Option<serde_json::Value>,
+}
+
+// CF-12: `edited_arguments` is the human's (possibly secret) rebinding payload —
+// redact it from `Debug` while `Serialize` still carries it (invariant #5).
+impl std::fmt::Debug for ApprovalDecisionDto {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApprovalDecisionDto")
+            .field("decision", &self.decision)
+            .field(
+                "edited_arguments",
+                &self.edited_arguments.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 /// How an approval was resolved (docs/05 §3), carried by the `approval.resolved`
@@ -120,4 +154,53 @@ pub struct ApprovalDecisionDto {
 pub enum ApprovalResolutionDto {
     Approved,
     Denied,
+}
+
+#[cfg(test)]
+mod cf12_debug_redaction {
+    use super::*;
+
+    const APPROVAL_ULID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    const RUN_ULID: &str = "01BX5ZZKBKACTAV9WEVGEMMVRZ";
+
+    #[test]
+    fn approval_card_dto_debug_redacts_effect_and_arguments() {
+        let card = ApprovalCardDto {
+            approval_id: APPROVAL_ULID.parse().unwrap(),
+            run_id: RUN_ULID.parse().unwrap(),
+            tool_id: "message.send".to_owned(),
+            exact_effect: "Email carol@example.com: secret-body-text".to_owned(),
+            proposed_arguments: serde_json::json!({ "body": "secret-body-text" }),
+            risk: RiskLevelDto::R2,
+            reversible: false,
+            egress: DataEgressDto::External,
+        };
+        let rendered = format!("{card:?}");
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+        assert!(
+            !rendered.contains("carol@example.com"),
+            "leaked effect: {rendered}"
+        );
+        assert!(
+            !rendered.contains("secret-body-text"),
+            "leaked args: {rendered}"
+        );
+        // Serialize must still carry the real values to the UI.
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(
+            json.contains("carol@example.com"),
+            "serialize must keep the effect"
+        );
+    }
+
+    #[test]
+    fn approval_decision_dto_debug_redacts_edited_arguments() {
+        let decision = ApprovalDecisionDto {
+            decision: ApprovalDecision::Approve,
+            edited_arguments: Some(serde_json::json!({ "body": "secret-body-text" })),
+        };
+        let rendered = format!("{decision:?}");
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+        assert!(!rendered.contains("secret-body-text"), "leaked: {rendered}");
+    }
 }
