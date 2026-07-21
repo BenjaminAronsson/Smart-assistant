@@ -171,17 +171,23 @@ async fn golden6_malicious_fetched_page_cannot_exfiltrate_via_message_send() {
         0,
         "the injected external send must never execute"
     );
-    // The run visited the approval park (policy caught the R2 proposal) and
-    // audited the denial — the injection evidence (docs/06 §8 gate 2).
-    let states = sink.states();
+    // The run visited the approval park (policy caught the R2 proposal).
     assert!(
-        states.contains(&RunState::WaitingApproval),
+        sink.states().contains(&RunState::WaitingApproval),
         "the injected send was routed through approval, not auto-run"
     );
-    assert!(
-        audit.event_types().iter().any(|e| e.contains("deni")),
-        "the denial is audited as injection evidence: {:?}",
-        audit.event_types()
+    // The exact audited sequence is the injection evidence (docs/06 §8 gate 2):
+    // the R0 fetch auto-authorized + executed, then the injected R2 send was
+    // approval-requested and DENIED. No `grant.minted` appears — the denied
+    // effect never bound a grant (pinned by the exact match).
+    assert_eq!(
+        audit.event_types(),
+        vec![
+            "policy.auto_authorized",
+            "tool.executed",
+            "policy.approval_requested",
+            "approval.denied",
+        ]
     );
     // After the denial the run replans and answers normally — contained, not crashed.
     assert_eq!(final_run.state, RunState::Completed);
