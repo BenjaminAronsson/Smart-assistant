@@ -48,19 +48,46 @@ infra/                   # compose, systemd units, otel collector, postgres init
 docs/                    # this specification
 ```
 
+The layout above is the target. **Build state (verify against `docs/08-roadmap.md`):** M0
+and M1 are signed off (tags `m0-complete`, PR #4); the current milestone is **M2 (safe
+actions)** — read `docs/milestones/M1-gate-report.md` and `docs/08` §1 before writing code.
+Many crates are still thin: `jarvis-adapters` has only `claude_cli.rs`, `jarvis-agent` is a
+stub, and the orchestrator's `match` on `RunState` (`crates/jarvis-application/src/orchestrator.rs`)
+deliberately returns `UnwiredInM1` for the not-yet-built states (`ToolRunning`, `PolicyReview`,
+`WaitingApproval`, `Replanning`) — keep those arms exhaustive; never add a `_` arm. Ports
+(repository traits the domain depends on) live in `jarvis-application/src/ports.rs`; their
+sqlx implementations are in `jarvis-infra`.
+
 ## Build & test loop
 
 ```bash
+docker compose -f infra/compose/dev.yml up -d postgres   # start before DB tests
 cargo build --workspace
-cargo test --workspace                 # unit + contract tests
-cargo xtask arch-test                  # dependency-direction rules
+cargo test --workspace                 # unit + contract + #[sqlx::test] DB tests
+cargo test -p jarvis-application orchestrator   # one crate; add ::test_name to narrow further
+cargo xtask arch-test                  # dependency-direction rules (NFR-08)
+cargo xtask codegen --check            # generated web/ TS types must match contracts
 cargo xtask golden                     # golden trace scenarios (fake adapters)
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
-cargo sqlx prepare --check             # offline query verification --database-url postgres://jarvis:jarvis-dev-only@127.0.0.1:5432/jarvis
-(cd web && npm run lint && npm test && npm run build)
-docker compose -f infra/compose/dev.yml up -d   # postgres+pgvector, otel
+(cd web && npm ci && npm run lint && npm test && npm run build)
 ```
+
+`cargo xtask` is a `.cargo/config.toml` alias; subcommands are exactly `arch-test`,
+`codegen [--check]`, `golden`. Toolchain is pinned to `1.94.1` by `rust-toolchain.toml`
+(edition 2024) — CI runs exactly this; don't invoke a different toolchain.
+
+**Database / sqlx.** `DATABASE_URL=postgres://jarvis:jarvis-dev-only@127.0.0.1:5432/jarvis`.
+Compile-time query checking uses the committed `.sqlx/` offline cache (`SQLX_OFFLINE=true`),
+so a plain `cargo build`/`cargo test` needs no DB. But `#[sqlx::test]` DB tests spin up
+throwaway databases against a **live** Postgres, so start the compose `postgres` service
+first. After changing any `sqlx::query!`/`query_as!` SQL, refresh the cache and commit it —
+CI re-derives it from a migrated schema and diffs:
+```bash
+cargo sqlx prepare --workspace         # regenerate .sqlx (needs live DB + SQLX_OFFLINE=false)
+```
+Migrations live at repo-root `migrations/` (schema-per-module, ordered `NNNN_<module>_*.sql`)
+and are applied by the `#[sqlx::test]` migrator and `sqlx migrate run` — not per-crate.
 
 On low-power dev hosts use `cargo check` as the inner loop, mold as linker, and cache;
 see `docs/09-operations.md` §5. CI is GitHub Actions (`.github/workflows/ci.yml`); every PR runs the full loop above plus
