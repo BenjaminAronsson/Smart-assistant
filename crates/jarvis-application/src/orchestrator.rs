@@ -5,11 +5,13 @@
 //! run in a terminal `Failed`/`Cancelled` — the loop never panics or hangs.
 //!
 //! M1 wired the text path (`Received -> ContextReady -> ModelRunning ->
-//! Responding -> Completed`). F2.2 adds the R0/R1 tool path: `ModelRunning ->
-//! PolicyReview -> ToolRunning -> Replanning -> ModelRunning`. Every proposal
-//! passes through `policy::evaluate` (invariant #1) — there is no edge from
-//! model output to tool execution that skips it. `WaitingApproval` (the human
-//! wait + grant) is still unwired; its executor lands in F2.3.
+//! Responding -> Completed`). F2.2 added the R0/R1 tool path (`ModelRunning ->
+//! PolicyReview -> ToolRunning -> Replanning`); F2.3 adds R2 approval
+//! (`PolicyReview -> WaitingApproval -> ToolRunning` on approval, or
+//! `-> Replanning` on denial), minting a grant that is validated immediately
+//! before execution. Every proposal passes `policy::evaluate` and every R2+
+//! call presents a validated grant (invariant #1) — no edge from model output
+//! to tool execution skips either gate.
 //!
 //! Observability: this layer stays pure (no `tracing` dependency — arch-test
 //! keeps the runtime out of the application crate). It emits structured
@@ -23,8 +25,12 @@ use futures_core::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::model::{ModelError, ModelEvent, ModelProvider, ModelRequest};
-use crate::policy::{self, AuditSink, DenyReason, PolicyContext, PolicyDecision, ToolRegistry};
+use crate::policy::{
+    self, ApprovalGate, ApprovalOutcome, ApprovalRequest, AuditSink, DenyReason, GrantBinding,
+    GrantMinter, GrantValidator, PolicyContext, PolicyDecision, ToolRegistry,
+};
 use jarvis_domain::audit::AuditEvent;
+use jarvis_domain::grants::{ExecutionGrant, GrantError};
 use jarvis_domain::ids::RunId;
 use jarvis_domain::run::{Run, RunEvent, RunOutcome, RunState, TransitionError};
 use jarvis_domain::tools::{ToolError, ToolInvocation, ToolProposal, ToolResult};
@@ -56,6 +62,14 @@ pub enum RunUpdate {
     /// The run reached a terminal state (completed, failed, or cancelled);
     /// carries the outcome.
     Finished { run_id: RunId, outcome: RunOutcome },
+    /// A reversible R2 tool executed and registered a compensating undo
+    /// (docs/06 §4); the description is surfaced in the run timeline so the undo
+    /// is discoverable. Persisted (a domain event), not transient.
+    CompensationRegistered {
+        run_id: RunId,
+        tool_id: String,
+        description: String,
+    },
 }
 
 /// Context assembly (docs/02 §5 step 3). Implemented in infra/host; the fake in
@@ -115,6 +129,13 @@ pub struct ToolStack<'a> {
     pub registry: &'a ToolRegistry,
     pub audit: &'a dyn AuditSink,
     pub context: PolicyContext,
+    /// The human-approval seam for R2+ (F2.3). `WaitingApproval` blocks here.
+    pub approval_gate: &'a dyn ApprovalGate,
+    /// Mints a single-use grant on approval; validates it immediately before
+    /// execution. Split ports so the executor-side validation is the one that
+    /// consumes the grant (docs/06 §4).
+    pub grant_minter: &'a dyn GrantMinter,
+    pub grant_validator: &'a dyn GrantValidator,
 }
 
 /// The orchestrator: borrows the ports it drives for the duration of one run.
@@ -139,6 +160,9 @@ struct Active {
     proposal: Option<ToolProposal>,
     /// The authorized invocation awaiting execution (`ToolRunning`).
     invocation: Option<ToolInvocation>,
+    /// The grant minted at approval, to validate before execution. `None` for
+    /// the R0/R1 auto path (no grant); `Some` for an approved R2+ call.
+    grant: Option<ExecutionGrant>,
     /// The tool result to fold back into the next model turn (`Replanning`).
     observation: Option<ToolResult>,
 }
@@ -164,6 +188,8 @@ enum StepError {
     Unwired(RunState),
     #[error("policy denied the tool call: {0}")]
     PolicyDenied(DenyReason),
+    #[error("grant validation failed: {0}")]
+    Grant(GrantError),
     #[error("tool execution failed: {0}")]
     Tool(#[from] ToolError),
     /// A loop-invariant violation (e.g. reaching `ToolRunning` with no
@@ -196,6 +222,7 @@ impl StepError {
             // Stable, non-sensitive: the denial reason code, never the rendered
             // exact-effect (which could echo tool arguments — docs/06 §5).
             Self::PolicyDenied(reason) => format!("policy denied: {}", reason.code()),
+            Self::Grant(err) => format!("grant rejected: {}", err.code()),
             Self::Tool(_) => "tool execution failed".to_owned(),
             Self::Internal(_) => "internal orchestration error".to_owned(),
             Self::Transition(_) => "internal orchestration error".to_owned(),
@@ -213,6 +240,7 @@ impl Orchestrator<'_> {
             stream: None,
             proposal: None,
             invocation: None,
+            grant: None,
             observation: None,
         };
 
@@ -245,9 +273,9 @@ impl Orchestrator<'_> {
                 RunState::PolicyReview => self.policy_step(&mut run, &mut active).await,
                 RunState::ToolRunning => self.tool_step(&mut run, &mut active, &cancel).await,
                 RunState::Replanning => self.replan_step(&mut run, &mut active, &cancel).await,
-                // The approval executor (human wait) lands in F2.3. Named
-                // explicitly (no `_`) so a new state forces a decision.
-                RunState::WaitingApproval => Err(StepError::Unwired(run.state)),
+                RunState::WaitingApproval => {
+                    self.approval_step(&mut run, &mut active, &cancel).await
+                }
                 // The while-guard excludes terminals; listed for exhaustiveness.
                 RunState::Completed | RunState::Failed | RunState::Cancelled => break,
             };
@@ -400,9 +428,10 @@ impl Orchestrator<'_> {
                 Ok(StepFlow::Continue)
             }
             PolicyDecision::NeedsApproval { .. } => {
-                // The approval card + human wait are F2.3; here the run advances
-                // to WaitingApproval, whose executor is unwired, so it halts
-                // safely rather than executing without a grant (invariant #1).
+                // Re-stage the proposal for `approval_step` (WaitingApproval),
+                // which presents the exact effect and, on approval, mints the
+                // grant. The run cannot execute until a human decides.
+                active.proposal = Some(proposal);
                 run.apply(RunEvent::ApprovalRequested)?;
                 self.after_transition(run).await;
                 Ok(StepFlow::Continue)
@@ -411,8 +440,101 @@ impl Orchestrator<'_> {
         }
     }
 
+    /// `WaitingApproval`: present the exact effect to the human and act on the
+    /// decision (F2.3, docs/06 §4). A denial feeds back as an observation and
+    /// replans; an approval mints a single-use grant bound to the *approved*
+    /// (possibly edited) arguments and advances to execution. Editing the effect
+    /// therefore rebinds the grant — executing the original args would fail
+    /// validation (invalidation by hash, not a flag).
+    async fn approval_step(
+        &self,
+        run: &mut Run,
+        active: &mut Active,
+        cancel: &CancellationToken,
+    ) -> Result<StepFlow, StepError> {
+        let stack = self
+            .tools
+            .as_ref()
+            .ok_or(StepError::Unwired(RunState::WaitingApproval))?;
+        let proposal = active
+            .proposal
+            .take()
+            .ok_or(StepError::Internal("approval with no staged proposal"))?;
+        let policy = stack
+            .registry
+            .policy_of(&proposal.tool_id)
+            .ok_or(StepError::Internal("approval tool absent from registry"))?;
+        let ttl = policy.risk.default_grant_ttl();
+        let (version, _executor) = stack
+            .registry
+            .resolve(&proposal.tool_id)
+            .ok_or(StepError::Internal("approval tool absent from registry"))?;
+        let target_resource = proposal
+            .tool_id
+            .as_str()
+            .parse()
+            .map_err(|_| StepError::Internal("tool id is not a resource pattern"))?;
+
+        let request = ApprovalRequest {
+            run_id: run.id.clone(),
+            tool_id: proposal.tool_id.clone(),
+            exact_effect: policy::exact_effect(&proposal),
+            proposed_arguments: proposal.arguments.clone(),
+        };
+
+        match run_or_cancel(stack.approval_gate.request(request, cancel.clone()), cancel).await {
+            Ran::Cancelled => Ok(StepFlow::Cancelled),
+            Ran::Done(ApprovalOutcome::Denied) => {
+                stack
+                    .audit
+                    .record(self.tool_audit_event(run, "approval.denied", &proposal.tool_id, stack))
+                    .await;
+                // Feed the denial back so the model can replan (e.g. explain it
+                // cannot proceed) rather than the run simply failing.
+                active.observation = Some(ToolResult {
+                    content: "The user denied the requested action.".to_owned(),
+                    truncated: false,
+                    compensation: None,
+                });
+                run.apply(RunEvent::ApprovalDenied)?;
+                self.after_transition(run).await;
+                Ok(StepFlow::Continue)
+            }
+            Ran::Done(ApprovalOutcome::Approved { arguments }) => {
+                let grant = stack
+                    .grant_minter
+                    .mint(GrantBinding {
+                        user_id: stack.context.user_id.clone(),
+                        device_id: stack.context.device_id.clone(),
+                        run_id: run.id.clone(),
+                        tool_id: proposal.tool_id.clone(),
+                        tool_version: version,
+                        arguments: arguments.clone(),
+                        target_resource,
+                        ttl,
+                    })
+                    .await;
+                stack
+                    .audit
+                    .record(self.tool_audit_event(run, "grant.minted", &proposal.tool_id, stack))
+                    .await;
+                active.invocation = Some(ToolInvocation {
+                    tool_id: proposal.tool_id,
+                    tool_version: version,
+                    arguments,
+                });
+                active.grant = Some(grant);
+                run.apply(RunEvent::ApprovalGranted)?;
+                self.after_transition(run).await;
+                Ok(StepFlow::Continue)
+            }
+        }
+    }
+
     /// `ToolRunning`: execute one authorized invocation with cancellation. The
-    /// R0/R1 auto path presents no grant; R2+ grant validation lands in F2.3.
+    /// R0/R1 auto path presents no grant; an R2+ call carries a grant that is
+    /// validated + consumed immediately before execution — a mismatch, expiry,
+    /// or replay means the executor is never called (invariant #1, docs/06 §4).
     async fn tool_step(
         &self,
         run: &mut Run,
@@ -427,20 +549,48 @@ impl Orchestrator<'_> {
             .invocation
             .take()
             .ok_or(StepError::Internal("tool run with no staged invocation"))?;
+        let grant = active.grant.take();
         let (_version, executor) = stack
             .registry
             .resolve(&invocation.tool_id)
             .ok_or(StepError::Internal("invocation tool absent from registry"))?;
 
+        // Validate + consume the grant right here, at the executor boundary —
+        // not at decision time (docs/06 §4). No valid grant ⇒ no execution.
+        if let Some(grant) = &grant
+            && let Err(err) = stack
+                .grant_validator
+                .validate(grant, &invocation, self.clock.now())
+                .await
+        {
+            stack
+                .audit
+                .record(self.tool_audit_event(run, "grant.rejected", &invocation.tool_id, stack))
+                .await;
+            return Err(StepError::Grant(err));
+        }
+
         // Counts against `max_tool_calls`, enforced at the next loop top.
         run.usage.tool_calls = run.usage.tool_calls.saturating_add(1);
+        let tool_id = invocation.tool_id.clone();
 
         // Race execution against cancellation so a hung tool is abandoned
         // promptly (invariant #4); dropping the future cancels it.
-        match run_or_cancel(executor.execute(invocation, None, cancel.clone()), cancel).await {
+        match run_or_cancel(executor.execute(invocation, grant, cancel.clone()), cancel).await {
             Ran::Cancelled => Ok(StepFlow::Cancelled),
             Ran::Done(result) => {
-                active.observation = Some(result?);
+                let result = result?;
+                // A reversible tool's registered undo is surfaced in the timeline.
+                if let Some(description) = &result.compensation {
+                    self.sink
+                        .emit(RunUpdate::CompensationRegistered {
+                            run_id: run.id.clone(),
+                            tool_id: tool_id.to_string(),
+                            description: description.clone(),
+                        })
+                        .await;
+                }
+                active.observation = Some(result);
                 run.apply(RunEvent::ToolObserved)?;
                 self.after_transition(run).await;
                 Ok(StepFlow::Continue)
@@ -489,6 +639,26 @@ impl Orchestrator<'_> {
             target: format!("tool:{}", proposal.tool_id),
             correlation_id: Some(run.id.to_string()),
             payload_json: format!("{{\"decision\":\"{code}\"}}"),
+        }
+    }
+
+    /// Audit record for an approval/grant lifecycle event (invariant #6). Like
+    /// [`Self::policy_audit_event`], the payload carries only controlled values
+    /// (validated tool id, event name) — never arguments or a grant secret.
+    fn tool_audit_event(
+        &self,
+        run: &Run,
+        event_type: &str,
+        tool_id: &jarvis_domain::tools::ToolId,
+        stack: &ToolStack<'_>,
+    ) -> AuditEvent {
+        AuditEvent {
+            occurred_at: self.clock.now(),
+            actor: format!("user:{}", stack.context.user_id),
+            event_type: event_type.to_owned(),
+            target: format!("tool:{tool_id}"),
+            correlation_id: Some(run.id.to_string()),
+            payload_json: "{}".to_owned(),
         }
     }
 

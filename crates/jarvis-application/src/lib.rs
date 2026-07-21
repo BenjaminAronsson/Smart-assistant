@@ -13,6 +13,9 @@ pub mod queue;
 pub mod testing;
 
 #[cfg(test)]
+mod approval_tests;
+
+#[cfg(test)]
 mod orchestrator_tests;
 
 #[cfg(test)]

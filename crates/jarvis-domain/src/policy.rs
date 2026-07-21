@@ -42,6 +42,19 @@ impl RiskLevel {
     pub fn is_prohibited(self) -> bool {
         matches!(self, Self::R4)
     }
+
+    /// Default expiry for a grant minted at this tier (docs/06 §3: R3 gets the
+    /// shortest TTL). A grant that is not consumed within its TTL is dead — a
+    /// stale approval cannot execute later. R0/R1 never mint grants; their value
+    /// here is unused but defined for totality.
+    pub fn default_grant_ttl(self) -> Duration {
+        match self {
+            Self::R0 | Self::R1 => Duration::from_secs(0),
+            Self::R2 => Duration::from_secs(300),
+            Self::R3 => Duration::from_secs(60),
+            Self::R4 => Duration::from_secs(0),
+        }
+    }
 }
 
 /// Where a tool's data may travel (docs/06 §5 egress classification). Used to
