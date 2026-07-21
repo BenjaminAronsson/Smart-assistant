@@ -648,7 +648,10 @@ fn ipv4_is_blocked(v4: std::net::Ipv4Addr) -> bool {
 /// Refuse a URL whose host is loopback/private/link-local/unspecified (SSRF
 /// first-line guard, docs/06 §5). A bare hostname is allowed here — full
 /// protection against DNS-rebinding to a private IP needs resolve-then-check at
-/// connect time, out of M2's scope (documented follow-up). Missing host ⇒ block.
+/// connect time, out of M2's scope (documented follow-up). The same follow-up
+/// covers NAT64 (`64:ff9b::/96`) and 6to4 (`2002::/16`) embedded-IPv4 prefixes,
+/// which are unreachable without a gateway/relay a loopback-bound host lacks.
+/// Missing host ⇒ block.
 /// This runs on the initial URL AND on every redirect hop (see the fetch client's
 /// redirect policy), so a public page cannot 3xx to a private target.
 fn is_blocked_host(url: &reqwest::Url) -> bool {

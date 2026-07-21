@@ -126,7 +126,7 @@ bypasses policy. Every feature below is written to preserve that.
   §5, ADR-001/002. Read: docs/02 §8, docs/06 §5; skills `policy-grants`, `low-power`.
   Deps: F2.2, F2.3. security-auditor + rust-reviewer mandatory.
 
-- [ ] **F2.8 — `web.search` / `web.fetch` tool (R0) + Z4 sanitization + injection defense (adapters)** · *strong model*
+- [x] **F2.8 — `web.search` / `web.fetch` tool (R0) + Z4 sanitization + injection defense (adapters)** · *strong model* — DONE (PR #17, 3 slices). `jarvis-adapters::web`: `web.search`/`web.fetch` R0, config-swappable `SearchProvider`/`PageFetcher` ports (fixture-tested) + live `BraveSearchProvider`/`HttpPageFetcher` (reqwest 0.12/rustls-ring — deny-clean; HTML via `tl` not scraper for MPL). Z4: every field through `sanitize_result_content` (control + bidi/zero-width, CF-13). **Injection-defense adversarial test** `a_malicious_fetched_page_cannot_inject_a_tool_call` (golden 6 = F2.11). `source_url` end-to-end. SSRF guard (loopback/private/metadata/IPv4-mapped-IPv6/trailing-dot + **redirect re-validation each hop**). **CF-5 = config-gated registration** (owner-approved): web tools register only when `[integrations.web_search]` configured. Reviews: rust-reviewer + security-auditor per slice; 2 BLOCKING SSRF findings fixed + re-verified closed. **Deferred to F2.10/F2.11**: time-sensitive routing signal (needs router layer, proven in golden traces).
   `jarvis-adapters::web`: `web.search { query } -> [{ title, url, snippet }]` and
   `web.fetch { url } -> { title, text, primary_image_url?, source_url }`, both **R0
   read-only** behind a **config-swappable search port** (default Brave; fixture-driven
