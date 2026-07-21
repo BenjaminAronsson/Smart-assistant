@@ -48,15 +48,16 @@ impl FsReadTool {
     }
 
     /// Host-owned policy: R0, read-only, reversible (a read mutates nothing), no
-    /// egress, gated behind the `fs:read` scope. R0 still passes through
-    /// `evaluate`; the scope requirement means an unscoped run cannot read.
+    /// egress, gated behind the `files:read` scope (the domain's scope
+    /// vocabulary, `policy::Scope`). R0 still passes through `evaluate`; the scope
+    /// requirement means an unscoped run cannot read.
     pub fn policy() -> ToolPolicy {
         ToolPolicy {
             risk: RiskLevel::R0,
             is_reversible: true,
             requires_user_presence: false,
             timeout: Duration::from_secs(5),
-            required_scopes: [Scope::new("fs:read").expect("static scope is valid")]
+            required_scopes: [Scope::new("files:read").expect("static scope is valid")]
                 .into_iter()
                 .collect(),
             egress: DataEgress::None,
@@ -79,7 +80,18 @@ impl FsReadTool {
     /// filesystem, and (2) `canonicalize` (which resolves symlinks) followed by a
     /// `starts_with(root)` check — so a symlink *inside* the root pointing out is
     /// also caught. Both must pass.
-    fn resolve(&self, requested: &str) -> Result<PathBuf, ToolError> {
+    ///
+    /// Known limits (docs/06 §5 confused-deputy), out of scope for the
+    /// model-supplied-path threat this R0 read defends: a TOCTOU directory-swap
+    /// between `canonicalize` and `open`, and a hardlink inside the root to an
+    /// outside file — both require a *concurrent local writer*, and this tier
+    /// ships no write tool that could plant one. Hardening (`openat2`
+    /// `RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS`) is a carry-forward for when a write
+    /// tool or the live ToolStack lands.
+    ///
+    /// Async because `canonicalize` is a blocking syscall: it must not run on a
+    /// runtime worker thread (use `tokio::fs`, not `std::fs`, off startup).
+    async fn resolve(&self, requested: &str) -> Result<PathBuf, ToolError> {
         let requested = Path::new(requested);
         let escapes = requested.is_absolute()
             || requested.components().any(|c| {
@@ -96,7 +108,8 @@ impl FsReadTool {
         let candidate = self.root.join(requested);
         // Resolves symlinks; errors (e.g. not found) map to a non-sensitive
         // message that never echoes the requested path (invariant #5).
-        let canonical = std::fs::canonicalize(&candidate)
+        let canonical = tokio::fs::canonicalize(&candidate)
+            .await
             .map_err(|_| ToolError::ExecutionFailed("file not found or unreadable".to_owned()))?;
         if !canonical.starts_with(&self.root) {
             return Err(ToolError::Denied(
@@ -120,7 +133,7 @@ impl ToolExecutor for FsReadTool {
         _cancel: CancellationToken,
     ) -> Result<ToolResult, ToolError> {
         let requested = required_str(&invocation.arguments, "path")?;
-        let path = self.resolve(requested)?;
+        let path = self.resolve(requested).await?;
 
         let file = tokio::fs::File::open(&path)
             .await
@@ -187,7 +200,7 @@ mod tests {
         assert!(
             policy
                 .required_scopes
-                .contains(&Scope::new("fs:read").unwrap())
+                .contains(&Scope::new("files:read").unwrap())
         );
     }
 
@@ -241,6 +254,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn denies_a_symlink_that_escapes_the_root() {
         let root = temp_root();
@@ -249,7 +263,6 @@ mod tests {
         // A symlink *inside* the root pointing outside it: passes the lexical
         // check, caught by canonicalize + starts_with.
         let link = root.join("link.txt");
-        #[cfg(unix)]
         std::os::unix::fs::symlink(&outside, &link).unwrap();
 
         let tool = FsReadTool::new(&root).unwrap();

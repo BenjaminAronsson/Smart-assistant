@@ -85,15 +85,16 @@ impl ToolExecutor for ExampleLightTool {
             }
         };
 
+        let content = format!("Light is now {next}.");
         // Swap under the lock (no await held); capture the previous value so the
         // compensation restores exactly what was there before.
         let previous = {
             let mut state = self.state.lock().expect("light state mutex poisoned");
-            std::mem::replace(&mut *state, next.clone())
+            std::mem::replace(&mut *state, next)
         };
 
         Ok(ToolResult {
-            content: format!("Light is now {next}."),
+            content,
             truncated: false,
             compensation: Some(format!("Set the light back to {previous}.")),
         })
