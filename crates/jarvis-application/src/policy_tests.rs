@@ -281,8 +281,82 @@ async fn r0_tool_proposal_auto_executes_and_replans_to_completed() {
     assert!(states.contains(&RunState::ToolRunning));
     assert!(states.contains(&RunState::Replanning));
     assert_eq!(sink.text(), "the file says hello");
-    // Every evaluation was audited; this one auto-authorized.
-    assert_eq!(audit.event_types(), vec!["policy.auto_authorized"]);
+    // Every evaluation was audited; this one auto-authorized, then the
+    // execution itself was audited (CF-4: the side effect is the audited unit).
+    assert_eq!(
+        audit.event_types(),
+        vec!["policy.auto_authorized", "tool.executed"]
+    );
+}
+
+#[tokio::test]
+async fn tool_result_is_sanitized_before_it_reaches_the_next_prompt() {
+    // CF-3 (docs/06 §5 tool-result smuggling): a tool result carrying terminal
+    // escapes and control bytes must be neutralized at the orchestrator's single
+    // choke point BEFORE it is folded into the replan prompt — tool output is
+    // data, never instructions (invariant #1).
+    let model = FakeModel::scripted_turns([
+        vec![ModelEvent::ToolProposal(proposal("fs.read"))],
+        vec![
+            ModelEvent::TextDelta("done".into()),
+            ModelEvent::Done(FinishReason::Stop),
+        ],
+    ]);
+    let asm = EchoAssembler;
+    let cp = RecordingCheckpointer::default();
+    let sink = RecordingSink::default();
+    let clock = ManualClock::at_unix(1_000_000);
+    let audit = RecordingAuditSink::default();
+    let gate = FakeApprovalGate::approving();
+    let minter = FakeGrantMinter;
+    let validator = FakeGrantValidator::accepting();
+
+    // What a hostile file might hold: a clear-screen ANSI escape, a NUL, a bell.
+    let tool = FakeTool::returning("ok\u{1b}[2J\u{0}\u{7}done");
+    let mut registry = ToolRegistry::new();
+    registry
+        .register(descriptor(
+            "fs.read",
+            Some(policy(RiskLevel::R0, &["files:read"])),
+            tool.clone(),
+        ))
+        .unwrap();
+
+    let orch = Orchestrator {
+        model: &model,
+        context: &asm,
+        checkpointer: &cp,
+        sink: &sink,
+        clock: &clock,
+        tools: Some(ToolStack {
+            registry: &registry,
+            audit: &audit,
+            context: ctx_with(&["files:read"]),
+            approval_gate: &gate,
+            grant_minter: &minter,
+            grant_validator: &validator,
+        }),
+    };
+
+    let run = orch
+        .drive(
+            new_run(),
+            RunInput {
+                text: "read it".into(),
+            },
+            CancellationToken::new(),
+        )
+        .await;
+
+    assert_eq!(run.state, RunState::Completed);
+    // The prompt the model saw on the replan turn: control bytes stripped, the
+    // legitimate text preserved.
+    let replan_prompt = model.last_prompt().expect("a replan prompt was assembled");
+    assert_eq!(replan_prompt, "Tool result: ok[2Jdone");
+    assert!(
+        !replan_prompt.chars().any(|c| c.is_control()),
+        "no control byte may survive into a prompt: {replan_prompt:?}"
+    );
 }
 
 #[tokio::test]

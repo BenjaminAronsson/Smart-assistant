@@ -22,8 +22,8 @@ use crate::orchestrator::{
     RunEventSink, RunInput, RunUpdate,
 };
 use crate::policy::{
-    ApprovalGate, ApprovalOutcome, ApprovalRequest, AuditSink, GrantBinding, GrantMinter,
-    GrantValidator, ToolExecutor,
+    ApprovalGate, ApprovalOutcome, ApprovalRequest, AuditSink, GrantBinding, GrantMintError,
+    GrantMinter, GrantValidator, ToolExecutor,
 };
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::grants::{ExecutionGrant, GrantError, GrantId, Sha256};
@@ -322,6 +322,10 @@ pub struct FakeTool {
     content: String,
     fail: Option<ToolError>,
     compensation: Option<String>,
+    /// If set, [`ToolExecutor::validate_args`] rejects any arguments that are not
+    /// an object carrying this key — so a test can prove a malformed *edited*
+    /// approval is caught before a grant binds (CF-9).
+    required_key: Option<String>,
     /// Records, per call, the arguments and whether a grant was presented — so a
     /// test can assert the *approved* (possibly edited) arguments are what ran.
     calls: Mutex<Vec<(CanonicalValue, bool)>>,
@@ -334,6 +338,7 @@ impl FakeTool {
             content: content.into(),
             fail: None,
             compensation: None,
+            required_key: None,
             calls: Mutex::new(Vec::new()),
         })
     }
@@ -344,6 +349,7 @@ impl FakeTool {
             content: content.into(),
             fail: None,
             compensation: Some(undo.into()),
+            required_key: None,
             calls: Mutex::new(Vec::new()),
         })
     }
@@ -354,6 +360,20 @@ impl FakeTool {
             content: String::new(),
             fail: Some(error),
             compensation: None,
+            required_key: None,
+            calls: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// A tool that succeeds with `content` but whose argument validation
+    /// (CF-9) rejects any arguments missing `key`. Used to prove an edited
+    /// approval with malformed arguments fails at binding time, never executing.
+    pub fn requiring_key(content: impl Into<String>, key: impl Into<String>) -> Arc<Self> {
+        Arc::new(Self {
+            content: content.into(),
+            fail: None,
+            compensation: None,
+            required_key: Some(key.into()),
             calls: Mutex::new(Vec::new()),
         })
     }
@@ -398,6 +418,16 @@ impl ToolExecutor for FakeTool {
                 truncated: false,
                 compensation: self.compensation.clone(),
             }),
+        }
+    }
+
+    fn validate_args(&self, arguments: &CanonicalValue) -> Result<(), ToolError> {
+        let Some(key) = &self.required_key else {
+            return Ok(());
+        };
+        match arguments {
+            CanonicalValue::Object(map) if map.contains_key(key) => Ok(()),
+            _ => Err(ToolError::SchemaInvalid(format!("missing `{key}`"))),
         }
     }
 }
@@ -489,8 +519,8 @@ pub struct FakeGrantMinter;
 
 #[async_trait]
 impl GrantMinter for FakeGrantMinter {
-    async fn mint(&self, binding: GrantBinding) -> ExecutionGrant {
-        ExecutionGrant {
+    async fn mint(&self, binding: GrantBinding) -> Result<ExecutionGrant, GrantMintError> {
+        Ok(ExecutionGrant {
             grant_id: GrantId::from_bytes([1u8; 32]),
             user_id: binding.user_id,
             device_id: binding.device_id,
@@ -501,7 +531,19 @@ impl GrantMinter for FakeGrantMinter {
             target_resource: binding.target_resource,
             expires_at: SystemTime::UNIX_EPOCH + Duration::from_secs(u32::MAX as u64) + binding.ttl,
             single_use: true,
-        }
+        })
+    }
+}
+
+/// A [`GrantMinter`] that always faults — stands in for an infra/DB failure in
+/// the real store (CF-6). Proves the orchestrator routes a mint fault to
+/// `RunState::Failed` (not a panic) and never executes without a grant.
+pub struct FailingGrantMinter;
+
+#[async_trait]
+impl GrantMinter for FailingGrantMinter {
+    async fn mint(&self, _binding: GrantBinding) -> Result<ExecutionGrant, GrantMintError> {
+        Err(GrantMintError("grant store unavailable".to_owned()))
     }
 }
 

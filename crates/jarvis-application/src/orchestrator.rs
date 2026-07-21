@@ -27,13 +27,16 @@ use tokio_util::sync::CancellationToken;
 use crate::model::{ModelError, ModelEvent, ModelProvider, ModelRequest};
 use crate::policy::{
     self, ApprovalGate, ApprovalOutcome, ApprovalRequest, AuditSink, DenyReason, GrantBinding,
-    GrantMinter, GrantValidator, PolicyContext, PolicyDecision, ToolRegistry,
+    GrantMintError, GrantMinter, GrantValidator, PolicyContext, PolicyDecision, ToolRegistry,
 };
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::grants::{ExecutionGrant, GrantError};
 use jarvis_domain::ids::RunId;
 use jarvis_domain::run::{Run, RunEvent, RunOutcome, RunState, TransitionError};
-use jarvis_domain::tools::{ToolError, ToolInvocation, ToolProposal, ToolResult};
+use jarvis_domain::tools::{
+    MAX_RESULT_PROMPT_BYTES, ToolError, ToolInvocation, ToolProposal, ToolResult,
+    sanitize_result_content,
+};
 
 /// The user input that starts a run. M1 is text-only; richer inputs (voice,
 /// referenced artifacts) extend this additively.
@@ -190,6 +193,13 @@ enum StepError {
     PolicyDenied(DenyReason),
     #[error("grant validation failed: {0}")]
     Grant(GrantError),
+    #[error("grant minting failed: {0}")]
+    GrantMint(#[from] GrantMintError),
+    /// The human's *approved* arguments (possibly edited) failed the tool's own
+    /// argument validation before the grant could bind (CF-9). The run fails
+    /// rather than minting a grant for an effect the tool cannot honour.
+    #[error("approved arguments rejected by the tool: {0}")]
+    ApprovedArgsInvalid(ToolError),
     #[error("tool execution failed: {0}")]
     Tool(#[from] ToolError),
     /// A loop-invariant violation (e.g. reaching `ToolRunning` with no
@@ -223,6 +233,10 @@ impl StepError {
             // exact-effect (which could echo tool arguments — docs/06 §5).
             Self::PolicyDenied(reason) => format!("policy denied: {}", reason.code()),
             Self::Grant(err) => format!("grant rejected: {}", err.code()),
+            // Stable, non-sensitive: never the minter's raw fault text, which
+            // could carry DB/driver detail (invariant #5, docs/06 §5).
+            Self::GrantMint(_) => "grant could not be issued".to_owned(),
+            Self::ApprovedArgsInvalid(_) => "approved arguments are invalid".to_owned(),
             Self::Tool(_) => "tool execution failed".to_owned(),
             Self::Internal(_) => "internal orchestration error".to_owned(),
             Self::Transition(_) => "internal orchestration error".to_owned(),
@@ -465,7 +479,7 @@ impl Orchestrator<'_> {
             .policy_of(&proposal.tool_id)
             .ok_or(StepError::Internal("approval tool absent from registry"))?;
         let ttl = policy.risk.default_grant_ttl();
-        let (version, _executor) = stack
+        let (version, executor) = stack
             .registry
             .resolve(&proposal.tool_id)
             .ok_or(StepError::Internal("approval tool absent from registry"))?;
@@ -504,7 +518,25 @@ impl Orchestrator<'_> {
                 Ok(StepFlow::Continue)
             }
             Ran::Done(ApprovalOutcome::Approved { arguments }) => {
-                let grant = stack
+                // CF-9: the human may have edited the arguments away from the
+                // proposal. Validate the *approved* arguments against the tool's
+                // own schema before a grant binds them — a malformed edit fails
+                // here and never mints a grant, rather than only failing later
+                // inside `execute`. This closes the edit path's bypass of the
+                // proposal's input check (docs/06 §4).
+                if let Err(err) = executor.validate_args(&arguments) {
+                    stack
+                        .audit
+                        .record(self.tool_audit_event(
+                            run,
+                            "approval.invalid_args",
+                            &proposal.tool_id,
+                            stack,
+                        ))
+                        .await;
+                    return Err(StepError::ApprovedArgsInvalid(err));
+                }
+                let grant = match stack
                     .grant_minter
                     .mint(GrantBinding {
                         user_id: stack.context.user_id.clone(),
@@ -516,7 +548,27 @@ impl Orchestrator<'_> {
                         target_resource,
                         ttl,
                     })
-                    .await;
+                    .await
+                {
+                    Ok(grant) => grant,
+                    Err(err) => {
+                        // A failed authorization attempt is itself auditable
+                        // (docs/06 §7) — record it before failing the run, so the
+                        // orchestrator's audit trail is symmetric with the
+                        // `tool.failed` / `approval.invalid_args` paths. No grant
+                        // and no execution follow (invariant #1).
+                        stack
+                            .audit
+                            .record(self.tool_audit_event(
+                                run,
+                                "grant.mint_failed",
+                                &proposal.tool_id,
+                                stack,
+                            ))
+                            .await;
+                        return Err(StepError::GrantMint(err));
+                    }
+                };
                 stack
                     .audit
                     .record(self.tool_audit_event(run, "grant.minted", &proposal.tool_id, stack))
@@ -581,8 +633,22 @@ impl Orchestrator<'_> {
         // promptly (invariant #4); dropping the future cancels it.
         match run_or_cancel(executor.execute(invocation, grant, cancel.clone()), cancel).await {
             Ran::Cancelled => Ok(StepFlow::Cancelled),
-            Ran::Done(result) => {
-                let result = result?;
+            Ran::Done(Err(err)) => {
+                // CF-4: the execution *attempt* is the audited unit (docs/06 §7),
+                // not only the policy decision — a failed side effect is a
+                // security-relevant event. Payload carries only the tool id, never
+                // the error's raw text (invariant #5).
+                stack
+                    .audit
+                    .record(self.tool_audit_event(run, "tool.failed", &tool_id, stack))
+                    .await;
+                Err(StepError::Tool(err))
+            }
+            Ran::Done(Ok(result)) => {
+                stack
+                    .audit
+                    .record(self.tool_audit_event(run, "tool.executed", &tool_id, stack))
+                    .await;
                 // A reversible tool's registered undo is surfaced in the timeline.
                 if let Some(description) = &result.compensation {
                     self.sink
@@ -614,7 +680,16 @@ impl Orchestrator<'_> {
             .observation
             .take()
             .ok_or(StepError::Internal("replan with no tool observation"))?;
-        active.prompt = Some(format!("Tool result: {}", observation.content));
+        // CF-3 (docs/06 §5 tool-result smuggling): tool output is untrusted data.
+        // Sanitize it — strip control bytes, hard-cap the length — at this single
+        // choke point, BEFORE it is ever folded into a model prompt. This is the
+        // orchestrator-owned validator; a per-executor `truncated` flag alone is
+        // not trusted. The flag is ORed so the model is told when its view of the
+        // result is partial (either the executor or this cap truncated it).
+        let sanitized = sanitize_result_content(&observation.content, MAX_RESULT_PROMPT_BYTES);
+        let truncated = observation.truncated || sanitized.truncated;
+        let note = if truncated { " (truncated)" } else { "" };
+        active.prompt = Some(format!("Tool result{note}: {}", sanitized.text));
         // ModelInvoked is legal from Replanning as well as ContextReady.
         self.open_model_step(run, active, cancel).await
     }
