@@ -72,6 +72,11 @@ pub enum ModelError {
 pub enum ModelEvent {
     /// One incremental chunk of response text.
     TextDelta(String),
+    /// The model proposed a tool call (docs/05 §4). The proposal is *only* an
+    /// input to `policy::evaluate` — it never authorizes execution (invariant
+    /// #1). Ends the current model turn; the orchestrator routes it through
+    /// `PolicyReview`.
+    ToolProposal(jarvis_domain::tools::ToolProposal),
     /// A usage sample (optional, best-effort).
     Usage(UsageSample),
     /// The turn finished producing output.

@@ -21,13 +21,21 @@ use crate::orchestrator::{
     AssembledContext, CheckpointError, Checkpointer, Clock, ContextAssembler, ContextError,
     RunEventSink, RunInput, RunUpdate,
 };
+use crate::policy::{AuditSink, ToolExecutor};
+use jarvis_domain::audit::AuditEvent;
+use jarvis_domain::grants::ExecutionGrant;
 use jarvis_domain::run::{Run, RunState};
+use jarvis_domain::tools::{ToolError, ToolInvocation, ToolResult};
 
 /// A scripted [`ModelProvider`]: yields a fixed sequence of events, then either
 /// ends the stream or (for the cancellation test) hangs. Records what it saw so
 /// tests can assert on the prompt and on clean teardown.
 pub struct FakeModel {
     script: Vec<ModelEvent>,
+    /// Per-turn scripts for multi-turn (tool) flows: each `run` call pops the
+    /// next turn's events; when empty, `script` is used. Lets one model drive
+    /// `propose → observe → respond` (F2.2) without an infinite proposal loop.
+    turns: Mutex<VecDeque<Vec<ModelEvent>>>,
     hang_after_drain: bool,
     open_error: Option<ModelError>,
     id: ProfileId,
@@ -45,6 +53,7 @@ impl FakeModel {
     ) -> Self {
         Self {
             script,
+            turns: Mutex::new(VecDeque::new()),
             hang_after_drain,
             open_error,
             id: ProfileId::new("fake"),
@@ -53,6 +62,16 @@ impl FakeModel {
             opened: AtomicBool::new(false),
             last_prompt: Mutex::new(None),
         }
+    }
+
+    /// A model that yields a distinct event script on each successive turn (each
+    /// must include its own terminal `Done`/`Error`, or a `ToolProposal` which
+    /// ends the turn). After the scripted turns are exhausted, further turns end
+    /// immediately (empty stream).
+    pub fn scripted_turns(turns: impl IntoIterator<Item = Vec<ModelEvent>>) -> Self {
+        let mut model = Self::new(Vec::new(), false, None);
+        model.turns = Mutex::new(turns.into_iter().collect());
+        model
     }
 
     /// Streams each chunk as a `TextDelta`, then a clean `Done(Stop)`.
@@ -132,8 +151,18 @@ impl ModelProvider for FakeModel {
         if let Some(error) = &self.open_error {
             return Err(error.clone());
         }
+        // Multi-turn models pop the next turn's script; single-script models
+        // replay `script`.
+        let events = {
+            let mut turns = self.turns.lock().unwrap();
+            if turns.is_empty() {
+                self.script.clone()
+            } else {
+                turns.pop_front().unwrap_or_default()
+            }
+        };
         let stream = ScriptStream {
-            events: self.script.clone().into(),
+            events: events.into(),
             hang_after_drain: self.hang_after_drain,
             polled: self.polled.clone(),
             dropped: self.dropped.clone(),
@@ -278,5 +307,95 @@ impl ManualClock {
 impl Clock for ManualClock {
     fn now(&self) -> SystemTime {
         *self.now.lock().unwrap()
+    }
+}
+
+/// A [`ToolExecutor`] that returns a canned result (or a canned error) and
+/// records every call — including whether a grant was presented. Two properties
+/// tests assert with it: the R0/R1 auto path executes with `grant = None`, and a
+/// denied/approval-pending proposal never reaches `execute` at all (invariant
+/// #1). Held as an `Arc` so a test keeps an inspection handle after registering.
+pub struct FakeTool {
+    content: String,
+    fail: Option<ToolError>,
+    calls: Mutex<Vec<bool>>,
+}
+
+impl FakeTool {
+    /// A tool whose every call succeeds with `content`.
+    pub fn returning(content: impl Into<String>) -> Arc<Self> {
+        Arc::new(Self {
+            content: content.into(),
+            fail: None,
+            calls: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// A tool whose every call fails with `error`.
+    pub fn failing(error: ToolError) -> Arc<Self> {
+        Arc::new(Self {
+            content: String::new(),
+            fail: Some(error),
+            calls: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// How many times `execute` was called.
+    pub fn call_count(&self) -> usize {
+        self.calls.lock().unwrap().len()
+    }
+
+    /// For each call, whether a grant was presented (`true`) or not (`false`).
+    pub fn calls_with_grant(&self) -> Vec<bool> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl ToolExecutor for FakeTool {
+    async fn execute(
+        &self,
+        _invocation: ToolInvocation,
+        grant: Option<ExecutionGrant>,
+        _cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        self.calls.lock().unwrap().push(grant.is_some());
+        match &self.fail {
+            Some(error) => Err(error.clone()),
+            None => Ok(ToolResult {
+                content: self.content.clone(),
+                truncated: false,
+            }),
+        }
+    }
+}
+
+/// Records every audit event the policy path emits (the F2.4 transactional sink
+/// replaces this in production).
+#[derive(Default)]
+pub struct RecordingAuditSink {
+    events: Mutex<Vec<AuditEvent>>,
+}
+
+impl RecordingAuditSink {
+    pub fn events(&self) -> Vec<AuditEvent> {
+        self.events.lock().unwrap().clone()
+    }
+
+    /// The ordered `event_type`s recorded (e.g. `policy.auto_authorized`).
+    pub fn event_types(&self) -> Vec<String> {
+        self.events
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| e.event_type.clone())
+            .collect()
+    }
+}
+
+#[async_trait]
+impl AuditSink for RecordingAuditSink {
+    async fn record(&self, event: AuditEvent) {
+        self.events.lock().unwrap().push(event);
     }
 }

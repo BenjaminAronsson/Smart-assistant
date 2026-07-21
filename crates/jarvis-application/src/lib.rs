@@ -5,6 +5,7 @@
 pub mod health;
 pub mod model;
 pub mod orchestrator;
+pub mod policy;
 pub mod ports;
 pub mod queue;
 
@@ -13,6 +14,9 @@ pub mod testing;
 
 #[cfg(test)]
 mod orchestrator_tests;
+
+#[cfg(test)]
+mod policy_tests;
 
 #[cfg(test)]
 mod queue_tests;

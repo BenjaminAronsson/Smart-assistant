@@ -193,6 +193,10 @@ impl RunEngine {
             checkpointer: &*self.checkpointer,
             sink: &sink,
             clock: &*self.clock,
+            // No tools wired yet: the Claude CLI reasoning profile has built-in
+            // tools disabled (ADR-004), so it never proposes a tool. Native and
+            // MCP tools are wired into the registry in F2.5/F2.6.
+            tools: None,
         };
 
         let terminal = orchestrator
