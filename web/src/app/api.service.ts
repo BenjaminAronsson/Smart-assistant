@@ -12,6 +12,7 @@ import type {
   SubmitMessageRequest,
   ProvidersResponse,
   RunAck,
+  ApprovalDecisionDto,
 } from '../generated/api-types';
 
 const TOKEN_KEY = 'jarvis.deviceToken';
@@ -82,6 +83,25 @@ export class ApiService {
     };
     return firstValueFrom(
       this.http.post<RunAck>(`/api/v1/sessions/${sessionId}/messages`, request, {
+        headers: this.authHeaders(),
+      }),
+    );
+  }
+
+  /**
+   * Resolve a pending approval (docs/05 §4). The body echoes the approval id in
+   * the path; on `approve`, `editedArguments` rebinds the grant to the edited set
+   * (docs/06 §4). A 200 only means the decision was recorded — the run's actual
+   * unblocking is observed via the `approval.resolved` WS event, so callers keep
+   * the card optimistically blocked until that durable event arrives.
+   */
+  async resolveApproval(
+    runId: string,
+    approvalId: string,
+    decision: ApprovalDecisionDto,
+  ): Promise<void> {
+    await firstValueFrom(
+      this.http.post(`/api/v1/runs/${runId}/approvals/${approvalId}`, decision, {
         headers: this.authHeaders(),
       }),
     );

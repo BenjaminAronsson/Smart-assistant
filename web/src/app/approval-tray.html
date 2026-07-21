@@ -1,0 +1,76 @@
+<section
+  class="approval-card"
+  role="group"
+  [attr.aria-label]="'Approval required: ' + card().toolId"
+>
+  <div class="approval-live" aria-live="assertive">Waiting on your decision</div>
+
+  <header class="approval-head">
+    <span class="waiting-badge">Waiting on you</span>
+    <span class="risk-badge" [class]="'risk-' + card().risk">{{ riskLabel() }}</span>
+    <span class="egress-badge" [class]="'egress-' + card().egress">
+      egress: {{ card().egress }}
+    </span>
+    <span class="reversible-badge" [class.irreversible]="!card().reversible">
+      {{ card().reversible ? 'reversible' : 'not reversible' }}
+    </span>
+  </header>
+
+  <p class="tool-id"><code>{{ card().toolId }}</code></p>
+
+  <!-- exactEffect is rendered VERBATIM and never truncated (docs/06 §3). -->
+  <pre class="exact-effect" aria-label="Exact effect">{{ card().exactEffect }}</pre>
+
+  @if (editing()) {
+    <label class="args-label" [attr.for]="'args-' + card().approvalId">
+      Edit arguments (rebinds the grant — docs/06 §4)
+    </label>
+    <textarea
+      class="args-editor"
+      [id]="'args-' + card().approvalId"
+      [(ngModel)]="argsDraft"
+      [disabled]="pending()"
+      spellcheck="false"
+      rows="6"
+    ></textarea>
+    @if (argsError()) {
+      <p class="args-error" role="alert">{{ argsError() }}</p>
+    }
+  } @else {
+    <details class="args-view">
+      <summary>Proposed arguments</summary>
+      <pre class="args-json">{{ proposedJson() }}</pre>
+    </details>
+  }
+
+  <div class="approval-actions">
+    <button
+      type="button"
+      class="approve"
+      (click)="approve()"
+      [disabled]="pending()"
+    >
+      Approve
+    </button>
+    <button
+      type="button"
+      class="deny"
+      (click)="deny()"
+      [disabled]="pending()"
+    >
+      Deny
+    </button>
+    @if (editing()) {
+      <button type="button" class="edit-toggle" (click)="cancelEdit()" [disabled]="pending()">
+        Cancel edit
+      </button>
+    } @else {
+      <button type="button" class="edit-toggle" (click)="startEdit()" [disabled]="pending()">
+        Edit arguments
+      </button>
+    }
+    @if (pending()) {
+      <span class="pending-note">Sending decision…</span>
+    }
+  </div>
+</section>
