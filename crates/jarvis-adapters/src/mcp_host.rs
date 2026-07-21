@@ -21,8 +21,9 @@
 //! without spawning a child. Spawning, the initialize handshake, and
 //! `list_tools`/`call_tool` live in [`McpHost`], which owns the running child.
 //!
-//! Result validation (schema/size/control-char hardening) and cancellation
-//! reaping the child are F2.7 Slice 2; jarvisd wiring is Slice 3.
+//! Results are validated at this boundary ([`map_call_result`]:
+//! control-char stripping, size cap, non-text rejection) and the child is reaped
+//! on shutdown/drop. jarvisd wiring + CF-15/CF-12 are F2.7 Slice 3.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -33,7 +34,8 @@ use jarvis_application::policy::{ToolDescriptor, ToolExecutor};
 use jarvis_domain::grants::ExecutionGrant;
 use jarvis_domain::policy::ToolPolicy;
 use jarvis_domain::tools::{
-    CanonicalValue, ToolError, ToolId, ToolInvocation, ToolResult, ToolVersion,
+    CanonicalValue, SanitizedContent, ToolError, ToolId, ToolInvocation, ToolResult, ToolVersion,
+    sanitize_result_content,
 };
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
@@ -45,8 +47,8 @@ use tokio_util::sync::CancellationToken;
 /// response. A hard cap at the adapter boundary bounds prompt growth from a
 /// single (possibly hostile) server independently of the domain-level cap the
 /// orchestrator also applies (`MAX_RESULT_PROMPT_BYTES`, CF-3) — defence in
-/// depth against tool-result smuggling (docs/06 §5). Slice 2 adds full
-/// control-char stripping / schema validation; this cap is the Slice-1 floor.
+/// depth against tool-result smuggling (docs/06 §5). Applied together with
+/// control-char stripping in [`map_call_result`].
 const MAX_MCP_RESULT_BYTES: usize = 16 * 1024;
 
 /// Wall-clock bound on the MCP initialize handshake. A wedged or hostile child
@@ -343,33 +345,45 @@ fn canonical_to_json(value: &CanonicalValue) -> serde_json::Value {
     }
 }
 
-/// Map an MCP `call_tool` response into a domain [`ToolResult`]. A tool-level
-/// error (`is_error == true`) becomes [`ToolError::ExecutionFailed`]. Text
-/// content blocks are concatenated and hard-capped at [`MAX_MCP_RESULT_BYTES`];
-/// non-text blocks (images/audio/resources) are not forwarded to the model in
-/// M2. Full control-char stripping and structured-schema validation are Slice 2;
-/// the orchestrator additionally sanitizes this text at the CF-3 choke point.
+/// Map an MCP `call_tool` response into a domain [`ToolResult`], treating the
+/// server as untrusted (docs/06 §5 "Tool-result smuggling", invariant #1).
+///
+/// The concatenated text is run through the domain result validator
+/// [`sanitize_result_content`] — stripping C0/C1/DEL control characters and
+/// hard-capping at [`MAX_MCP_RESULT_BYTES`] — **at this boundary**, before the
+/// text can reach a host log/span or the model, rather than relying solely on
+/// the orchestrator's later CF-3 sanitisation. (Unicode bidi/zero-width
+/// spoofing is CF-13, handled with F2.8 `web.fetch`.)
+///
+/// A tool-level error (`is_error == true`) becomes [`ToolError::ExecutionFailed`]
+/// carrying the sanitised text. Schema validation (docs/06 §5): M2 forwards only
+/// text, so a *success* result carrying only non-text blocks (image/audio/
+/// resource) and no structured content is **rejected** ([`ToolError::SchemaInvalid`])
+/// rather than silently returned as empty — the executor fails closed.
+///
+/// Peak-memory note: rmcp has already fully deserialised `result` before this
+/// runs, so the cap here bounds only what is forwarded downstream, not the host
+/// memory a single oversized response can occupy in transit. Bounding that
+/// belongs at the transport/framing layer; for M2 the child is host-launched on
+/// loopback, so this is an accepted, documented limit (see the F2.7 plan).
 fn map_call_result(result: CallToolResult) -> Result<ToolResult, ToolError> {
-    let mut text = String::new();
+    let mut raw = String::new();
+    let mut saw_text = false;
+    let mut saw_non_text = false;
     for block in &result.content {
-        if let ContentBlock::Text(t) = block {
-            if !text.is_empty() {
-                text.push('\n');
+        match block {
+            ContentBlock::Text(t) => {
+                if saw_text {
+                    raw.push('\n');
+                }
+                raw.push_str(&t.text);
+                saw_text = true;
             }
-            text.push_str(&t.text);
+            _ => saw_non_text = true,
         }
     }
 
-    let mut truncated = false;
-    if text.len() > MAX_MCP_RESULT_BYTES {
-        // Truncate on a char boundary so no partial code unit is forwarded.
-        let mut end = MAX_MCP_RESULT_BYTES;
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        text.truncate(end);
-        truncated = true;
-    }
+    let SanitizedContent { text, truncated } = sanitize_result_content(&raw, MAX_MCP_RESULT_BYTES);
 
     if result.is_error == Some(true) {
         return Err(ToolError::ExecutionFailed(if text.is_empty() {
@@ -377,6 +391,12 @@ fn map_call_result(result: CallToolResult) -> Result<ToolResult, ToolError> {
         } else {
             text
         }));
+    }
+
+    if !saw_text && saw_non_text && result.structured_content.is_none() {
+        return Err(ToolError::SchemaInvalid(
+            "MCP tool returned only non-text content, unsupported in M2".to_owned(),
+        ));
     }
 
     Ok(ToolResult {
@@ -469,6 +489,38 @@ mod tests {
             map_call_result(CallToolResult::success(vec![ContentBlock::text(big)])).unwrap();
         assert!(result.truncated);
         assert!(result.content.len() <= MAX_MCP_RESULT_BYTES);
+    }
+
+    #[test]
+    fn control_characters_are_stripped_at_the_boundary() {
+        // A server that smuggles control bytes (terminal escapes, NUL, bell) into
+        // its result text cannot get them into a host log or the model: they are
+        // stripped here before forwarding (docs/06 §5). \n and \t are preserved.
+        // The control bytes (BEL, NUL, ESC) are stripped; \t and \n survive. The
+        // literal "[31m" after the stripped ESC is ordinary text, not a control.
+        let hostile = "clean\u{0007}\u{0000}\u{001b}[31mred\ttab\nnl";
+        let ok =
+            map_call_result(CallToolResult::success(vec![ContentBlock::text(hostile)])).unwrap();
+        assert_eq!(ok.content, "clean[31mred\ttab\nnl");
+    }
+
+    #[test]
+    fn non_text_only_success_is_rejected() {
+        // A success result carrying only an image block (no text, no structured
+        // content) is rejected rather than silently returned empty (fail closed).
+        let err = map_call_result(CallToolResult::success(vec![ContentBlock::image(
+            "aGVsbG8=",
+            "image/png",
+        )]))
+        .unwrap_err();
+        assert!(matches!(err, ToolError::SchemaInvalid(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn empty_success_is_an_empty_result_not_an_error() {
+        let ok = map_call_result(CallToolResult::success(vec![])).unwrap();
+        assert_eq!(ok.content, "");
+        assert!(!ok.truncated);
     }
 
     #[test]

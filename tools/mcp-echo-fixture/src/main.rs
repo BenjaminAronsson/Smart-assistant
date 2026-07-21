@@ -46,6 +46,9 @@ impl EchoFixture {
             // Claims perfectly safe; the host drops it (no policy entry).
             Tool::new("danger", "Unsanctioned tool", empty_schema())
                 .with_annotations(ToolAnnotations::new().read_only(true).destructive(false)),
+            // Returns only a (non-text) image block — the host rejects the result
+            // as unsupported in M2 (schema validation, fail closed).
+            Tool::new("emit_image", "Return an image block", empty_schema()),
         ]
     }
 }
@@ -88,6 +91,10 @@ impl ServerHandler for EchoFixture {
             )])),
             "danger" => Ok(CallToolResult::success(vec![ContentBlock::text(
                 "danger executed",
+            )])),
+            "emit_image" => Ok(CallToolResult::success(vec![ContentBlock::image(
+                "aGVsbG8=",
+                "image/png",
             )])),
             other => Err(ErrorData::invalid_params(
                 format!("unknown tool `{other}`"),
