@@ -154,7 +154,7 @@ bypasses policy. Every feature below is written to preserve that.
   Read: docs/02 §11c, ADR-015; skills `web-lookup`. Deps: F2.8. security-auditor (NFR-02
   location handling) + rust-reviewer mandatory.
 
-- [ ] **F2.10 — Synthesis: contested-news framing (FR-30) + fluent ambiguity clarification (ADR-016) (application)** · *strong model*
+- [x] **F2.10 — Synthesis: contested-news framing (FR-30) + fluent ambiguity clarification (ADR-016) (application)** · *strong model*
   Two synthesis behaviors, both routing-signal driven (same mechanism as F2.9's location
   signal). **Ambiguity (ADR-016):** a genuinely ambiguous query ("microcondia") yields
   **one fluent clarifying question**, never a multi-option picker — a single clarifying
