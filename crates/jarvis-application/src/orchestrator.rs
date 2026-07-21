@@ -480,6 +480,9 @@ impl Orchestrator<'_> {
             tool_id: proposal.tool_id.clone(),
             exact_effect: policy::exact_effect(&proposal),
             proposed_arguments: proposal.arguments.clone(),
+            risk: policy.risk,
+            reversible: policy.is_reversible,
+            egress: policy.egress,
         };
 
         match run_or_cancel(stack.approval_gate.request(request, cancel.clone()), cancel).await {

@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::grants::{ExecutionGrant, GrantError};
 use jarvis_domain::ids::{DeviceId, RunId, UserId};
-use jarvis_domain::policy::{ResourcePattern, Scope, ToolPolicy};
+use jarvis_domain::policy::{DataEgress, ResourcePattern, RiskLevel, Scope, ToolPolicy};
 use jarvis_domain::tools::{
     CanonicalValue, ToolError, ToolId, ToolInvocation, ToolProposal, ToolResult, ToolVersion,
 };
@@ -230,13 +230,19 @@ fn render_value(value: &jarvis_domain::tools::CanonicalValue) -> String {
 // ---- Approvals & execution grants (F2.3, docs/06 §4) ---------------------
 
 /// What a human is asked to approve (docs/06 §3). Carries the *exact effect* —
-/// the real tool and its concrete arguments — never a model paraphrase.
+/// the real tool and its concrete arguments — never a model paraphrase — plus
+/// the host policy attributes the human weighs the decision against (F2.5): the
+/// risk tier, whether the effect is reversible, and how far its data travels.
+/// These come from the tool's [`ToolPolicy`], never from model or tool text.
 #[derive(Debug, Clone)]
 pub struct ApprovalRequest {
     pub run_id: RunId,
     pub tool_id: ToolId,
     pub exact_effect: String,
     pub proposed_arguments: CanonicalValue,
+    pub risk: RiskLevel,
+    pub reversible: bool,
+    pub egress: DataEgress,
 }
 
 /// A human's decision. `Approved` carries the *final* arguments the human

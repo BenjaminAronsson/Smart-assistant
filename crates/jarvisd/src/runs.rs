@@ -42,7 +42,7 @@ use jarvis_contracts::messages::{MessageDto, SubmitMessageRequest};
 use jarvis_contracts::runs::{RunAck, RunBudgetDto, RunDto};
 use jarvis_contracts::timeline::{TimelineItem, TimelineResponse};
 use jarvis_domain::conversations::{Message, MessageRole};
-use jarvis_domain::ids::{MessageId, RunId, SessionId};
+use jarvis_domain::ids::{ApprovalId, MessageId, RunId, SessionId};
 use jarvis_domain::run::{Run, RunBudget, RunState};
 use jarvis_infra::dispatcher::OutboxRecord;
 use time::OffsetDateTime;
@@ -318,6 +318,10 @@ pub struct RunApi {
     runs: Arc<dyn RunStore>,
     events: Arc<dyn EventReader>,
     engine: Arc<RunEngine>,
+    /// The human-approval seam (F2.5): `POST /runs/{id}/approvals/{approval_id}`
+    /// resolves a pending approval through it. The orchestrator side that *parks*
+    /// an approval here is wired in F2.6 (no tool is proposed until then).
+    approval_gate: Arc<crate::approvals::JarvisApprovalGate>,
 }
 
 impl RunApi {
@@ -327,6 +331,7 @@ impl RunApi {
         runs: Arc<dyn RunStore>,
         events: Arc<dyn EventReader>,
         engine: Arc<RunEngine>,
+        approval_gate: Arc<crate::approvals::JarvisApprovalGate>,
     ) -> Self {
         Self {
             sessions,
@@ -334,6 +339,7 @@ impl RunApi {
             runs,
             events,
             engine,
+            approval_gate,
         }
     }
 }
@@ -443,6 +449,46 @@ pub async fn cancel_run(
     }
 }
 
+/// `POST /api/v1/runs/{id}/approvals/{approval_id}` — apply a human's approve or
+/// deny decision to a pending approval (docs/05 §4, FR-05). Text never grants
+/// authority (invariant #1): this body does not *cause* execution — it only
+/// unblocks the parked orchestrator, which then mints and validates a grant
+/// bound to exactly what was approved. `editedArguments` rebind that grant, so
+/// an edited approval executes the edited set or nothing (docs/06 §4).
+pub async fn resolve_approval(
+    State(api): State<RunApi>,
+    Path((run_id, approval_id)): Path<(String, String)>,
+    Extension(device): Extension<DeviceContext>,
+    Json(decision): Json<jarvis_contracts::approvals::ApprovalDecisionDto>,
+) -> Result<StatusCode, Response> {
+    let run_id: RunId = run_id.parse().map_err(|_| not_found("no such run"))?;
+    let approval_id: ApprovalId = approval_id
+        .parse()
+        .map_err(|_| not_found("no such approval"))?;
+    // The deciding human is the authenticated device's user (audit actor).
+    let actor = format!("user:{}", device.user_id.as_str());
+
+    match api
+        .approval_gate
+        .resolve(&run_id, &approval_id, decision, &actor)
+        .await
+    {
+        Ok(()) => Ok(StatusCode::OK),
+        Err(crate::approvals::ResolveError::NotFound) => {
+            Err(not_found("no pending approval for this run"))
+        }
+        Err(crate::approvals::ResolveError::Persist(error)) => {
+            tracing::error!(%error, "approval resolution failed to persist");
+            Err(problem(
+                StatusCode::SERVICE_UNAVAILABLE,
+                ErrorCode::ProviderUnavailable,
+                "storage unavailable",
+                None,
+            ))
+        }
+    }
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct TimelineParams {
     since: Option<i64>,
@@ -513,6 +559,8 @@ const KNOWN_DOMAIN_EVENT_TAGS: &[&str] = &[
     "message.created",
     "provider.health_changed",
     "run.checkpoint_saved",
+    "approval.requested",
+    "approval.resolved",
 ];
 
 fn domain_event(row: &OutboxRecord) -> Option<DomainEvent> {

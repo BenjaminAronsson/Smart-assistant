@@ -70,7 +70,15 @@ async fn start(pool: PgPool, model: FakeModel) -> Harness {
         Arc::new(SystemClock),
         shutdown.clone(),
     );
-    let run_api = RunApi::new(sessions, messages, runs, events.clone(), engine);
+    let approval_gate = jarvisd::approvals::JarvisApprovalGate::new(pool.clone());
+    let run_api = RunApi::new(
+        sessions,
+        messages,
+        runs,
+        events.clone(),
+        engine,
+        approval_gate,
+    );
     let ws = WsState {
         hub,
         events,
