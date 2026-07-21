@@ -40,6 +40,7 @@ fn orchestrator<'a>(
         checkpointer: cp,
         sink,
         clock,
+        tools: None,
     }
 }
 

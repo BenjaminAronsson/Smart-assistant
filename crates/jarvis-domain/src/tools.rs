@@ -78,9 +78,14 @@ fn encode(value: &CanonicalValue, buf: &mut Vec<u8>) {
             buf.push(b';');
         }
         CanonicalValue::Float(text) => {
+            // Length-prefixed (like a string), not terminator-delimited: float
+            // text is boundary-supplied and could contain any byte, so making it
+            // self-delimiting keeps the encoding *provably* injective rather than
+            // incidentally so (security-auditor advisory, F2.2).
             buf.push(b'f');
+            buf.extend_from_slice(text.len().to_string().as_bytes());
+            buf.push(b':');
             buf.extend_from_slice(text.as_bytes());
-            buf.push(b';');
         }
         CanonicalValue::Str(s) => encode_str(s, buf),
         CanonicalValue::Array(items) => {

@@ -69,6 +69,16 @@ fn canonical_form_distinguishes_types() {
     );
 }
 
+/// Float text is length-prefixed, so terminator-shaped content in one value
+/// cannot be confused with a following value (security-auditor advisory).
+#[test]
+fn canonical_form_float_text_is_self_delimiting() {
+    assert_ne!(
+        canonical_form(&V::obj([("a", V::Float("1;i0".into())), ("b", V::Null)])),
+        canonical_form(&V::obj([("a", V::Float("1".into())), ("b", V::int(0))])),
+    );
+}
+
 /// Array order is significant (it is data, not a key set).
 #[test]
 fn canonical_form_array_order_is_significant() {

@@ -4,10 +4,12 @@
 //! is written at every safe transition (NFR-05). Every failure path lands the
 //! run in a terminal `Failed`/`Cancelled` — the loop never panics or hangs.
 //!
-//! M1 wires the text path only: `Received -> ContextReady -> ModelRunning ->
-//! Responding -> Completed`. The policy/tool/approval states exist in the type
-//! (F1.2) but their executors are unwired here — reaching one fails the run,
-//! so there is no path from model output to tool execution yet (invariant #1).
+//! M1 wired the text path (`Received -> ContextReady -> ModelRunning ->
+//! Responding -> Completed`). F2.2 adds the R0/R1 tool path: `ModelRunning ->
+//! PolicyReview -> ToolRunning -> Replanning -> ModelRunning`. Every proposal
+//! passes through `policy::evaluate` (invariant #1) — there is no edge from
+//! model output to tool execution that skips it. `WaitingApproval` (the human
+//! wait + grant) is still unwired; its executor lands in F2.3.
 //!
 //! Observability: this layer stays pure (no `tracing` dependency — arch-test
 //! keeps the runtime out of the application crate). It emits structured
@@ -21,8 +23,11 @@ use futures_core::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::model::{ModelError, ModelEvent, ModelProvider, ModelRequest};
+use crate::policy::{self, AuditSink, DenyReason, PolicyContext, PolicyDecision, ToolRegistry};
+use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::ids::RunId;
 use jarvis_domain::run::{Run, RunEvent, RunOutcome, RunState, TransitionError};
+use jarvis_domain::tools::{ToolError, ToolInvocation, ToolProposal, ToolResult};
 
 /// The user input that starts a run. M1 is text-only; richer inputs (voice,
 /// referenced artifacts) extend this additively.
@@ -100,6 +105,18 @@ pub trait Clock: Send + Sync {
     fn now(&self) -> SystemTime;
 }
 
+/// The tool/policy ports plus the per-run authorization context (F2.2). Bundled
+/// and optional so the text-only path (M1 tests; jarvisd with the CLI adapter,
+/// whose built-in tools are disabled per ADR-004) constructs an orchestrator
+/// with `tools: None` and never touches the policy machinery. With `None`, a
+/// model tool proposal has nowhere to go and fails the run safely — there is no
+/// ambient tool set (invariant #1).
+pub struct ToolStack<'a> {
+    pub registry: &'a ToolRegistry,
+    pub audit: &'a dyn AuditSink,
+    pub context: PolicyContext,
+}
+
 /// The orchestrator: borrows the ports it drives for the duration of one run.
 pub struct Orchestrator<'a> {
     pub model: &'a dyn ModelProvider,
@@ -107,13 +124,23 @@ pub struct Orchestrator<'a> {
     pub checkpointer: &'a dyn Checkpointer,
     pub sink: &'a dyn RunEventSink,
     pub clock: &'a dyn Clock,
+    /// Present once tools are wired (F2.2+); `None` for the text-only path.
+    pub tools: Option<ToolStack<'a>>,
 }
 
 /// Loop-local state that must persist across transitions but is not part of the
-/// durable run (the assembled prompt and the live provider stream).
+/// durable run (the assembled prompt, the live provider stream, and the tool
+/// proposal/invocation/observation as a proposal moves policy → execute →
+/// replan).
 struct Active {
     prompt: Option<String>,
     stream: Option<BoxStream<'static, ModelEvent>>,
+    /// A model tool proposal awaiting policy evaluation (`PolicyReview`).
+    proposal: Option<ToolProposal>,
+    /// The authorized invocation awaiting execution (`ToolRunning`).
+    invocation: Option<ToolInvocation>,
+    /// The tool result to fold back into the next model turn (`Replanning`).
+    observation: Option<ToolResult>,
 }
 
 /// Outcome of a single step: keep looping, or the run was cancelled mid-step.
@@ -133,8 +160,16 @@ enum StepError {
     Model(#[from] ModelError),
     #[error("model stream ended before a completion signal")]
     StreamEnded,
-    #[error("state {0:?} has no executor in M1")]
-    UnwiredInM1(RunState),
+    #[error("state {0:?} has no executor wired yet")]
+    Unwired(RunState),
+    #[error("policy denied the tool call: {0}")]
+    PolicyDenied(DenyReason),
+    #[error("tool execution failed: {0}")]
+    Tool(#[from] ToolError),
+    /// A loop-invariant violation (e.g. reaching `ToolRunning` with no
+    /// invocation staged). Never expected; surfaced as a generic failure.
+    #[error("internal orchestration error: {0}")]
+    Internal(&'static str),
     #[error("invalid transition: {0}")]
     Transition(#[from] TransitionError),
 }
@@ -157,7 +192,12 @@ impl StepError {
             }
             Self::Model(ModelError::Malformed(_)) => "model stream malformed".to_owned(),
             Self::StreamEnded => "model stream ended before completion".to_owned(),
-            Self::UnwiredInM1(_) => "requested step is not available".to_owned(),
+            Self::Unwired(_) => "requested step is not available".to_owned(),
+            // Stable, non-sensitive: the denial reason code, never the rendered
+            // exact-effect (which could echo tool arguments — docs/06 §5).
+            Self::PolicyDenied(reason) => format!("policy denied: {}", reason.code()),
+            Self::Tool(_) => "tool execution failed".to_owned(),
+            Self::Internal(_) => "internal orchestration error".to_owned(),
             Self::Transition(_) => "internal orchestration error".to_owned(),
         }
     }
@@ -171,6 +211,9 @@ impl Orchestrator<'_> {
         let mut active = Active {
             prompt: None,
             stream: None,
+            proposal: None,
+            invocation: None,
+            observation: None,
         };
 
         while !run.state.is_terminal() {
@@ -199,11 +242,12 @@ impl Orchestrator<'_> {
                     self.pull_model_step(&mut run, &mut active, &cancel).await
                 }
                 RunState::Responding => self.commit_step(&mut run).await,
-                // M2 executors are not wired in M1. Named explicitly (no `_`).
-                RunState::Replanning
-                | RunState::PolicyReview
-                | RunState::WaitingApproval
-                | RunState::ToolRunning => Err(StepError::UnwiredInM1(run.state)),
+                RunState::PolicyReview => self.policy_step(&mut run, &mut active).await,
+                RunState::ToolRunning => self.tool_step(&mut run, &mut active, &cancel).await,
+                RunState::Replanning => self.replan_step(&mut run, &mut active, &cancel).await,
+                // The approval executor (human wait) lands in F2.3. Named
+                // explicitly (no `_`) so a new state forces a decision.
+                RunState::WaitingApproval => Err(StepError::Unwired(run.state)),
                 // The while-guard excludes terminals; listed for exhaustiveness.
                 RunState::Completed | RunState::Failed | RunState::Cancelled => break,
             };
@@ -282,6 +326,16 @@ impl Orchestrator<'_> {
                         .await;
                     Ok(StepFlow::Continue)
                 }
+                ModelEvent::ToolProposal(proposal) => {
+                    // A proposal ends this model turn and yields control to the
+                    // policy engine — it is a request, never an authorization
+                    // (invariant #1). Drop the stream; stage the proposal.
+                    active.stream = None;
+                    active.proposal = Some(proposal);
+                    run.apply(RunEvent::ProposalReceived)?;
+                    self.after_transition(run).await;
+                    Ok(StepFlow::Continue)
+                }
                 // Usage recording lands with persistence (F1.4); ignored here.
                 ModelEvent::Usage(_) => Ok(StepFlow::Continue),
                 ModelEvent::Done(_reason) => {
@@ -304,6 +358,138 @@ impl Orchestrator<'_> {
         run.apply(RunEvent::ResponseCommitted)?;
         self.after_transition(run).await;
         Ok(StepFlow::Continue)
+    }
+
+    /// `PolicyReview`: the sole authorization point (invariant #1). Evaluate the
+    /// staged proposal, audit the decision unconditionally (no read-only
+    /// shortcut, docs/06 §3), then route it: R0/R1 auto-authorize to
+    /// `ToolRunning`; R2+ request approval (executor F2.3); a denial fails the
+    /// run — the mutation never executes.
+    async fn policy_step(&self, run: &mut Run, active: &mut Active) -> Result<StepFlow, StepError> {
+        let stack = self
+            .tools
+            .as_ref()
+            .ok_or(StepError::Unwired(RunState::PolicyReview))?;
+        let proposal = active
+            .proposal
+            .take()
+            .ok_or(StepError::Internal("policy review with no staged proposal"))?;
+
+        let decision = policy::evaluate(&proposal, stack.registry, &stack.context);
+        stack
+            .audit
+            .record(self.policy_audit_event(run, &proposal, &decision, stack))
+            .await;
+
+        match decision {
+            PolicyDecision::Auto => {
+                let (version, _executor) =
+                    stack
+                        .registry
+                        .resolve(&proposal.tool_id)
+                        .ok_or(StepError::Internal(
+                            "auto-authorized tool absent from registry",
+                        ))?;
+                active.invocation = Some(ToolInvocation {
+                    tool_id: proposal.tool_id,
+                    tool_version: version,
+                    arguments: proposal.arguments,
+                });
+                run.apply(RunEvent::AutoAuthorized)?;
+                self.after_transition(run).await;
+                Ok(StepFlow::Continue)
+            }
+            PolicyDecision::NeedsApproval { .. } => {
+                // The approval card + human wait are F2.3; here the run advances
+                // to WaitingApproval, whose executor is unwired, so it halts
+                // safely rather than executing without a grant (invariant #1).
+                run.apply(RunEvent::ApprovalRequested)?;
+                self.after_transition(run).await;
+                Ok(StepFlow::Continue)
+            }
+            PolicyDecision::Reject { reason } => Err(StepError::PolicyDenied(reason)),
+        }
+    }
+
+    /// `ToolRunning`: execute one authorized invocation with cancellation. The
+    /// R0/R1 auto path presents no grant; R2+ grant validation lands in F2.3.
+    async fn tool_step(
+        &self,
+        run: &mut Run,
+        active: &mut Active,
+        cancel: &CancellationToken,
+    ) -> Result<StepFlow, StepError> {
+        let stack = self
+            .tools
+            .as_ref()
+            .ok_or(StepError::Unwired(RunState::ToolRunning))?;
+        let invocation = active
+            .invocation
+            .take()
+            .ok_or(StepError::Internal("tool run with no staged invocation"))?;
+        let (_version, executor) = stack
+            .registry
+            .resolve(&invocation.tool_id)
+            .ok_or(StepError::Internal("invocation tool absent from registry"))?;
+
+        // Counts against `max_tool_calls`, enforced at the next loop top.
+        run.usage.tool_calls = run.usage.tool_calls.saturating_add(1);
+
+        // Race execution against cancellation so a hung tool is abandoned
+        // promptly (invariant #4); dropping the future cancels it.
+        match run_or_cancel(executor.execute(invocation, None, cancel.clone()), cancel).await {
+            Ran::Cancelled => Ok(StepFlow::Cancelled),
+            Ran::Done(result) => {
+                active.observation = Some(result?);
+                run.apply(RunEvent::ToolObserved)?;
+                self.after_transition(run).await;
+                Ok(StepFlow::Continue)
+            }
+        }
+    }
+
+    /// `Replanning`: fold the tool observation into the next turn and re-invoke
+    /// the model. M2 keeps context assembly minimal (the observation becomes the
+    /// prompt); interleaved history/retrieval is M4.
+    async fn replan_step(
+        &self,
+        run: &mut Run,
+        active: &mut Active,
+        cancel: &CancellationToken,
+    ) -> Result<StepFlow, StepError> {
+        let observation = active
+            .observation
+            .take()
+            .ok_or(StepError::Internal("replan with no tool observation"))?;
+        active.prompt = Some(format!("Tool result: {}", observation.content));
+        // ModelInvoked is legal from Replanning as well as ContextReady.
+        self.open_model_step(run, active, cancel).await
+    }
+
+    /// Build the audit record for a policy decision (invariant #6). The payload
+    /// carries only controlled, non-sensitive values (validated tool id, a
+    /// decision code) — never the rendered exact-effect, which could echo tool
+    /// arguments (docs/06 §5).
+    fn policy_audit_event(
+        &self,
+        run: &Run,
+        proposal: &ToolProposal,
+        decision: &PolicyDecision,
+        stack: &ToolStack<'_>,
+    ) -> AuditEvent {
+        let (event_type, code) = match decision {
+            PolicyDecision::Auto => ("policy.auto_authorized", "auto"),
+            PolicyDecision::NeedsApproval { .. } => ("policy.approval_requested", "needs_approval"),
+            PolicyDecision::Reject { reason } => ("policy.denied", reason.code()),
+        };
+        AuditEvent {
+            occurred_at: self.clock.now(),
+            actor: format!("user:{}", stack.context.user_id),
+            event_type: event_type.to_owned(),
+            target: format!("tool:{}", proposal.tool_id),
+            correlation_id: Some(run.id.to_string()),
+            payload_json: format!("{{\"decision\":\"{code}\"}}"),
+        }
     }
 
     /// Emit the state change, checkpoint the safe boundary, and — if the run is
@@ -341,6 +527,36 @@ impl Orchestrator<'_> {
             self.after_transition(run).await;
         }
     }
+}
+
+/// The result of racing an arbitrary future against cancellation.
+enum Ran<T> {
+    Done(T),
+    Cancelled,
+}
+
+/// Run `fut` to completion, but resolve to [`Ran::Cancelled`] the moment the
+/// token fires — dropping (cancelling) `fut`. Used for tool execution so a hung
+/// tool cannot outlive a cancel (invariant #4), without a `tokio::select!`.
+async fn run_or_cancel<F: std::future::Future>(
+    fut: F,
+    cancel: &CancellationToken,
+) -> Ran<F::Output> {
+    use std::future::poll_fn;
+    use std::task::Poll;
+
+    let mut fut = std::pin::pin!(fut);
+    let mut cancelled = std::pin::pin!(cancel.cancelled());
+    poll_fn(|cx| {
+        if cancelled.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Ran::Cancelled);
+        }
+        match fut.as_mut().poll(cx) {
+            Poll::Ready(out) => Poll::Ready(Ran::Done(out)),
+            Poll::Pending => Poll::Pending,
+        }
+    })
+    .await
 }
 
 /// The result of racing the model stream against cancellation.
