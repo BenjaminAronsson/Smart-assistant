@@ -142,7 +142,7 @@ bypasses policy. Every feature below is written to preserve that.
   docs/06 §2/§5. Read: docs/02 §11b, docs/06 §2/§5, ADR-014; skills `web-lookup`,
   `policy-grants`. Deps: F2.2, F2.6. security-auditor + rust-reviewer mandatory.
 
-- [ ] **F2.9 — Location provider + location-dependent search routing (FR-26) (adapters + application)** · *strong model*
+- [x] **F2.9 — Location provider + location-dependent search routing (FR-26) (adapters + application)** · *strong model* — DONE (PR #18). domain `location`: `Location`+`LocationSource` provenance, `LocationAccuracy` (IP=Approximate), `Sensitivity` (always Sensitive, NFR-02), `is_location_dependent` (conservative "nearby"/"near me" classifier — dropped over-triggering bare "closest"), `localize_query` (attaches `near <lat>,<lon>` only when nearby+available; never guesses; approximate coords coarsened ~1km). application: `LocationProvider` port + `LayeredLocationProvider` (device→home→IP order) + `FixedLocationProvider`. jarvisd: `[location] home_lat/home_lon` (range-checked) + `build_location_provider`. Reviews: rust-reviewer + security-auditor no BLOCKING; SHOULD-FIX (over-triggering) fixed. **Deferred to F2.11**: live orchestrator injection (resolve+localize before web.search) + live IP-geoloc adapter + device-GPS (M7).
   `LocationProvider` port resolving in order: (1) paired-device GPS when the location scope
   is granted, (2) configured home coordinate (`[location] home_lat/home_lon`), (3) IP
   geolocation as a coarse last resort **explicitly labeled approximate**. The router/context
