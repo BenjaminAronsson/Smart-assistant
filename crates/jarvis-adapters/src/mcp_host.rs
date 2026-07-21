@@ -67,6 +67,21 @@ const LIST_TOOLS_TIMEOUT: Duration = Duration::from_secs(10);
 /// at the untrusted Z3 boundary so a server cannot flood the host catalogue.
 const MAX_IMPORTED_TOOLS: usize = 256;
 
+/// Cap on an error string that may embed server-controlled text (a JSON-RPC
+/// error `message`, a protocol failure). Kept short: error text is diagnostic,
+/// not a payload channel.
+const MAX_MCP_ERROR_BYTES: usize = 512;
+
+/// Strip control characters and cap length from an error string derived from a
+/// server response before it becomes a `ToolError`/`McpHostError`. rmcp folds a
+/// hostile server's JSON-RPC error `message` into `Display`, and the orchestrator
+/// reserves the full error for the host span/log (F1.5) — so a raw string here
+/// could smuggle terminal escapes / control bytes into a log (docs/06 §5,
+/// invariant #5). Reuses the domain result validator.
+fn sanitized_error(raw: String) -> String {
+    sanitize_result_content(&raw, MAX_MCP_ERROR_BYTES).text
+}
+
 /// Why the host could not talk to an MCP tool server. Carries no server-supplied
 /// content beyond a short diagnostic string (invariant #5).
 #[derive(Debug, thiserror::Error)]
@@ -197,7 +212,9 @@ impl McpHost {
                     "initialize handshake timed out".to_owned(),
                 ));
             }
-            Ok(result) => result.map_err(|e| McpHostError::Initialize(e.to_string()))?,
+            Ok(result) => {
+                result.map_err(|e| McpHostError::Initialize(sanitized_error(e.to_string())))?
+            }
         };
         Ok(Self { service, child_pid })
     }
@@ -232,7 +249,9 @@ impl McpHost {
                     Err(_elapsed) => {
                         return Err(McpHostError::ListTools("list_tools timed out".to_owned()));
                     }
-                    Ok(listing) => listing.map_err(|e| McpHostError::ListTools(e.to_string()))?,
+                    Ok(listing) => {
+                        listing.map_err(|e| McpHostError::ListTools(sanitized_error(e.to_string())))?
+                    }
                 }
             }
         };
@@ -290,13 +309,13 @@ impl ToolExecutor for McpToolExecutor {
         let mut params = CallToolRequestParams::new(self.mcp_name.clone());
         params.arguments = arguments;
 
-        // Cancellation aborts the in-flight call promptly (invariant #4). Slice 2
-        // makes cancellation additionally reap the child; here it stops awaiting.
+        // Per-call cancellation aborts the in-flight await promptly (invariant
+        // #4); the shared child is reaped on host shutdown/drop, not per call.
         let result = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(ToolError::Cancelled),
             outcome = self.peer.call_tool(params) => {
-                outcome.map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
+                outcome.map_err(|e| ToolError::ExecutionFailed(sanitized_error(e.to_string())))?
             }
         };
 
@@ -357,9 +376,13 @@ fn canonical_to_json(value: &CanonicalValue) -> serde_json::Value {
 ///
 /// A tool-level error (`is_error == true`) becomes [`ToolError::ExecutionFailed`]
 /// carrying the sanitised text. Schema validation (docs/06 §5): M2 forwards only
-/// text, so a *success* result carrying only non-text blocks (image/audio/
-/// resource) and no structured content is **rejected** ([`ToolError::SchemaInvalid`])
-/// rather than silently returned as empty — the executor fails closed.
+/// text, so a *success* result that yields **no forwardable text** yet carried
+/// non-text blocks (image/audio/resource) or `structured_content` is **rejected**
+/// ([`ToolError::SchemaInvalid`]) rather than silently returned as empty — the
+/// executor fails closed. The gate keys on the *sanitised* text being empty, not
+/// on whether a text block was present, so a server cannot dodge it with an empty
+/// (or all-control) text block alongside hostile non-text content. A genuinely
+/// empty result (no blocks, no structured content) is a valid empty success.
 ///
 /// Peak-memory note: rmcp has already fully deserialised `result` before this
 /// runs, so the cap here bounds only what is forwarded downstream, not the host
@@ -368,16 +391,14 @@ fn canonical_to_json(value: &CanonicalValue) -> serde_json::Value {
 /// loopback, so this is an accepted, documented limit (see the F2.7 plan).
 fn map_call_result(result: CallToolResult) -> Result<ToolResult, ToolError> {
     let mut raw = String::new();
-    let mut saw_text = false;
     let mut saw_non_text = false;
     for block in &result.content {
         match block {
             ContentBlock::Text(t) => {
-                if saw_text {
+                if !raw.is_empty() {
                     raw.push('\n');
                 }
                 raw.push_str(&t.text);
-                saw_text = true;
             }
             _ => saw_non_text = true,
         }
@@ -393,9 +414,12 @@ fn map_call_result(result: CallToolResult) -> Result<ToolResult, ToolError> {
         }));
     }
 
-    if !saw_text && saw_non_text && result.structured_content.is_none() {
+    // Fail closed when nothing forwardable survives but the server did send
+    // something we do not model (non-text blocks, or `structured_content` — which
+    // M2 ignores entirely and must sanitise/validate before ever forwarding).
+    if text.is_empty() && (saw_non_text || result.structured_content.is_some()) {
         return Err(ToolError::SchemaInvalid(
-            "MCP tool returned only non-text content, unsupported in M2".to_owned(),
+            "MCP result carried no forwardable text; non-text/structured content is unsupported in M2".to_owned(),
         ));
     }
 
@@ -521,6 +545,29 @@ mod tests {
         let ok = map_call_result(CallToolResult::success(vec![])).unwrap();
         assert_eq!(ok.content, "");
         assert!(!ok.truncated);
+    }
+
+    #[test]
+    fn an_empty_text_block_cannot_mask_a_dropped_non_text_block() {
+        // Bypass attempt: pair an empty text block with a hostile image so a
+        // `saw_text`-based gate would pass. The sanitised text is still empty and
+        // a non-text block was present → reject (fail closed).
+        let err = map_call_result(CallToolResult::success(vec![
+            ContentBlock::text(""),
+            ContentBlock::image("aGVsbG8=", "image/png"),
+        ]))
+        .unwrap_err();
+        assert!(matches!(err, ToolError::SchemaInvalid(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn a_structured_only_result_is_rejected() {
+        // M2 ignores `structured_content`; a result with no text but structured
+        // content must not silently forward as empty.
+        let mut result = CallToolResult::success(vec![]);
+        result.structured_content = Some(serde_json::json!({ "answer": 42 }));
+        let err = map_call_result(result).unwrap_err();
+        assert!(matches!(err, ToolError::SchemaInvalid(_)), "got {err:?}");
     }
 
     #[test]
