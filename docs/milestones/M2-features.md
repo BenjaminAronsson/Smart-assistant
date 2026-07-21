@@ -38,7 +38,7 @@ bypasses policy. Every feature below is written to preserve that.
 
 ## Features (ordered)
 
-- [ ] **F2.1 — Policy & tool domain types + argument normalization (domain)** · *strong model*
+- [x] **F2.1 — Policy & tool domain types + argument normalization (domain)** · *strong model*
   `jarvis-domain`: `RiskLevel` (R0–R4, exhaustive), `ToolId` + `semver::Version`,
   `ToolPolicy` (risk, is_reversible, requires_user_presence, timeout, required_scopes,
   egress), `DataEgress`, `Scope`, `ResourcePattern`, `ExecutionGrant` + `GrantId`,
@@ -49,7 +49,7 @@ bypasses policy. Every feature below is written to preserve that.
   docs/06 §3–4. Read: docs/05 §4, docs/06 §3–4; skill `policy-grants`. Deps: none.
   rust-reviewer + security-auditor mandatory.
 
-- [ ] **F2.2 — Tool registry + `policy::evaluate` + R0/R1 auto path wired (application)** · *strong model*
+- [x] **F2.2 — Tool registry + `policy::evaluate` + R0/R1 auto path wired (application)** · *strong model*
   `jarvis-application::policy`: `evaluate(proposal, ctx) -> PolicyDecision`
   (`Auto | NeedsApproval { exact_effect } | Reject`). **Tool registry**: registration
   requires policy metadata — a tool with no `ToolPolicy` fails registration (test this).
@@ -62,7 +62,7 @@ bypasses policy. Every feature below is written to preserve that.
   docs/02 §5. Read: docs/02 §5, docs/06 §3; skills `policy-grants`, `state-machine`.
   Deps: F2.1. security-auditor + rust-reviewer mandatory.
 
-- [ ] **F2.3 — Execution grants: minting, validation, R2 approval flow wired (application)** · *strong model*
+- [x] **F2.3 — Execution grants: minting, validation, R2 approval flow wired (application)** · *strong model*
   `jarvis-application::policy::approvals`: grant **minting** only on `Decision::Approved`
   (256-bit random id, full binding: user, device, run, tool id + semver, sha256 of
   normalized args, resource, expiry from policy TTL, `single_use = true`). `GrantValidator`
