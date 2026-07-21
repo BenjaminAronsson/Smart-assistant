@@ -278,13 +278,7 @@ export interface ApprovalCardDto {
    * and payload, never a summary (docs/06 §3). Snapshot-tested.
    */
   exactEffect: string;
-  /**
-   * The concrete arguments the model proposed, as opaque JSON. The human may
-   * edit these on the decision; doing so rebinds the grant (docs/06 §4).
-   */
-  proposedArguments: {
-    [k: string]: unknown;
-  };
+  proposedArguments: unknown;
   /**
    * Whether the tool registered a compensating undo (docs/06 §4).
    */

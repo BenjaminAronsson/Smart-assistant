@@ -185,6 +185,48 @@ async fn deny_unblocks_the_run_as_denied(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_persist_failure_keeps_the_run_parked_for_retry(pool: PgPool) {
+    // If the decision cannot be recorded durably, the gate must NOT silently
+    // unpark (deny) the run — it stays parked so the client can retry, and no
+    // divergent `approval.resolved` record is written (docs/06 §4, invariant #6).
+    let gate = JarvisApprovalGate::new(pool.clone());
+    let parked = {
+        let gate = gate.clone();
+        tokio::spawn(async move {
+            gate.request(sample_request(), CancellationToken::new())
+                .await
+        })
+    };
+    let approval_id = wait_for_requested_approval_id(&pool).await;
+    let run_id: RunId = RUN.parse().unwrap();
+
+    // Force the resolve's persist to fail by closing the pool underneath it.
+    pool.close().await;
+
+    let err = gate
+        .resolve(
+            &run_id,
+            &approval_id,
+            ApprovalDecisionDto {
+                decision: ApprovalDecision::Approve,
+                edited_arguments: None,
+            },
+            "user:U",
+        )
+        .await
+        .expect_err("persist must fail against a closed pool");
+    assert!(matches!(err, ResolveError::Persist(_)));
+
+    // The parked run is still awaiting a decision — it was neither denied nor
+    // resolved by the failed attempt.
+    let still_parked = tokio::time::timeout(Duration::from_millis(200), parked).await;
+    assert!(
+        still_parked.is_err(),
+        "the run must remain parked after a failed resolve, not be denied"
+    );
+}
+
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
 async fn resolving_an_unknown_approval_is_not_found(pool: PgPool) {
     let gate = JarvisApprovalGate::new(pool);
     let run_id: RunId = RUN.parse().unwrap();

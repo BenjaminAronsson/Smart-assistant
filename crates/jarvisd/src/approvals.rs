@@ -137,7 +137,15 @@ impl JarvisApprovalGate {
         };
         let (event_type, payload) = domain_event_outbox(&event);
         let audit = resolved_audit(run_id, approval_id, &pending.tool_id, resolution, actor);
-        record_approval_event(&self.pool, event_type, payload, &audit).await?;
+        if let Err(error) = record_approval_event(&self.pool, event_type, payload, &audit).await {
+            // The decision could not be recorded durably. Keep the run parked by
+            // reinserting the pending entry so the client may retry (the
+            // `ResolveError::Persist` contract). Returning without this would drop
+            // `pending` — severing the one-shot, silently denying the run, and
+            // leaving no `approval.resolved` record: exactly what must not happen.
+            self.lock().insert(approval_id.clone(), pending);
+            return Err(error.into());
+        }
 
         // Unpark the run. A send error means the parked task is already gone
         // (cancelled/restarted); the decision is durably recorded regardless.
@@ -207,6 +215,9 @@ impl ApprovalGate for JarvisApprovalGate {
 /// is the event object MINUS the `type` discriminator (the envelope carries it),
 /// matching the convention `jarvisd::runs::domain_event` folds back on resync.
 fn domain_event_outbox(event: &DomainEvent) -> (&'static str, serde_json::Value) {
+    // Total for `DomainEvent`: it derives `Serialize` and contains no floats or
+    // non-string map keys, so serialization to a JSON object cannot fail. Mirrors
+    // the same infallible convention in `jarvisd::runs::domain_event`.
     let mut value = serde_json::to_value(event).expect("domain event serializes");
     value
         .as_object_mut()

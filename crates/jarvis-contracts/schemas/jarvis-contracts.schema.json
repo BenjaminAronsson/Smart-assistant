@@ -41,9 +41,7 @@
           "description": "A human-readable rendering of exactly what will execute — the real target\nand payload, never a summary (docs/06 §3). Snapshot-tested.",
           "type": "string"
         },
-        "proposedArguments": {
-          "description": "The concrete arguments the model proposed, as opaque JSON. The human may\nedit these on the decision; doing so rebinds the grant (docs/06 §4)."
-        },
+        "proposedArguments": true,
         "reversible": {
           "description": "Whether the tool registered a compensating undo (docs/06 §4).",
           "type": "boolean"

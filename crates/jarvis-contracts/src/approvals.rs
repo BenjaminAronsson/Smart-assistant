@@ -79,8 +79,12 @@ pub struct ApprovalCardDto {
     /// A human-readable rendering of exactly what will execute — the real target
     /// and payload, never a summary (docs/06 §3). Snapshot-tested.
     pub exact_effect: String,
-    /// The concrete arguments the model proposed, as opaque JSON. The human may
-    /// edit these on the decision; doing so rebinds the grant (docs/06 §4).
+    // The concrete arguments the model proposed, as opaque JSON (the same shape
+    // the envelope payload uses). The human may edit these on the decision, which
+    // rebinds the grant (docs/06 §4). A plain `//` comment, not `///`: a doc
+    // comment would attach a schema `description`, which the codegen tool renders
+    // as an object-only TS type — but these arguments are arbitrary JSON, so this
+    // must generate `unknown`, matching `edited_arguments` and `EventEnvelope.payload`.
     pub proposed_arguments: serde_json::Value,
     pub risk: RiskLevelDto,
     /// Whether the tool registered a compensating undo (docs/06 §4).
