@@ -434,6 +434,77 @@ impl<F: PageFetcher + 'static> ToolExecutor for WebFetchTool<F> {
 // (`parse_brave_response`, `is_blocked_host`) is pure and unit-tested.
 // ---------------------------------------------------------------------------
 
+/// Connect timeout for the live HTTP clients — a clean fast failure that does not
+/// rely solely on the outer `TimeoutExecutor` decorator.
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Cap on a search-provider response body (the JSON is small; this bounds a
+/// misbehaving upstream). Independent of the per-page fetch cap.
+const MAX_SEARCH_BODY_BYTES: usize = 1024 * 1024;
+
+/// Max redirect hops a fetch will follow (each re-validated by the SSRF guard).
+const MAX_REDIRECT_HOPS: usize = 5;
+
+/// A client for the search provider: no redirect following (the API returns JSON
+/// directly — a 3xx would be anomalous), bounded connect time.
+fn search_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(HTTP_CONNECT_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("static reqwest search-client config is valid")
+}
+
+/// A client for page fetches whose redirect policy **re-runs the SSRF guard on
+/// every hop** (docs/06 §5): a public page cannot `3xx` to a private/loopback/
+/// metadata target, and a redirect to a non-http(s) scheme is refused. This
+/// closes the redirect bypass of the initial-URL [`is_blocked_host`] check.
+fn fetch_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(HTTP_CONNECT_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            let url = attempt.url();
+            if !matches!(url.scheme(), "http" | "https") || is_blocked_host(url) {
+                attempt.error(std::io::Error::other("blocked redirect target"))
+            } else if attempt.previous().len() >= MAX_REDIRECT_HOPS {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }))
+        .build()
+        .expect("static reqwest fetch-client config is valid")
+}
+
+/// Read a response body streamed and hard-capped at `max_bytes` — bounded even if
+/// the server lies about `Content-Length` (docs/06 §5). Cancellable per chunk
+/// (invariant #4). Shared by the search and fetch paths.
+async fn read_body_capped(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+    cancel: &CancellationToken,
+) -> Result<String, WebError> {
+    let mut body: Vec<u8> = Vec::new();
+    loop {
+        let chunk = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(WebError::Cancelled),
+            next = response.chunk() => next.map_err(|_| WebError::Provider("response stream failed".to_owned()))?,
+        };
+        match chunk {
+            Some(bytes) => {
+                let remaining = max_bytes.saturating_sub(body.len());
+                body.extend_from_slice(&bytes[..remaining.min(bytes.len())]);
+                if body.len() >= max_bytes {
+                    break;
+                }
+            }
+            None => break,
+        }
+    }
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
 /// The live Brave Search backend (docs/02 §11b default). Holds the resolved API
 /// key (a secret — sent only as the `X-Subscription-Token` header, never in the
 /// URL/query so it cannot leak via process args or logs, invariant #5).
@@ -445,7 +516,7 @@ pub struct BraveSearchProvider {
 impl BraveSearchProvider {
     pub fn new(api_key: String) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: search_client(),
             api_key,
         }
     }
@@ -478,10 +549,7 @@ impl SearchProvider for BraveSearchProvider {
                 response.status().as_u16()
             )));
         }
-        let body = response
-            .text()
-            .await
-            .map_err(|_| WebError::Provider("Brave response was unreadable".to_owned()))?;
+        let body = read_body_capped(response, MAX_SEARCH_BODY_BYTES, &cancel).await?;
         parse_brave_response(&body)
     }
 }
@@ -536,7 +604,7 @@ pub struct HttpPageFetcher {
 impl HttpPageFetcher {
     pub fn new(max_bytes: usize) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: fetch_client(),
             max_bytes,
         }
     }
@@ -553,7 +621,7 @@ impl PageFetcher for HttpPageFetcher {
             ));
         }
 
-        let mut response = tokio::select! {
+        let response = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(WebError::Cancelled),
             sent = self.client.get(parsed).send() => sent.map_err(|_| WebError::Provider("fetch failed".to_owned()))?,
@@ -564,44 +632,32 @@ impl PageFetcher for HttpPageFetcher {
                 response.status().as_u16()
             )));
         }
-
-        // Stream chunks, capping total bytes so a hostile/huge page is bounded
-        // regardless of its declared length (docs/06 §5). Cancellable per chunk.
-        let mut body: Vec<u8> = Vec::new();
-        loop {
-            let chunk = tokio::select! {
-                biased;
-                () = cancel.cancelled() => return Err(WebError::Cancelled),
-                next = response.chunk() => next.map_err(|_| WebError::Provider("fetch stream failed".to_owned()))?,
-            };
-            match chunk {
-                Some(bytes) => {
-                    let remaining = self.max_bytes.saturating_sub(body.len());
-                    if remaining == 0 {
-                        break;
-                    }
-                    let take = remaining.min(bytes.len());
-                    body.extend_from_slice(&bytes[..take]);
-                    if body.len() >= self.max_bytes {
-                        break;
-                    }
-                }
-                None => break,
-            }
-        }
-        Ok(String::from_utf8_lossy(&body).into_owned())
+        read_body_capped(response, self.max_bytes, &cancel).await
     }
+}
+
+/// Whether an IPv4 address is loopback/private/link-local/unspecified/broadcast.
+fn ipv4_is_blocked(v4: std::net::Ipv4Addr) -> bool {
+    v4.is_loopback()
+        || v4.is_private()
+        || v4.is_link_local()
+        || v4.is_unspecified()
+        || v4.is_broadcast()
 }
 
 /// Refuse a URL whose host is loopback/private/link-local/unspecified (SSRF
 /// first-line guard, docs/06 §5). A bare hostname is allowed here — full
 /// protection against DNS-rebinding to a private IP needs resolve-then-check at
 /// connect time, out of M2's scope (documented follow-up). Missing host ⇒ block.
+/// This runs on the initial URL AND on every redirect hop (see the fetch client's
+/// redirect policy), so a public page cannot 3xx to a private target.
 fn is_blocked_host(url: &reqwest::Url) -> bool {
     use std::net::IpAddr;
     let Some(host) = url.host_str() else {
         return true;
     };
+    // Strip a fully-qualified trailing dot (`localhost.` resolves to loopback).
+    let host = host.trim_end_matches('.');
     let lower = host.to_ascii_lowercase();
     if lower == "localhost" || lower.ends_with(".localhost") {
         return true;
@@ -612,18 +668,20 @@ fn is_blocked_host(url: &reqwest::Url) -> bool {
         .and_then(|s| s.strip_suffix(']'))
         .unwrap_or(host);
     match ip_str.parse::<IpAddr>() {
-        Ok(IpAddr::V4(v4)) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-        }
+        Ok(IpAddr::V4(v4)) => ipv4_is_blocked(v4),
         Ok(IpAddr::V6(v6)) => {
+            // `::1`/`::` first — `to_ipv4()` would fold `::1` to `0.0.0.1` and lose
+            // its loopback-ness. Then fold IPv4-mapped/compatible addresses back to
+            // v4 (`[::ffff:127.0.0.1]` routes to loopback on the OS) and apply the
+            // v4 rules; finally the unique-local / link-local prefixes.
+            if v6.is_loopback() || v6.is_unspecified() {
+                return true;
+            }
+            if let Some(v4) = v6.to_ipv4_mapped().or_else(|| v6.to_ipv4()) {
+                return ipv4_is_blocked(v4);
+            }
             let seg = v6.segments();
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || (seg[0] & 0xfe00) == 0xfc00 // fc00::/7 unique-local
+            (seg[0] & 0xfe00) == 0xfc00 // fc00::/7 unique-local
                 || (seg[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
         }
         // A hostname (not a literal IP): allowed at this layer.
@@ -983,6 +1041,9 @@ mod tests {
             "http://169.254.169.254/latest/meta-data", // cloud metadata
             "http://[::1]/x",
             "http://0.0.0.0/x",
+            "http://localhost./x",               // trailing-dot FQDN
+            "http://[::ffff:127.0.0.1]/x",       // IPv4-mapped loopback
+            "http://[::ffff:169.254.169.254]/x", // IPv4-mapped metadata
         ] {
             let url = reqwest::Url::parse(blocked).unwrap();
             assert!(is_blocked_host(&url), "{blocked} should be blocked");
