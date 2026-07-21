@@ -49,37 +49,46 @@ pub fn clarifying_question(interpretations: &[&str]) -> Option<String> {
     Some(question.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
-/// Markers of a contested / political / conflict topic (ADR-020). Deliberately
-/// about *kinds* of topic (elections, war, protests, sanctions…), not named
-/// parties, so the framing rule applies even-handedly by subject rather than by
-/// who is involved. Conservative — the rule adds attribution, so a false positive
-/// only makes a benign topic slightly more hedged, never less safe.
-const CONTESTED_MARKERS: &[&str] = &[
+/// Short whole-word markers whose letters begin common benign words (`war` →
+/// warm/warranty/warehouse, `coup` → coupon/couple). Matched by exact token
+/// equality so a benign word is never misread as contested.
+const CONTESTED_WORDS: &[&str] = &["war", "wars", "coup", "coups"];
+
+/// Stem markers with no common benign prefix — matched as a token prefix so
+/// inflections (`sanction`→sanctions, `casualt`→casualties, `insurgen`→
+/// insurgency) are caught. Deliberately about *kinds* of topic (elections, war,
+/// protests, sanctions…), not named parties, so the framing rule applies
+/// even-handedly by subject. Conservative — the rule only *adds* attribution, so
+/// a rare false positive makes a benign topic slightly more hedged, never less safe.
+const CONTESTED_STEMS: &[&str] = &[
     "election",
-    "war",
     "conflict",
     "invasion",
     "protest",
     "sanction",
     "airstrike",
     "ceasefire",
-    "coup",
     "genocide",
-    "casualt", // casualty / casualties
+    "casualt",
     "militant",
     "insurgen",
     "referendum",
     "impeach",
     "uprising",
-    "occupation",
 ];
 
-/// Whether a topic is contested/political/conflict-related (case-insensitive
-/// substring match on [`CONTESTED_MARKERS`]) and should therefore be voiced with
-/// source attribution and even-handedness (FR-30, ADR-020).
+/// Whether a topic is contested/political/conflict-related and should be voiced
+/// with source attribution and even-handedness (FR-30, ADR-020). Matches at
+/// **token** granularity (splitting on non-alphanumerics), not raw substring, so
+/// "software"/"coupon"/"warranty" are not misclassified as "war"/"coup".
 pub fn is_contested_topic(topic: &str) -> bool {
-    let lower = topic.to_lowercase();
-    CONTESTED_MARKERS.iter().any(|m| lower.contains(m))
+    topic
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .any(|word| {
+            CONTESTED_WORDS.contains(&word) || CONTESTED_STEMS.iter().any(|s| word.starts_with(s))
+        })
 }
 
 /// A claim from the news, tied to the source that made it. The source is what
@@ -135,6 +144,18 @@ mod tests {
     }
 
     #[test]
+    fn an_interpretation_with_a_newline_cannot_become_a_picker() {
+        // Exercises the whitespace-collapse guarantee: a smuggled newline/tab in
+        // an interpretation must not survive into a multi-line (picker) shape.
+        let q = clarifying_question(&["the city\nParis", "the person\tParis Hilton"]).unwrap();
+        assert!(
+            !q.contains('\n') && !q.contains('\t'),
+            "must stay one line: {q:?}"
+        );
+        assert!(q.starts_with("Did you mean "));
+    }
+
+    #[test]
     fn three_interpretations_use_an_oxford_or() {
         let q = clarifying_question(&["a", "b", "c"]).unwrap();
         assert_eq!(q, "Did you mean a, b, or c?");
@@ -153,9 +174,15 @@ mod tests {
         assert!(is_contested_topic("the latest on the Iran sanctions"));
         assert!(is_contested_topic("election results"));
         assert!(is_contested_topic("ceasefire talks"));
-        // Not contested: everyday topics stay unframed.
+        assert!(is_contested_topic("casualties reported")); // stem inflection
+        assert!(is_contested_topic("news about the coup"));
+        // Not contested: everyday topics stay unframed — token matching must not
+        // fire on benign words that merely contain a marker's letters.
         assert!(!is_contested_topic("best pasta recipe"));
         assert!(!is_contested_topic("who won the football match"));
+        assert!(!is_contested_topic("best software deals")); // not "war"
+        assert!(!is_contested_topic("coupon codes for warm jackets")); // not "coup"/"war"
+        assert!(!is_contested_topic("warranty and warehouse questions"));
     }
 
     #[test]
