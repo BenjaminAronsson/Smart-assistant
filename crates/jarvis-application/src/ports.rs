@@ -175,3 +175,28 @@ pub trait ArtifactStore: Send + Sync {
         id: &ArtifactId,
     ) -> Result<Vec<ArtifactManifest>, RepositoryError>;
 }
+
+/// A standalone append-only audit write (invariant 6). Unlike the store ports
+/// above — which co-transact their audit with a domain row — a display
+/// placement (FR-09/10) has no other row to write: issuing the directive *is*
+/// the change, so its audit event is recorded on its own. Implementations open
+/// a transaction, append to the hash chain, and commit; a placement that cannot
+/// be audited must not be dispatched.
+#[async_trait::async_trait]
+pub trait AuditLog: Send + Sync {
+    async fn record(&self, audit: &AuditEvent) -> Result<(), RepositoryError>;
+}
+
+/// Delivery of a resolved display placement to connected desktop agents
+/// (FR-09/10, docs/02 §8). The agent is a display-channel client, so this is a
+/// best-effort, fire-and-forget broadcast: with no agent connected the directive
+/// is audited-but-undelivered, which is a reportable outcome, not an error. The
+/// port takes the *domain* placement; the jarvisd implementation maps it to the
+/// wire `DisplayDirective` (deriving the surface's app-id) and broadcasts it.
+#[async_trait::async_trait]
+pub trait DisplayDirectiveSink: Send + Sync {
+    /// Dispatch the placement. Returns true if at least one WS client was
+    /// subscribed to receive it (the closest signal available before per-device
+    /// scoped delivery lands).
+    async fn dispatch(&self, placement: &jarvis_domain::display::SurfacePlacement) -> bool;
+}

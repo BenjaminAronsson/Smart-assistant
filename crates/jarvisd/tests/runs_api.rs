@@ -226,6 +226,7 @@ async fn app_with_token(model: FakeModel, run_store: Arc<FakeRunStore>) -> (Rout
         Some(RunWiring { runs: run_api, ws }),
         None,
         None,
+        None,
     );
     // Pair through the real endpoint for a live token.
     let response = app

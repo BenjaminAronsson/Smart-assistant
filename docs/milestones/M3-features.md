@@ -56,7 +56,7 @@ evidence, and timer firing.
 
 ### Phase A — Artifact system (exit evidence #1)
 
-- [ ] **F3a.1 — Artifact domain types + immutable manifest (domain)** · *strong model*
+- [x] **F3a.1 — Artifact domain types + immutable manifest (domain)** · *strong model*
   `jarvis-domain::artifact`: `ArtifactId` + `ArtifactVersion` newtypes, immutable
   `ArtifactManifest` (id, version, creator `RunId`, `Sha256`, media type, `RendererKind`,
   `sources`, `Sensitivity`, build environment, declared `capabilities`), `ArtifactKind`
@@ -66,7 +66,7 @@ evidence, and timer firing.
   (test this). Refs: FR-08, docs/02 §6, docs/04 §4, ADR-008. Read: docs/02 §6, docs/04 §4,
   ADR-008; skill `sqlx-data` (manifest shape only). Deps: none. rust-reviewer mandatory.
 
-- [ ] **F3a.2 — Artifact CAS blob store + manifest/provenance persistence + ports (infra + application)** · *strong model*
+- [x] **F3a.2 — Artifact CAS blob store + manifest/provenance persistence + ports (infra + application)** · *strong model*
   `jarvis-application::ports`: `ArtifactStore` (create version, get manifest, open blob,
   list versions) + `BlobStore` traits. `jarvis-infra`: content-addressed **file** blob
   store keyed by SHA-256 (write-once, verify-on-read, atomicity: temp-write + fsync +
@@ -77,7 +77,7 @@ evidence, and timer firing.
   invariant 6, docs/04 §4, ADR-008. Read: docs/04 §4, docs/06 §7 (CAS integrity); skills
   `sqlx-data`, `low-power`. Deps: F3a.1. contract-keeper (migration) + rust-reviewer mandatory.
 
-- [ ] **F3a.3 — Artifact contracts + REST/WS + create/reopen-after-restart E2E (contracts + jarvisd)** · *strong model*
+- [x] **F3a.3 — Artifact contracts + REST/WS + create/reopen-after-restart E2E (contracts + jarvisd)** · *strong model*
   `jarvis-contracts`: `ArtifactManifestDto` + `ArtifactVersionDto` + `artifact.created`/
   `artifact.updated` WS events; `xtask codegen` → committed TS. jarvisd: `POST/GET
   /api/v1/artifacts`, `GET /artifacts/{id}[/versions]`, blob download with correct media
@@ -88,7 +88,7 @@ evidence, and timer firing.
 
 ### Phase B — Desktop agent, workers, media (exit evidence #2/#3/#4 + golden 7)
 
-- [ ] **F3a.4 — `jarvis-agent` + Hyprland IPC + display profiles: place a surface on a selected monitor (jarvis-agent + jarvisd)** · *strong model*
+- [x] **F3a.4 — `jarvis-agent` + Hyprland IPC + display profiles: place a surface on a selected monitor (jarvis-agent + jarvisd)** · *strong model*
   Flesh out the `jarvis-agent` stub: connect to Hyprland request/event UNIX sockets, expose
   the **narrow** command set only (list monitors/workspaces/windows, launch an **allowlisted**
   app in app-mode with a stable app-id, focus/move a window, capture an approved screenshot

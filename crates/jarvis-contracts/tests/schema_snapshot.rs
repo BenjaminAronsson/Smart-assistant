@@ -31,6 +31,9 @@ const REQUIRED_DEFINITIONS: &[&str] = &[
     "ApprovalDecisionDto",
     "ArtifactManifestDto",
     "ArtifactVersionsResponse",
+    "DisplayDirective",
+    "OpenArtifactRequest",
+    "OpenArtifactResponse",
 ];
 
 fn snapshot_path() -> std::path::PathBuf {

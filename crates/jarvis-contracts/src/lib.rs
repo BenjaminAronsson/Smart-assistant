@@ -10,6 +10,7 @@ pub mod approvals;
 pub mod artifacts;
 pub mod auth;
 pub mod content;
+pub mod display;
 pub mod envelope;
 pub mod errors;
 pub mod events;

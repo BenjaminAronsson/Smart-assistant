@@ -46,16 +46,32 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
 
     // Artifact read surface (F3a.3, FR-08): manifests in Postgres, blob bytes in
     // the content-addressed file store rooted at `[storage] artifacts_root`.
+    let artifact_store = Arc::new(jarvis_infra::artifacts::PgArtifactStore::new(pool.clone()));
     let artifacts = jarvisd::artifacts::ArtifactApi::new(
-        Arc::new(jarvis_infra::artifacts::PgArtifactStore::new(pool.clone())),
+        artifact_store.clone(),
         Arc::new(jarvis_infra::artifact_cas::FileBlobStore::new(
             config.storage.artifacts_root.clone(),
         )),
     );
 
+    // Display profile (F3a.4, FR-09/10): surface→monitor map from `[display]`.
+    // A bad assignment (unknown surface / malformed monitor) fails startup fast.
+    let display_profile = Arc::new(jarvisd::display::profile_from_config(
+        &config.display.profile,
+    )?);
+
     // The WS hub is both the outbox publisher (committed domain events) and the
     // orchestrator's run-event sink (transient deltas).
     let hub = WsHub::new();
+
+    // Display placement surface (F3a.4): the hub is the directive sink to agents;
+    // placements are audited through the fallible audit log before dispatch.
+    let display = jarvisd::display::DisplayApi::new(
+        artifact_store,
+        display_profile,
+        Arc::new(jarvis_infra::audit_sink::PgAuditLog::new(pool.clone())),
+        hub.clone(),
+    );
 
     // Two shutdown tokens so the outbox dispatcher outlives the runs it must
     // publish for: `serve_shutdown` stops the HTTP server and cancels in-flight
@@ -160,6 +176,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             ws: ws_state,
         }),
         Some(artifacts),
+        Some(display),
         config.server.web_assets.clone(),
     )
     .layer(

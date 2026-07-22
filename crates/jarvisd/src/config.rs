@@ -25,6 +25,21 @@ pub struct Config {
     pub location: LocationConfig,
     #[serde(default)]
     pub storage: StorageConfig,
+    #[serde(default)]
+    pub display: DisplayConfig,
+}
+
+/// `[display]` (docs/02 §8/§12, FR-09/10). The display profile: which monitor
+/// each logical surface is pinned to. Keys are surface names in snake_case
+/// (`artifact_canvas`, `conversation`, …); values are compositor connector names
+/// (`DP-1`, `eDP-1`). Absent ⇒ an empty profile: placements must then name their
+/// monitor explicitly (`POST …/open {display}`) or fail closed. Single-machine,
+/// multi-monitor only in M3 (distributed nodes are M7).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisplayConfig {
+    #[serde(default)]
+    pub profile: std::collections::BTreeMap<String, String>,
 }
 
 /// `[storage]` (docs/04 §1, ADR-008). Root of the content-addressed artifact
@@ -209,6 +224,7 @@ impl Default for Config {
             integrations: IntegrationsConfig::default(),
             location: LocationConfig::default(),
             storage: StorageConfig::default(),
+            display: DisplayConfig::default(),
         }
     }
 }
