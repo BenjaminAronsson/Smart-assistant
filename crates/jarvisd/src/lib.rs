@@ -6,6 +6,7 @@ pub mod api;
 pub mod approvals;
 pub mod auth;
 pub mod config;
+pub mod location;
 pub mod observability;
 pub mod problem;
 pub mod runs;
