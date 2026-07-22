@@ -43,6 +43,11 @@ pub enum ErrorCode {
     ToolResultInvalid,
     #[serde(rename = "artifact.too_large")]
     ArtifactTooLarge,
+    /// A stored artifact blob failed content-address verification on read —
+    /// on-disk corruption or tampering (F3a.2 CAS verify-on-read). 500; the
+    /// bytes are never returned (fail closed).
+    #[serde(rename = "artifact.integrity_failed")]
+    ArtifactIntegrityFailed,
     #[serde(rename = "degraded.queued")]
     DegradedQueued,
 }

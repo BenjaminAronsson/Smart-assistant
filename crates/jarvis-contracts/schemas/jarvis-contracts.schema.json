@@ -98,6 +98,165 @@
       ],
       "type": "string"
     },
+    "ArtifactKindDto": {
+      "description": "The logical kind of an artifact, selecting its renderer (docs/02 §6).",
+      "enum": [
+        "markdown_html",
+        "code_text",
+        "image",
+        "chart",
+        "bundle"
+      ],
+      "type": "string"
+    },
+    "ArtifactManifestDto": {
+      "description": "One immutable artifact-version manifest (docs/02 §6, docs/04 §4, FR-08).",
+      "properties": {
+        "build": {
+          "$ref": "#/definitions/BuildProvenanceDto"
+        },
+        "capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "createdByRun": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "id": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "kind": {
+          "$ref": "#/definitions/ArtifactKindDto"
+        },
+        "mediaType": {
+          "type": "string"
+        },
+        "renderer": {
+          "description": "Versioned renderer id (docs/04 §4), derived from `kind`.",
+          "type": "string"
+        },
+        "sensitivity": {
+          "$ref": "#/definitions/ArtifactSensitivityDto"
+        },
+        "sha256": {
+          "description": "Content address of the blob (lowercase hex sha256) — also the blob's\ndownload ETag.",
+          "type": "string"
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/definitions/ArtifactSourceDto"
+          },
+          "type": "array"
+        },
+        "version": {
+          "description": "Monotonic version, 1-based.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "createdByRun",
+        "sha256",
+        "mediaType",
+        "kind",
+        "renderer",
+        "sources",
+        "sensitivity",
+        "build",
+        "capabilities"
+      ],
+      "type": "object"
+    },
+    "ArtifactSensitivityDto": {
+      "description": "Sensitivity class of the artifact (NFR-02).",
+      "enum": [
+        "normal",
+        "sensitive"
+      ],
+      "type": "string"
+    },
+    "ArtifactSourceDto": {
+      "description": "One provenance source: what it is plus its reference (a ULID for\nmessage/run, a URL for web). The web shell renders these as a sources card\n(F3b.6), each with its own attribution (FR-27/ADR-017).",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/ArtifactSourceKindDto"
+        },
+        "reference": {
+          "description": "The message/run ULID or the web URL, per `kind`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reference"
+      ],
+      "type": "object"
+    },
+    "ArtifactSourceKindDto": {
+      "description": "What kind of thing a provenance source refers to (docs/04 §4 `sources`).",
+      "enum": [
+        "message",
+        "run",
+        "web"
+      ],
+      "type": "string"
+    },
+    "ArtifactVersionsResponse": {
+      "description": "`GET /api/v1/artifacts/{id}/versions` — every version of one artifact,\noldest first (docs/05 §1, FR-08).",
+      "properties": {
+        "artifactId": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "versions": {
+          "items": {
+            "$ref": "#/definitions/ArtifactManifestDto"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "artifactId",
+        "versions"
+      ],
+      "type": "object"
+    },
+    "BuildNetworkDto": {
+      "description": "The network policy under which the artifact was built (docs/04 §4).",
+      "enum": [
+        "disabled",
+        "enabled"
+      ],
+      "type": "string"
+    },
+    "BuildProvenanceDto": {
+      "description": "How the artifact was built (docs/04 §4 `build`). Carries only hashes and\nimage references — never secrets (invariant 5).",
+      "properties": {
+        "lockfileHash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "network": {
+          "$ref": "#/definitions/BuildNetworkDto"
+        },
+        "workerImage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "network"
+      ],
+      "type": "object"
+    },
     "Channel": {
       "description": "One WebSocket replaces v1's three hubs; `channel` discriminates (docs/05 §1).",
       "enum": [
@@ -342,28 +501,37 @@
       ]
     },
     "ErrorCode": {
-      "enum": [
-        "auth.invalid_token",
-        "auth.scope_missing",
-        "auth.pairing_invalid",
-        "validation.failed",
-        "idempotency.conflict",
-        "resource.version_conflict",
-        "resource.not_found",
-        "run.budget_exceeded",
-        "run.not_cancellable",
-        "provider.unavailable",
-        "provider.quota_exhausted",
-        "policy.denied",
-        "grant.expired",
-        "grant.args_mismatch",
-        "grant.consumed",
-        "tool.timeout",
-        "tool.result_invalid",
-        "artifact.too_large",
-        "degraded.queued"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "auth.invalid_token",
+            "auth.scope_missing",
+            "auth.pairing_invalid",
+            "validation.failed",
+            "idempotency.conflict",
+            "resource.version_conflict",
+            "resource.not_found",
+            "run.budget_exceeded",
+            "run.not_cancellable",
+            "provider.unavailable",
+            "provider.quota_exhausted",
+            "policy.denied",
+            "grant.expired",
+            "grant.args_mismatch",
+            "grant.consumed",
+            "tool.timeout",
+            "tool.result_invalid",
+            "artifact.too_large",
+            "degraded.queued"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "artifact.integrity_failed",
+          "description": "A stored artifact blob failed content-address verification on read —\non-disk corruption or tampering (F3a.2 CAS verify-on-read). 500; the\nbytes are never returned (fail closed).",
+          "type": "string"
+        }
+      ]
     },
     "EventEnvelope": {
       "properties": {

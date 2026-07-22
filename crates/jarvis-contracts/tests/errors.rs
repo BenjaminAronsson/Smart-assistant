@@ -32,13 +32,14 @@ const REGISTRY_CODES: &[&str] = &[
     "tool.timeout",
     "tool.result_invalid",
     "artifact.too_large",
+    "artifact.integrity_failed",
     "degraded.queued",
 ];
 
 #[test]
 fn registry_fixture_matches_docs_05_table_size() {
     // Sanity check on the fixture itself against docs/05 §7's table.
-    assert_eq!(REGISTRY_CODES.len(), 19);
+    assert_eq!(REGISTRY_CODES.len(), 20);
 }
 
 #[test]

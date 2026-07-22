@@ -49,6 +49,34 @@ export type ApprovalDecision = "approve" | "deny";
  */
 export type ApprovalResolutionDto = "approved" | "denied";
 /**
+ * The logical kind of an artifact, selecting its renderer (docs/02 §6).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ArtifactKindDto".
+ */
+export type ArtifactKindDto = "markdown_html" | "code_text" | "image" | "chart" | "bundle";
+/**
+ * The network policy under which the artifact was built (docs/04 §4).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "BuildNetworkDto".
+ */
+export type BuildNetworkDto = "disabled" | "enabled";
+/**
+ * Sensitivity class of the artifact (NFR-02).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ArtifactSensitivityDto".
+ */
+export type ArtifactSensitivityDto = "normal" | "sensitive";
+/**
+ * What kind of thing a provenance source refers to (docs/04 §4 `sources`).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ArtifactSourceKindDto".
+ */
+export type ArtifactSourceKindDto = "message" | "run" | "web";
+/**
  * One WebSocket replaces v1's three hubs; `channel` discriminates (docs/05 §1).
  *
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
@@ -184,25 +212,28 @@ export type ProviderState = "healthy" | "degraded" | "unavailable";
  * via the `definition` "ErrorCode".
  */
 export type ErrorCode =
-  | "auth.invalid_token"
-  | "auth.scope_missing"
-  | "auth.pairing_invalid"
-  | "validation.failed"
-  | "idempotency.conflict"
-  | "resource.version_conflict"
-  | "resource.not_found"
-  | "run.budget_exceeded"
-  | "run.not_cancellable"
-  | "provider.unavailable"
-  | "provider.quota_exhausted"
-  | "policy.denied"
-  | "grant.expired"
-  | "grant.args_mismatch"
-  | "grant.consumed"
-  | "tool.timeout"
-  | "tool.result_invalid"
-  | "artifact.too_large"
-  | "degraded.queued";
+  | (
+      | "auth.invalid_token"
+      | "auth.scope_missing"
+      | "auth.pairing_invalid"
+      | "validation.failed"
+      | "idempotency.conflict"
+      | "resource.version_conflict"
+      | "resource.not_found"
+      | "run.budget_exceeded"
+      | "run.not_cancellable"
+      | "provider.unavailable"
+      | "provider.quota_exhausted"
+      | "policy.denied"
+      | "grant.expired"
+      | "grant.args_mismatch"
+      | "grant.consumed"
+      | "tool.timeout"
+      | "tool.result_invalid"
+      | "artifact.too_large"
+      | "degraded.queued"
+    )
+  | "artifact.integrity_failed";
 /**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "ServiceStatus".
@@ -303,6 +334,77 @@ export interface ApprovalCardDto {
 export interface ApprovalDecisionDto {
   decision: ApprovalDecision;
   editedArguments?: unknown;
+  [k: string]: unknown;
+}
+/**
+ * One immutable artifact-version manifest (docs/02 §6, docs/04 §4, FR-08).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ArtifactManifestDto".
+ */
+export interface ArtifactManifestDto {
+  build: BuildProvenanceDto;
+  capabilities: string[];
+  createdByRun: UlidString;
+  id: UlidString;
+  kind: ArtifactKindDto;
+  mediaType: string;
+  /**
+   * Versioned renderer id (docs/04 §4), derived from `kind`.
+   */
+  renderer: string;
+  sensitivity: ArtifactSensitivityDto;
+  /**
+   * Content address of the blob (lowercase hex sha256) — also the blob's
+   * download ETag.
+   */
+  sha256: string;
+  sources: ArtifactSourceDto[];
+  /**
+   * Monotonic version, 1-based.
+   */
+  version: number;
+  [k: string]: unknown;
+}
+/**
+ * How the artifact was built (docs/04 §4 `build`). Carries only hashes and
+ * image references — never secrets (invariant 5).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "BuildProvenanceDto".
+ */
+export interface BuildProvenanceDto {
+  lockfileHash?: string | null;
+  network: BuildNetworkDto;
+  workerImage?: string | null;
+  [k: string]: unknown;
+}
+/**
+ * One provenance source: what it is plus its reference (a ULID for
+ * message/run, a URL for web). The web shell renders these as a sources card
+ * (F3b.6), each with its own attribution (FR-27/ADR-017).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ArtifactSourceDto".
+ */
+export interface ArtifactSourceDto {
+  kind: ArtifactSourceKindDto;
+  /**
+   * The message/run ULID or the web URL, per `kind`.
+   */
+  reference: string;
+  [k: string]: unknown;
+}
+/**
+ * `GET /api/v1/artifacts/{id}/versions` — every version of one artifact,
+ * oldest first (docs/05 §1, FR-08).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ArtifactVersionsResponse".
+ */
+export interface ArtifactVersionsResponse {
+  artifactId: UlidString;
+  versions: ArtifactManifestDto[];
   [k: string]: unknown;
 }
 /**

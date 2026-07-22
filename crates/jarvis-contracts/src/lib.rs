@@ -7,6 +7,7 @@
 //! `cargo xtask codegen` — never hand-written twice.
 
 pub mod approvals;
+pub mod artifacts;
 pub mod auth;
 pub mod content;
 pub mod envelope;

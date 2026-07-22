@@ -16,6 +16,7 @@
 | `GET /api/v1/runs/{id}` | FR-07 | Durable state + timeline + trace linkage. |
 | `POST /api/v1/approvals/{id}/decision` | FR-05 | Approve/deny the exact proposed action. |
 | `GET /api/v1/artifacts/{id}/versions` | FR-08 | List versions + provenance. |
+| `GET /api/v1/artifacts/{id}/versions/{version}/blob` | FR-08 | Download a version's bytes; content-addressed `ETag`, `nosniff` + `attachment` (served, never rendered inline). |
 | `POST /api/v1/artifacts/{id}/open` | FR-09/10 | Request rendering on a selected display. |
 | `GET /api/v1/tools` | FR-04 | Curated tool catalogue + grants. |
 | `GET /api/v1/memories?layer=&query=&cursor=` | FR-16 | Review memory items with provenance. |
@@ -211,4 +212,5 @@ and grows additively. HTTP mapping via RFC 9457 problem details.
 | `tool.timeout` | Tool exceeded its policy timeout | 504 (event on WS) |
 | `tool.result_invalid` | Result failed schema/size validation | 502 (event on WS) |
 | `artifact.too_large` | Exceeds max_artifact_bytes | 413 |
+| `artifact.integrity_failed` | Stored blob failed content-address verification on read (CAS, F3a.2) | 500 |
 | `degraded.queued` | Accepted but queued awaiting provider recovery | 202 |

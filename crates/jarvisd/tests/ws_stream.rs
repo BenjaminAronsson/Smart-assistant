@@ -100,6 +100,7 @@ async fn start(pool: PgPool, model: FakeModel) -> Harness {
         None,
         Some(RunWiring { runs: run_api, ws }),
         None,
+        None,
     );
 
     // Pair for a live token.

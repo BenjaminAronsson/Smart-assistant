@@ -132,7 +132,11 @@ impl FromStr for MediaType {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let trimmed = s.trim();
-        if trimmed.is_empty() || !trimmed.contains('/') {
+        // Must be non-empty, contain a subtype separator, and hold no control
+        // characters — a media type becomes an HTTP `Content-Type` header value
+        // at the artifact-blob boundary (F3a.3), and a control char there would
+        // fail header construction (defence in depth, docs/06 §2 strip-controls).
+        if trimmed.is_empty() || !trimmed.contains('/') || trimmed.chars().any(|c| c.is_control()) {
             return Err(MediaTypeError(s.to_owned()));
         }
         Ok(MediaType(trimmed.to_owned()))
@@ -501,6 +505,9 @@ mod tests {
         );
         assert!("".parse::<MediaType>().is_err());
         assert!("notamediatype".parse::<MediaType>().is_err());
+        // Control characters are rejected (they would break a Content-Type header).
+        assert!("text/pl\nain".parse::<MediaType>().is_err());
+        assert!("text/plain\r\nX-Evil: 1".parse::<MediaType>().is_err());
         // Trimmed on the way in.
         assert_eq!(
             "  text/plain  ".parse::<MediaType>().unwrap().as_str(),
