@@ -168,7 +168,7 @@ bypasses policy. Every feature below is written to preserve that.
   FR-29 news-interest **profile** is M4 — M2 covers only the framing/ambiguity rules.
   rust-reviewer mandatory.
 
-- [ ] **F2.11 — Golden traces 4–6 + adversarial injection suite (exit-evidence feature)** · *strong model (harness plumbing may be Sonnet)*
+- [x] **F2.11 — Golden traces 4–6 + adversarial injection suite (exit-evidence feature)** · *strong model (harness plumbing may be Sonnet)*
   Fill golden slots 4–6 (docs/07 §2) with fake-provider scenarios: (4) home light toggle
   auto-authorized as R1, exact state transition recorded; (5) external message proposal
   classified R2 → user edits → old approval invalidated → new approval succeeds; (6)
