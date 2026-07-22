@@ -246,7 +246,7 @@ fn render_value(value: &jarvis_domain::tools::CanonicalValue) -> String {
 /// the host policy attributes the human weighs the decision against (F2.5): the
 /// risk tier, whether the effect is reversible, and how far its data travels.
 /// These come from the tool's [`ToolPolicy`], never from model or tool text.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ApprovalRequest {
     pub run_id: RunId,
     pub tool_id: ToolId,
@@ -257,14 +257,45 @@ pub struct ApprovalRequest {
     pub egress: DataEgress,
 }
 
+// CF-12: `exact_effect` (real target + payload the human sees) and the proposed
+// arguments are sensitive — redact both from `Debug`, which flows through spans/
+// logs (invariant #5). The risk/reversible/egress attributes stay for
+// correlation. Same treatment as `GrantBinding` (CF-7).
+impl std::fmt::Debug for ApprovalRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApprovalRequest")
+            .field("run_id", &self.run_id)
+            .field("tool_id", &self.tool_id)
+            .field("exact_effect", &"<redacted>")
+            .field("proposed_arguments", &"<redacted>")
+            .field("risk", &self.risk)
+            .field("reversible", &self.reversible)
+            .field("egress", &self.egress)
+            .finish()
+    }
+}
+
 /// A human's decision. `Approved` carries the *final* arguments the human
 /// authorized, which may differ from the proposal if they edited the effect —
 /// the grant binds these, so executing anything else fails validation
 /// (docs/06 §4). Editing is therefore invalidation-by-rebinding, not a flag.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ApprovalOutcome {
     Approved { arguments: CanonicalValue },
     Denied,
+}
+
+// CF-12: redact the approved arguments from `Debug` (invariant #5).
+impl std::fmt::Debug for ApprovalOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Approved { .. } => f
+                .debug_struct("Approved")
+                .field("arguments", &"<redacted>")
+                .finish(),
+            Self::Denied => f.write_str("Denied"),
+        }
+    }
 }
 
 /// The seam to the human (F2.5 implements it over the WS/REST approval tray;
@@ -345,4 +376,50 @@ pub trait GrantValidator: Send + Sync {
         invocation: &ToolInvocation,
         now: SystemTime,
     ) -> Result<(), GrantError>;
+}
+
+#[cfg(test)]
+mod cf12_debug_redaction {
+    use super::*;
+
+    // A valid ULID for constructing a RunId in tests.
+    const RUN_ULID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+
+    #[test]
+    fn approval_request_debug_redacts_effect_and_arguments() {
+        let request = ApprovalRequest {
+            run_id: RUN_ULID.parse().unwrap(),
+            tool_id: "message.send".parse().unwrap(),
+            exact_effect: "Email carol@example.com: transfer authorized".to_owned(),
+            proposed_arguments: CanonicalValue::obj([(
+                "body",
+                CanonicalValue::str("secret-body-text"),
+            )]),
+            risk: RiskLevel::R2,
+            reversible: false,
+            egress: DataEgress::External,
+        };
+        let rendered = format!("{request:?}");
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+        assert!(
+            !rendered.contains("carol@example.com"),
+            "leaked effect: {rendered}"
+        );
+        assert!(
+            !rendered.contains("secret-body-text"),
+            "leaked args: {rendered}"
+        );
+        assert!(rendered.contains("R2"), "risk kept for correlation");
+    }
+
+    #[test]
+    fn approval_outcome_debug_redacts_approved_arguments() {
+        let approved = ApprovalOutcome::Approved {
+            arguments: CanonicalValue::obj([("body", CanonicalValue::str("secret-body-text"))]),
+        };
+        let rendered = format!("{approved:?}");
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+        assert!(!rendered.contains("secret-body-text"), "leaked: {rendered}");
+        assert_eq!(format!("{:?}", ApprovalOutcome::Denied), "Denied");
+    }
 }

@@ -3,4 +3,5 @@
 //! mcp-host, wyoming, embeddings (docs/02 §3).
 
 pub mod claude_cli;
+pub mod mcp_host;
 pub mod tools;

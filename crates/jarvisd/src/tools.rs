@@ -17,11 +17,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
+use jarvis_adapters::mcp_host::{HostPolicyTable, McpHost};
 use jarvis_adapters::tools::example_light::ExampleLightTool;
 use jarvis_adapters::tools::example_message::ExampleMessageTool;
 use jarvis_adapters::tools::fs_read::FsReadTool;
 use jarvis_adapters::tools::timeout::TimeoutExecutor;
 use jarvis_application::policy::{ToolDescriptor, ToolRegistry};
+use tokio_util::sync::CancellationToken;
 
 /// Build the M2 tool registry. `fs_root`, when present, is the allowlisted root
 /// for the R0 `fs.read` tool; when `None`, `fs.read` is **not** registered — the
@@ -43,6 +45,54 @@ pub fn build_registry(fs_root: Option<PathBuf>) -> anyhow::Result<ToolRegistry> 
     registry.register(wrap_with_timeout(ExampleMessageTool::descriptor()))?;
 
     Ok(registry)
+}
+
+/// A pinned out-of-process MCP tool server to launch (F2.7, docs/06 §5): the
+/// **host-authored** command (never derived from model or tool text — docs/06 §5
+/// "pinned version/hash") and the host-owned [`HostPolicyTable`] overlaid on the
+/// tools it exports. The server's self-declared safety is discarded; only tools
+/// the table sanctions are registered.
+pub struct McpServerSpec {
+    pub command: tokio::process::Command,
+    pub policy_table: HostPolicyTable,
+}
+
+/// Connect to each configured MCP tool server, import + host-policy-overlay its
+/// tools, and register them (timeout-wrapped at the same single site as native
+/// tools) into `registry`. Returns the live [`McpHost`] handles: the caller
+/// **must** keep them alive for the process lifetime, because each registered
+/// executor holds a peer into the running child — dropping a host tears its
+/// child (and its tools' executors) down.
+///
+/// `specs` is empty by default: no configured server means no MCP tool authority,
+/// the stricter default (mirroring `fs.read`'s unconfigured-root behaviour). The
+/// connect/import of a wedged or hostile server is bounded and cancellable via
+/// `cancel` (invariant #4); a server that fails to connect or import aborts
+/// startup rather than silently yielding a partial tool set (fail closed).
+pub async fn register_mcp_servers(
+    registry: &mut ToolRegistry,
+    specs: Vec<McpServerSpec>,
+    cancel: CancellationToken,
+) -> anyhow::Result<Vec<McpHost>> {
+    let mut hosts = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let host = McpHost::connect(spec.command, cancel.clone())
+            .await
+            .context("connecting to a configured MCP tool server")?;
+        let descriptors = host
+            .import_tools(&spec.policy_table, cancel.clone())
+            .await
+            .context("importing MCP tool descriptors")?;
+        for descriptor in descriptors {
+            // Same timeout wrap + `MissingPolicy` refusal as native tools; an
+            // imported descriptor always carries host policy, so it registers.
+            registry
+                .register(wrap_with_timeout(descriptor))
+                .map_err(|e| anyhow::anyhow!("registering an MCP tool: {e}"))?;
+        }
+        hosts.push(host);
+    }
+    Ok(hosts)
 }
 
 /// Replace a descriptor's executor with one bounded by the tool's host-owned
@@ -107,5 +157,19 @@ mod tests {
             Err(error) => assert!(error.to_string().contains("fs.read root"), "got {error:#}"),
             Ok(_) => panic!("expected an error for a missing fs.read root"),
         }
+    }
+
+    #[tokio::test]
+    async fn no_configured_mcp_servers_registers_nothing_and_spawns_no_child() {
+        // The stricter default: with no configured MCP server, the registry gains
+        // no MCP tools and no child process is launched. (A real-child import is
+        // covered end-to-end by the mcp-echo-fixture integration tests.)
+        let mut registry = build_registry(None).expect("builds");
+        let before = registry.resolve(&ExampleLightTool::id()).is_some();
+        let hosts = register_mcp_servers(&mut registry, Vec::new(), CancellationToken::new())
+            .await
+            .expect("empty MCP config is a no-op");
+        assert!(hosts.is_empty(), "no servers connected");
+        assert!(before, "native tools remain registered unchanged");
     }
 }

@@ -102,7 +102,7 @@ bypasses policy. Every feature below is written to preserve that.
   docs/12 §2 (as available); skills `ws-contracts`, `policy-grants`, `angular-shell`.
   Deps: F2.3, F2.4. contract-keeper + security-auditor (gateway) mandatory.
 
-- [ ] **F2.6 — Native + example tier tools: `fs.read` (R0), reversible R1, fake R2 (adapters)** · *strong model*
+- [x] **F2.6 — Native + example tier tools: `fs.read` (R0), reversible R1, fake R2 (adapters)** · *strong model* — DONE (PRs #12–#15 merged to main). `fs.read` R0 within allowlisted root (traversal-denied), reversible `example.light` R1 with registered undo, fake `message.send` R2 (approval→grant→execute→edit-invalidation). Live `ToolStack` wired into jarvisd via `build_registry` (single site, every executor `TimeoutExecutor`-wrapped) + `PgAuditSink`; tools lent only to an attributable run (`should_wire_tools`). Carry-forwards CF-3/4/6/7/9/11 discharged; CF-2 durability half closed (atomicity half + CF-8/10/14/15 tracked). Reviews: rust-reviewer + security-auditor per slice, no BLOCKING. Remaining dormant: Slice 3c (CF-8 `model_permit` bracketing — inert, CLI adapter proposes no tools).
   `jarvis-adapters`: `fs.read` — read a project file within an allowlisted root, R0,
   read-only, scoped, path-traversal-denied (real native tool → **exit evidence #1**). A
   **reversible R1 example tool** with a registered compensating undo (stand-in for the M5
@@ -114,7 +114,7 @@ bypasses policy. Every feature below is written to preserve that.
   docs/08 §2 step 7–8, docs/06 §3. Read: docs/06 §3, skill `policy-grants`,
   `provider-adapter`. Deps: F2.2, F2.3, F2.4. security-auditor + rust-reviewer mandatory.
 
-- [ ] **F2.7 — MCP host (rmcp): child-process tool server + local policy overlay (adapters)** · *strong model*
+- [x] **F2.7 — MCP host (rmcp): child-process tool server + local policy overlay (adapters)** · *strong model* — DONE (PR #16, 3 slices). `jarvis-adapters::mcp_host`: `McpHost` spawns a pinned out-of-process rmcp tool-server child (bounded/cancellable initialize + `list_tools`), pure `overlay_policy` imports descriptors and overlays **host-owned `ToolPolicy`** (server safety NEVER trusted — reads only the tool name, drops unsanctioned tools), `map_call_result` sanitizes/size-caps/fail-closed-rejects results. rmcp client-side only. Fixture `tools/mcp-echo-fixture` (echo/read/danger/emit_image, mismatched annotations) drives the four required tests: descriptor import, policy-overlay-wins, malformed-result rejection, cancellation reaps the child. jarvisd `register_mcp_servers` seam (none configured in M2 = stricter default). Carry-forwards discharged: **CF-12** (redacted `Debug` on ToolProposal/ToolInvocation/ApprovalRequest/ApprovalOutcome), **CF-15** (requeued/recovered run → fail closed by design, `should_wire_tools`). Transport+isolation ADR-backed (ADR-001) — no new ADR. Reviews: rust-reviewer + security-auditor per slice, no BLOCKING; all SHOULD-FIX applied.
   `jarvis-adapters::mcp_host`: launch/attach an out-of-process MCP tool server via `rmcp`
   (least privilege, killable, pinned version/hash), import its tool **descriptors**, and
   **overlay host-owned `ToolPolicy`** — a server's self-declared safety is NEVER trusted

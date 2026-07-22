@@ -208,19 +208,42 @@ impl fmt::Display for ToolVersion {
 /// What a model proposed (docs/02 §5 step 5). Text never grants authority: a
 /// proposal is only ever an input to `policy::evaluate` (invariant #1), never a
 /// licence to execute.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ToolProposal {
     pub tool_id: ToolId,
     pub arguments: CanonicalValue,
 }
 
+// CF-12: redact the raw arguments from `Debug` — a proposal's argument tree may
+// carry sensitive values, and it flows through spans/logs (invariant #5). Same
+// treatment as `GrantBinding` (CF-7). `tool_id` stays for correlation.
+impl std::fmt::Debug for ToolProposal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolProposal")
+            .field("tool_id", &self.tool_id)
+            .field("arguments", &"<redacted>")
+            .finish()
+    }
+}
+
 /// The concrete, registry-resolved call the executor runs — carries the exact
 /// version so the grant binds a specific tool build (docs/06 §4).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ToolInvocation {
     pub tool_id: ToolId,
     pub tool_version: ToolVersion,
     pub arguments: CanonicalValue,
+}
+
+// CF-12: redact the raw arguments from `Debug` (invariant #5).
+impl std::fmt::Debug for ToolInvocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolInvocation")
+            .field("tool_id", &self.tool_id)
+            .field("tool_version", &self.tool_version)
+            .field("arguments", &"<redacted>")
+            .finish()
+    }
 }
 
 /// A tool's output (docs/02 §5 step 9). `truncated` records that the result
@@ -300,4 +323,36 @@ pub enum ToolError {
     Denied(String),
     #[error("tool execution failed: {0}")]
     ExecutionFailed(String),
+}
+
+#[cfg(test)]
+mod cf12_debug_redaction {
+    use super::*;
+
+    #[test]
+    fn tool_proposal_debug_redacts_arguments() {
+        let proposal = ToolProposal {
+            tool_id: "mcp.echo".parse().unwrap(),
+            arguments: CanonicalValue::obj([("token", CanonicalValue::str("s3cr3t-value"))]),
+        };
+        let rendered = format!("{proposal:?}");
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+        assert!(!rendered.contains("s3cr3t-value"), "leaked: {rendered}");
+        assert!(
+            rendered.contains("mcp.echo"),
+            "tool_id kept for correlation"
+        );
+    }
+
+    #[test]
+    fn tool_invocation_debug_redacts_arguments() {
+        let invocation = ToolInvocation {
+            tool_id: "mcp.echo".parse().unwrap(),
+            tool_version: ToolVersion::new(1, 0, 0),
+            arguments: CanonicalValue::obj([("token", CanonicalValue::str("s3cr3t-value"))]),
+        };
+        let rendered = format!("{invocation:?}");
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+        assert!(!rendered.contains("s3cr3t-value"), "leaked: {rendered}");
+    }
 }

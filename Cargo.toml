@@ -9,6 +9,7 @@ members = [
     "crates/jarvisd",
     "crates/jarvis-agent",
     "crates/xtask",
+    "tools/mcp-echo-fixture",
 ]
 
 [workspace.package]
