@@ -32,7 +32,7 @@ use jarvis_domain::tools::{CanonicalValue, ToolError};
 /// object. A missing key, a non-object argument tree, or a non-string value is a
 /// caller (model) error, surfaced as [`ToolError::ExecutionFailed`] with a
 /// stable, non-sensitive message (never the raw argument value — invariant #5).
-fn required_str<'a>(args: &'a CanonicalValue, key: &str) -> Result<&'a str, ToolError> {
+pub(crate) fn required_str<'a>(args: &'a CanonicalValue, key: &str) -> Result<&'a str, ToolError> {
     let CanonicalValue::Object(map) = args else {
         return Err(ToolError::ExecutionFailed(
             "arguments must be an object".to_owned(),

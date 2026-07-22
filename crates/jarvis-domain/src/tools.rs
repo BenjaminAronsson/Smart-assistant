@@ -272,6 +272,22 @@ pub struct SanitizedContent {
     pub truncated: bool,
 }
 
+/// A Unicode bidirectional-control or zero-width format character (CF-13). These
+/// carry no legitimate meaning in tool-result text but let a hostile source
+/// *spoof* what a human or the model reads: a right-to-left override (`U+202E`)
+/// can make `example.org` render as a different domain, and zero-width joiners
+/// can hide or splice text. `char::is_control` does **not** catch them (they are
+/// Unicode category `Cf`, not C0/C1), so they are enumerated explicitly.
+fn is_bidi_or_zero_width(ch: char) -> bool {
+    matches!(ch,
+        // Bidi embeddings / overrides / isolates and explicit marks.
+        '\u{200E}' | '\u{200F}'            // LRM, RLM
+        | '\u{202A}'..='\u{202E}'          // LRE, RLE, PDF, LRO, RLO
+        | '\u{2066}'..='\u{2069}'          // LRI, RLI, FSI, PDI
+        // Zero-width space / non-joiner / joiner / no-break space (BOM).
+        | '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}')
+}
+
 /// Neutralize untrusted tool-result content before it is folded into a model
 /// prompt (docs/06 §5, invariant #1: tool output is data, never instructions).
 /// This is the single result validator CF-3 requires — owned here in the domain
@@ -279,6 +295,9 @@ pub struct SanitizedContent {
 ///   * strips C0/C1 control characters and DEL (`char::is_control`) *except*
 ///     `\n` and `\t`, which structure legitimate text — so a result cannot
 ///     smuggle terminal escapes or other control bytes into the context;
+///   * strips Unicode bidi-control and zero-width format characters (CF-13,
+///     [`is_bidi_or_zero_width`]) — so a hostile source cannot spoof a URL or
+///     splice hidden text past a human or the model;
 ///   * hard-caps the length at `max_bytes`, truncating on a UTF-8 char boundary
 ///     (a `char` is pushed only if it fits wholly), so no partial code unit and
 ///     no unbounded prompt growth.
@@ -289,14 +308,14 @@ pub struct SanitizedContent {
 /// Bounds: this caps the *output* at `max_bytes` but still scans the whole
 /// `content` (stripped chars never advance the cap), so the input size is the
 /// real bound — kept in check upstream by the executor's own read cap
-/// (`MAX_READ_BYTES`, CF-11), not here. Only C0/C1/DEL controls are stripped;
-/// Unicode bidi/zero-width spoofing (CF-13) is out of this validator's scope.
+/// (`MAX_READ_BYTES`, CF-11), not here.
 pub fn sanitize_result_content(content: &str, max_bytes: usize) -> SanitizedContent {
     let mut text = String::new();
     let mut truncated = false;
     for ch in content.chars() {
-        // Drop smuggled control bytes; \n and \t are legitimate structure.
-        if ch.is_control() && ch != '\n' && ch != '\t' {
+        // Drop smuggled control bytes (\n and \t are legitimate structure) and
+        // bidi/zero-width format chars (never legitimate in result text).
+        if (ch.is_control() && ch != '\n' && ch != '\t') || is_bidi_or_zero_width(ch) {
             continue;
         }
         // Cap on a whole-char boundary: stop before a char would overflow.

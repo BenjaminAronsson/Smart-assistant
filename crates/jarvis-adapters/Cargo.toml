@@ -26,6 +26,17 @@ async-trait = "0.1"
 # and attack surface at the Z3 boundary. `transport-child-process` transitively
 # pulls the async-rw transport used to speak to the child over stdio.
 rmcp = { version = "2.2.0", default-features = false, features = ["client", "transport-child-process"] }
+# HTML extraction for `web.fetch` (F2.8): parse title / og:image / primary <img>
+# / main text from an UNTRUSTED (Z4) fetched page. `tl` is pure-Rust, MIT, with
+# zero transitive deps (avoids scraper's MPL-2.0 `selectors`/`cssparser`, which
+# are outside the deny.toml allowlist). Parsing is synchronous and the non-`Send`
+# `tl::VDom` is confined to a sync helper, never held across an await (keeps the
+# executor future `Send`).
+tl = "0.7.8"
+# Live web.search/web.fetch backends (F2.8 Slice 3). Pinned to 0.12 to reuse the
+# workspace's existing rustls+ring TLS stack (already in the lock via otel/tonic)
+# — no aws-lc-rs/OpenSSL-licensed crate enters the tree, keeping cargo-deny green.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
 
 [dev-dependencies]
 # Async unit tests (`#[tokio::test]`) for the tool executors; the current-thread

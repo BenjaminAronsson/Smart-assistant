@@ -63,3 +63,21 @@ fn a_char_that_exactly_fills_the_cap_is_kept() {
     assert_eq!(out.text, "€");
     assert!(!out.truncated);
 }
+
+#[test]
+fn strips_bidi_override_and_zero_width_format_chars() {
+    // CF-13: a right-to-left override before a domain, plus zero-width joiners,
+    // are stripped — the visible/spoofed form cannot survive into the prompt or
+    // a HUD source-link chip. Ordinary text and \n/\t are untouched.
+    let hostile = "see \u{202E}gro.elpmaxe\u{202C}\u{200B} at exam\u{200D}ple.org";
+    let out = sanitize_result_content(hostile, MAX_RESULT_PROMPT_BYTES);
+    assert!(
+        !out.text.contains('\u{202E}'),
+        "RLO not stripped: {:?}",
+        out.text
+    );
+    assert!(!out.text.contains('\u{202C}'), "PDF not stripped");
+    assert!(!out.text.contains('\u{200B}'), "ZWSP not stripped");
+    assert!(!out.text.contains('\u{200D}'), "ZWJ not stripped");
+    assert_eq!(out.text, "see gro.elpmaxe at example.org");
+}
