@@ -142,6 +142,30 @@ async fn create_writes_the_audit_event_in_the_same_transaction(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn artifact_reopens_after_a_simulated_restart(pool: PgPool) {
+    // Exit evidence #1 (persistence half): create through one store instance,
+    // then read through a BRAND-NEW store instance on the same pool — the
+    // process-restart analogue. The manifest reloads and its provenance is
+    // intact, which is exactly what "reopen the artifact after restart" needs.
+    {
+        let store = PgArtifactStore::new(pool.clone());
+        store
+            .create_version(&manifest_v1(), &created_event())
+            .await
+            .unwrap();
+    } // first instance dropped — as if the process exited
+
+    let reopened = PgArtifactStore::new(pool)
+        .latest(&artifact_id())
+        .await
+        .unwrap()
+        .expect("the artifact is still there after a restart");
+    assert_eq!(reopened, manifest_v1());
+    assert_eq!(reopened.sha256(), &sha(0xAA));
+    assert_eq!(reopened.sources().len(), 2);
+}
+
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
 async fn unknown_artifact_reads_are_none(pool: PgPool) {
     let store = PgArtifactStore::new(pool);
     let unknown: ArtifactId = "01ARZ3NDEKTSV4RRFFQ69G5FZZ".parse().unwrap();

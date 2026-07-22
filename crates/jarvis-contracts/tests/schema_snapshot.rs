@@ -29,6 +29,8 @@ const REQUIRED_DEFINITIONS: &[&str] = &[
     "TransientEvent",
     "ApprovalCardDto",
     "ApprovalDecisionDto",
+    "ArtifactManifestDto",
+    "ArtifactVersionsResponse",
 ];
 
 fn snapshot_path() -> std::path::PathBuf {

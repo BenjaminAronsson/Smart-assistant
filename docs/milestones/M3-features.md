@@ -297,3 +297,22 @@ promotion pattern.)
 3. **HUD pivot now** (F3b.1) — docs/12 face becomes default; M1/M2 conversation/approval
    surfaces move to the ops layer, not deleted.
 4. **PMTiles**: default to a downloaded regional extract (docs/08 §6); confirm/ADR at F3b.5.
+
+## Deviations recorded during implementation (for /gate)
+
+- **D-M3a-1 (F3a.3): artifact surface shipped read-only; `artifact.created` WS event and
+  any client create endpoint deferred.** The F3a.3 line named "`artifact.created`/`.updated`
+  WS events" and "POST/GET /api/v1/artifacts". Shipped: the read API (`GET …/versions`, `GET
+  …/versions/{v}/blob`) + DTOs + codegen + reopen-after-restart E2E. **Not** shipped, by
+  design: (a) the `artifact.created` DomainEvent — deferred to **F3a.6**, its first producer,
+  per the F2.5→F2.6 no-producer-less-replayable-event precedent (also avoids a premature
+  DomainEvent→timeline-snapshot obligation); (b) a client `POST` create — artifacts are run
+  outputs produced through the ports, never client-uploaded (stricter security reading of
+  invariant 1). Owner: confirm at M3a `/gate`. Blob download added `nosniff` +
+  `Content-Disposition: attachment` (served, never rendered inline — the HUD renderer F3b.3
+  is the only sanctioned render path; security-auditor B1).
+- **CF-M3a-A (F3a.3): blob download buffers the whole blob in memory, no served-size cap.**
+  `BlobStore::get -> Vec<u8>` + `Body::from`. Fine for M3a (markdown notes, patches are
+  small) but a streaming/size-capped read port is needed before large-artifact producers
+  (F3a.6 patches are still small; **M6 `Bundle`** is the real trigger). Verify-on-read
+  currently requires buffering to re-hash, so streaming needs chunked-hash-then-emit.

@@ -44,6 +44,15 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     let event_log = Arc::new(jarvis_infra::events::PgEventLog::new(pool.clone()));
     let sessions = jarvisd::sessions::SessionApi::new(session_store.clone());
 
+    // Artifact read surface (F3a.3, FR-08): manifests in Postgres, blob bytes in
+    // the content-addressed file store rooted at `[storage] artifacts_root`.
+    let artifacts = jarvisd::artifacts::ArtifactApi::new(
+        Arc::new(jarvis_infra::artifacts::PgArtifactStore::new(pool.clone())),
+        Arc::new(jarvis_infra::artifact_cas::FileBlobStore::new(
+            config.storage.artifacts_root.clone(),
+        )),
+    );
+
     // The WS hub is both the outbox publisher (committed domain events) and the
     // orchestrator's run-event sink (transient deltas).
     let hub = WsHub::new();
@@ -150,6 +159,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             runs: run_api,
             ws: ws_state,
         }),
+        Some(artifacts),
         config.server.web_assets.clone(),
     )
     .layer(

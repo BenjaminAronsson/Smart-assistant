@@ -53,6 +53,11 @@ pub fn export() -> Value {
     // be registered as its own root or it ships absent from the wire schema.
     generator.subschema_for::<crate::approvals::ApprovalCardDto>();
     generator.subschema_for::<crate::approvals::ApprovalDecisionDto>();
+    // Artifact read surface (F3a.3, FR-08). The manifest rides inside the
+    // versions response, but register both so the manifest is a named root the
+    // web shell can import for a single-version render (F3b.3).
+    generator.subschema_for::<crate::artifacts::ArtifactManifestDto>();
+    generator.subschema_for::<crate::artifacts::ArtifactVersionsResponse>();
 
     let definitions: Value =
         serde_json::to_value(generator.definitions()).expect("schemas are valid JSON");
