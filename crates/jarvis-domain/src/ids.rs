@@ -100,6 +100,12 @@ ulid_id!(
     MessageId
 );
 ulid_id!(
+    /// A durable versioned artifact (docs/04 §2/§4, FR-08). Identifies the
+    /// artifact across all its versions — each [`ArtifactVersion`] shares this
+    /// id; a new version is a new manifest, never a mutation of an old one.
+    ArtifactId
+);
+ulid_id!(
     /// A single pending human-approval request (F2.5, docs/06 §3). Minted at the
     /// approval-gate boundary (host owns randomness) so the WS `approval.requested`
     /// event and the `POST /runs/{id}/approvals/{approval_id}` decision can be
