@@ -58,6 +58,12 @@ pub fn export() -> Value {
     // web shell can import for a single-version render (F3b.3).
     generator.subschema_for::<crate::artifacts::ArtifactManifestDto>();
     generator.subschema_for::<crate::artifacts::ArtifactVersionsResponse>();
+    // Display surface (F3a.4, FR-09/10). The directive is the display-channel
+    // command to the agent; the open request/response is the REST entry point
+    // that places an artifact's canvas on a selected monitor.
+    generator.subschema_for::<crate::display::DisplayDirective>();
+    generator.subschema_for::<crate::display::OpenArtifactRequest>();
+    generator.subschema_for::<crate::display::OpenArtifactResponse>();
 
     let definitions: Value =
         serde_json::to_value(generator.definitions()).expect("schemas are valid JSON");

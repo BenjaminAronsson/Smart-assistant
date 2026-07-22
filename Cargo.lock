@@ -1048,7 +1048,14 @@ name = "jarvis-agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures-util",
  "jarvis-contracts",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

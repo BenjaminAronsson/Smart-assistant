@@ -97,7 +97,7 @@ pub struct RunWiring {
 }
 
 pub fn router(state: AppState) -> Router {
-    router_with(state, None, None, None, None)
+    router_with(state, None, None, None, None, None)
 }
 
 /// Full router: unauthenticated surface (loopback health + pair), the
@@ -109,6 +109,7 @@ pub fn router_with(
     sessions: Option<crate::sessions::SessionApi>,
     runs: Option<RunWiring>,
     artifacts: Option<crate::artifacts::ArtifactApi>,
+    display: Option<crate::display::DisplayApi>,
     web_assets: Option<std::path::PathBuf>,
 ) -> Router {
     // Health and pair are unauthenticated by design but loopback-only:
@@ -173,6 +174,16 @@ pub fn router_with(
                     .route(
                         "/api/v1/artifacts/{id}/versions/{version}/blob",
                         get(crate::artifacts::get_blob),
+                    )
+                    .with_state(api),
+            );
+        }
+        if let Some(api) = display {
+            protected = protected.merge(
+                Router::new()
+                    .route(
+                        "/api/v1/artifacts/{id}/open",
+                        axum::routing::post(crate::display::open_artifact),
                     )
                     .with_state(api),
             );

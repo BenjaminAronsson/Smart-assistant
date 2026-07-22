@@ -7,6 +7,7 @@ pub mod approvals;
 pub mod artifacts;
 pub mod auth;
 pub mod config;
+pub mod display;
 pub mod location;
 pub mod observability;
 pub mod problem;

@@ -98,6 +98,30 @@ export type ContentBlock =
       [k: string]: unknown;
     };
 /**
+ * A directive the server sends to the agent on the `display` channel. The
+ * `type` discriminator is dotted-namespaced (`display.place_surface`), matching
+ * the envelope convention; the agent routes on it.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "DisplayDirective".
+ */
+export type DisplayDirective = {
+  appId: string;
+  monitor: string;
+  surface: SurfaceDto;
+  type: "display.place_surface";
+  [k: string]: unknown;
+};
+/**
+ * A logical UI surface (docs/02 §8). Wire mirror of
+ * `jarvis_domain::display::Surface`; jarvisd maps between them.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "SurfaceDto".
+ */
+export type SurfaceDto =
+  "conversation" | "run_timeline" | "approval_tray" | "artifact_canvas" | "ambient_status" | "diagnostics";
+/**
  * Persisted, replayable events (docs/05 §3 "persisted event categories").
  * Every variant must be representable in the timeline snapshot — a client that
  * missed it while disconnected recovers it via `GET /sessions/{id}/timeline`.
@@ -519,6 +543,38 @@ export interface HealthResponse {
    * jarvisd semver, for support/diagnostics.
    */
   version: string;
+  [k: string]: unknown;
+}
+/**
+ * `POST /api/v1/artifacts/{id}/open` (FR-09/10): request that an artifact be
+ * rendered on a selected display. `display` names a monitor connector; when
+ * omitted, the server falls back to the display profile's `ArtifactCanvas`
+ * assignment and fails closed (409) if neither resolves a monitor.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "OpenArtifactRequest".
+ */
+export interface OpenArtifactRequest {
+  display?: string | null;
+  [k: string]: unknown;
+}
+/**
+ * Response to `POST …/open`: the placement that was audited and dispatched to
+ * the agent. Delivery to the agent is fire-and-forget over the display channel;
+ * a disconnected agent means the directive was audited but not yet applied.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "OpenArtifactResponse".
+ */
+export interface OpenArtifactResponse {
+  artifactId: UlidString;
+  /**
+   * True when at least one display-agent device was connected to receive the
+   * directive; false means audited-but-undelivered (the UI can surface this).
+   */
+  dispatched: boolean;
+  monitor: string;
+  surface: SurfaceDto;
   [k: string]: unknown;
 }
 /**

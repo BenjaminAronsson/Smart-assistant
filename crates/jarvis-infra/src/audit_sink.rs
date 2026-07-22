@@ -20,6 +20,7 @@
 
 use async_trait::async_trait;
 use jarvis_application::policy::AuditSink;
+use jarvis_application::ports::{AuditLog, RepositoryError};
 use jarvis_domain::audit::AuditEvent;
 use sqlx::PgPool;
 
@@ -56,6 +57,40 @@ impl AuditSink for PgAuditSink {
         if let Err(error) = tx.commit().await {
             tracing::error!(%error, event_type = %event.event_type, "audit sink: commit failed");
         }
+    }
+}
+
+/// The **fallible** audit writer ([`AuditLog`]): unlike [`AuditSink`] above, its
+/// `record` returns a `Result`, so a caller can refuse to proceed with a side
+/// effect whose audit did not commit (invariant 6, stricter reading). Used by
+/// the display-placement flow (FR-09/10): the directive is dispatched only after
+/// its `display.surface_placed` event is durably chained. Appends in its own
+/// transaction — there is no other domain row to co-transact with.
+pub struct PgAuditLog {
+    pool: PgPool,
+}
+
+impl PgAuditLog {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl AuditLog for PgAuditLog {
+    async fn record(&self, audit: &AuditEvent) -> Result<(), RepositoryError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| RepositoryError::Storage(format!("audit log: begin: {e}")))?;
+        crate::audit::append(&mut tx, audit)
+            .await
+            .map_err(|e| RepositoryError::Storage(format!("audit log: append: {e}")))?;
+        tx.commit()
+            .await
+            .map_err(|e| RepositoryError::Storage(format!("audit log: commit: {e}")))?;
+        Ok(())
     }
 }
 
@@ -101,5 +136,25 @@ mod tests {
             "second event chains onto the first"
         );
         assert_ne!(rows[0].hash, rows[1].hash, "distinct chain heads");
+    }
+
+    /// The fallible [`AuditLog`] commits its event in its own transaction and
+    /// reports success — the display-placement flow relies on this `Ok` before it
+    /// dispatches a directive (F3a.4, invariant 6).
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn audit_log_records_and_reports_ok(pool: PgPool) {
+        let log = PgAuditLog::new(pool.clone());
+
+        log.record(&event("display.surface_placed"))
+            .await
+            .expect("audit log commits and returns Ok");
+
+        // Runtime-checked (not the `!` macro) so this test-only count adds no
+        // entry to the committed offline `.sqlx` cache.
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit.audit_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "the placement audit is durably persisted");
     }
 }

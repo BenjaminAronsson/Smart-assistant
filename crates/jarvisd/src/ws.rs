@@ -22,10 +22,12 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::Response;
 use jarvis_application::orchestrator::{RunEventSink, RunUpdate};
-use jarvis_application::ports::RepositoryError;
+use jarvis_application::ports::{DisplayDirectiveSink, RepositoryError};
 use jarvis_contracts::CONTRACT_VERSION;
+use jarvis_contracts::display::{DisplayDirective, SurfaceDto};
 use jarvis_contracts::envelope::{Channel, EventEnvelope};
 use jarvis_contracts::events::TransientEvent;
+use jarvis_domain::display::Surface;
 use jarvis_domain::ids::RunId;
 use jarvis_infra::dispatcher::{OutboxPublisher, OutboxRecord, PublishError};
 use serde::Deserialize;
@@ -132,6 +134,34 @@ impl WsHub {
         let _ = self.tx.send(Arc::new(self.domain_envelope(record)));
     }
 
+    /// Broadcast a display directive on the `display` channel (FR-09/10). Like a
+    /// text delta it is transient — a command to the agent, not a replayable
+    /// timeline event — so it rides at the current high-water `seq` and never
+    /// advances the resync cursor. Returns true if at least one WS client was
+    /// subscribed (best-effort delivery; no agent connected ⇒ audited-but-
+    /// undelivered). `app_id` is derived server-side from the closed surface set,
+    /// never from model/user text.
+    fn broadcast_display(&self, placement: &jarvis_domain::display::SurfacePlacement) -> bool {
+        let directive = DisplayDirective::PlaceSurface {
+            surface: surface_dto(placement.surface),
+            app_id: placement.surface.app_id().to_owned(),
+            monitor: placement.monitor.as_str().to_owned(),
+        };
+        let (event_type, payload) =
+            split_tagged(serde_json::to_value(&directive).expect("directive serializes"));
+        let envelope = EventEnvelope {
+            v: CONTRACT_VERSION,
+            seq: self.high_water.load(Ordering::SeqCst),
+            channel: Channel::Display,
+            event_type,
+            occurred_at: now_rfc3339(),
+            trace_id: None,
+            resource_version: None,
+            payload,
+        };
+        self.tx.send(Arc::new(envelope)).is_ok()
+    }
+
     /// Broadcast a transient text delta at the current high-water `seq` (it does
     /// not advance the resync cursor; a lost delta is re-derived, docs/05 §3).
     fn broadcast_delta(&self, run_id: &RunId, text: &str) {
@@ -166,6 +196,27 @@ impl OutboxPublisher for WsHub {
         // path with a fallible durable step; there is none in M1.
         self.broadcast_domain(record);
         Ok(())
+    }
+}
+
+/// jarvisd dispatches resolved display placements to connected agents here.
+#[async_trait]
+impl DisplayDirectiveSink for WsHub {
+    async fn dispatch(&self, placement: &jarvis_domain::display::SurfacePlacement) -> bool {
+        self.broadcast_display(placement)
+    }
+}
+
+/// Map the domain surface to its wire mirror. Exhaustive on purpose: a new
+/// `Surface` variant forces a wire mapping decision here (no `_` arm).
+fn surface_dto(surface: Surface) -> SurfaceDto {
+    match surface {
+        Surface::Conversation => SurfaceDto::Conversation,
+        Surface::RunTimeline => SurfaceDto::RunTimeline,
+        Surface::ApprovalTray => SurfaceDto::ApprovalTray,
+        Surface::ArtifactCanvas => SurfaceDto::ArtifactCanvas,
+        Surface::AmbientStatus => SurfaceDto::AmbientStatus,
+        Surface::Diagnostics => SurfaceDto::Diagnostics,
     }
 }
 

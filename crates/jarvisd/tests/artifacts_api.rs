@@ -150,6 +150,7 @@ async fn app(store: Arc<FakeArtifactStore>, blobs: Arc<FileBlobStore>) -> (Route
         None,
         Some(ArtifactApi::new(store, blobs)),
         None,
+        None,
     );
     let response = app
         .clone()

@@ -319,6 +319,36 @@
       ],
       "type": "string"
     },
+    "DisplayDirective": {
+      "description": "A directive the server sends to the agent on the `display` channel. The\n`type` discriminator is dotted-namespaced (`display.place_surface`), matching\nthe envelope convention; the agent routes on it.",
+      "oneOf": [
+        {
+          "description": "Move the window for `surface` (identified by its stable Chromium app-mode\n`appId`) onto `monitor` (a compositor connector name, e.g. `DP-1`). The\n`appId` always comes from the closed server-side surface set — never from\nmodel or user text — and the agent additionally refuses any `appId`\noutside the `jarvis.` namespace (defense in depth).",
+          "properties": {
+            "appId": {
+              "type": "string"
+            },
+            "monitor": {
+              "type": "string"
+            },
+            "surface": {
+              "$ref": "#/definitions/SurfaceDto"
+            },
+            "type": {
+              "const": "display.place_surface",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "surface",
+            "appId",
+            "monitor"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "DomainEvent": {
       "description": "Persisted, replayable events (docs/05 §3 \"persisted event categories\").\nEvery variant must be representable in the timeline snapshot — a client that\nmissed it while disconnected recovers it via `GET /sessions/{id}/timeline`.\n\nThe `type` discriminator is **dotted-namespaced** (`run.started`,\n`message.created`), matching the envelope example in docs/05 §3\n(`run.tool.completed`) and the error-code scheme — clients route on this\nstring, so it is load-bearing and every tag is spelled explicitly below.\n\nThis union is intentionally **strict**: there is no `Unknown` catch-all\n(unlike [`crate::content::ContentBlock`], which is open-world because blocks\noriginate from external providers). Every `DomainEvent` is authored by\njarvisd itself, and the web shell is served by the same binary — so producer\nand consumer share one contract version and can never skew. A tag the reader\ndoes not recognize is therefore a genuine bug we want surfaced as a decode\nerror, not silently dropped from a resync page. New variants are added\nadditively within a version (docs/05 §3).",
       "oneOf": [
@@ -654,6 +684,43 @@
         "system"
       ],
       "type": "string"
+    },
+    "OpenArtifactRequest": {
+      "description": "`POST /api/v1/artifacts/{id}/open` (FR-09/10): request that an artifact be\nrendered on a selected display. `display` names a monitor connector; when\nomitted, the server falls back to the display profile's `ArtifactCanvas`\nassignment and fails closed (409) if neither resolves a monitor.",
+      "properties": {
+        "display": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "OpenArtifactResponse": {
+      "description": "Response to `POST …/open`: the placement that was audited and dispatched to\nthe agent. Delivery to the agent is fire-and-forget over the display channel;\na disconnected agent means the directive was audited but not yet applied.",
+      "properties": {
+        "artifactId": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "dispatched": {
+          "description": "True when at least one display-agent device was connected to receive the\ndirective; false means audited-but-undelivered (the UI can surface this).",
+          "type": "boolean"
+        },
+        "monitor": {
+          "type": "string"
+        },
+        "surface": {
+          "$ref": "#/definitions/SurfaceDto"
+        }
+      },
+      "required": [
+        "artifactId",
+        "surface",
+        "monitor",
+        "dispatched"
+      ],
+      "type": "object"
     },
     "PairRequest": {
       "properties": {
@@ -1051,6 +1118,18 @@
         "content"
       ],
       "type": "object"
+    },
+    "SurfaceDto": {
+      "description": "A logical UI surface (docs/02 §8). Wire mirror of\n`jarvis_domain::display::Surface`; jarvisd maps between them.",
+      "enum": [
+        "conversation",
+        "run_timeline",
+        "approval_tray",
+        "artifact_canvas",
+        "ambient_status",
+        "diagnostics"
+      ],
+      "type": "string"
     },
     "TimelineItem": {
       "description": "One persisted entry in a session's history.",
