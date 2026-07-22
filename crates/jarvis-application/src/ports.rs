@@ -2,9 +2,11 @@
 //! layer names capabilities; infra provides them. No sqlx/axum/provider
 //! types may appear here (CLAUDE.md invariant 3, enforced by arch-test).
 
+use jarvis_domain::artifact::{ArtifactManifest, ArtifactVersion};
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::conversations::{Message, Session};
-use jarvis_domain::ids::{RunId, SessionId};
+use jarvis_domain::grants::Sha256;
+use jarvis_domain::ids::{ArtifactId, RunId, SessionId};
 use jarvis_domain::run::Run;
 use std::time::SystemTime;
 
@@ -106,4 +108,70 @@ pub trait MessageStore: Send + Sync {
         session_id: &SessionId,
         limit: u32,
     ) -> Result<Vec<Message>, RepositoryError>;
+}
+
+/// Why a content-addressed blob operation failed (docs/04 §1, ADR-008).
+/// Integrity is a first-class outcome: a blob whose bytes no longer hash to its
+/// key is corruption, reported distinctly from a plain I/O fault so a caller
+/// never silently receives wrong bytes.
+#[derive(Debug, thiserror::Error)]
+pub enum BlobStoreError {
+    #[error("blob store I/O failure: {0}")]
+    Io(String),
+    /// A blob read back from the store did not hash to the key it was stored
+    /// under — on-disk corruption or tampering. Fail closed; never return the
+    /// bytes.
+    #[error("blob integrity check failed: content does not match its address")]
+    IntegrityMismatch,
+}
+
+/// Content-addressed blob store for artifact bytes (docs/04 §1, ADR-008). Blobs
+/// are keyed by their SHA-256: **write-once** (storing identical bytes twice is
+/// a no-op and yields the same key) and **verify-on-read** (the bytes are
+/// re-hashed on the way out; a mismatch is [`BlobStoreError::IntegrityMismatch`],
+/// never a silent wrong read). The blob store holds no manifest metadata — that
+/// is [`ArtifactStore`]'s job; the two are joined only by the hash.
+#[async_trait::async_trait]
+pub trait BlobStore: Send + Sync {
+    /// Store `bytes`, returning their content address. Idempotent: a second put
+    /// of the same bytes changes nothing and returns the same [`Sha256`].
+    async fn put(&self, bytes: &[u8]) -> Result<Sha256, BlobStoreError>;
+    /// Read a blob by its address, verifying integrity on read. Unknown hash =>
+    /// `Ok(None)`.
+    async fn get(&self, hash: &Sha256) -> Result<Option<Vec<u8>>, BlobStoreError>;
+    /// Whether a blob with this address is present (no read-back verification).
+    async fn contains(&self, hash: &Sha256) -> Result<bool, BlobStoreError>;
+}
+
+/// Artifact manifest + provenance persistence (FR-08, invariant 6). A manifest
+/// is immutable and a new version is a new row — the store never updates or
+/// deletes a manifest (the DB enforces this too). `create_version` writes the
+/// manifest, its provenance, and the given audit event in **one transaction**
+/// (invariant 6): a manifest that cannot be audited is not persisted. The blob
+/// named by `manifest.sha256()` is expected to already be in the [`BlobStore`];
+/// this port stores only metadata.
+#[async_trait::async_trait]
+pub trait ArtifactStore: Send + Sync {
+    /// Persist a new manifest version and its audit event atomically. A repeated
+    /// (artifact_id, version) is a [`RepositoryError::Conflict`] — versions are
+    /// append-only, never overwritten.
+    async fn create_version(
+        &self,
+        manifest: &ArtifactManifest,
+        audit: &AuditEvent,
+    ) -> Result<(), RepositoryError>;
+    /// Load one exact version's manifest. Unknown => `Ok(None)`.
+    async fn get(
+        &self,
+        id: &ArtifactId,
+        version: ArtifactVersion,
+    ) -> Result<Option<ArtifactManifest>, RepositoryError>;
+    /// Load the highest-versioned manifest for an artifact — what "reopen the
+    /// artifact" resolves to (exit evidence #1). Unknown id => `Ok(None)`.
+    async fn latest(&self, id: &ArtifactId) -> Result<Option<ArtifactManifest>, RepositoryError>;
+    /// Every version of an artifact, oldest first (the version chain).
+    async fn list_versions(
+        &self,
+        id: &ArtifactId,
+    ) -> Result<Vec<ArtifactManifest>, RepositoryError>;
 }

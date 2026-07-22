@@ -3,6 +3,8 @@
 //! OTel wiring (docs/02 §3).
 
 pub mod approvals;
+pub mod artifact_cas;
+pub mod artifacts;
 pub mod audit;
 pub mod audit_sink;
 pub mod db;

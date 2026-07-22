@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO artifacts.manifests\n                (artifact_id, version, created_by_run, sha256, media_type, kind,\n                 sensitivity, build_worker_image, build_lockfile_hash,\n                 build_network, sources, capabilities, created_at)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb",
+        "TextArray",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fe00525ecd8b7f2318593a12199396eec25bc333e44b636a651527c90088cc60"
+}
