@@ -540,6 +540,68 @@ possible channel commitment. (−) Email only — no SMS/Signal/etc. in v1; deli
 (SPF/DKIM of the owner's own account) is the owner's mail provider's problem, not
 Jarvis's.
 
+## ADR-027 — Browser worker isolation: container is the contract, process+profile-dir is the dev fallback {#adr-027}
+
+**Status.** *Proposed (F3a.5, 22 July 2026).* Owner pre-approved the shape (Option A) at
+M3 decomposition; formal acceptance at the M3a `/gate`.
+
+**Context.** FR-15 and docs/02 §8 require browser automation to run Playwright in a
+**dedicated worker process** with **isolated profiles per trust domain**, visible mode for
+consequential operations, credentials from the secret store (never prompted), and **typed
+tool actions** (navigate, extract, click, download, screenshot) carrying audit evidence.
+docs/06 §5 ("Malicious MCP/tool server") requires a browser worker to be treated like any
+untrusted tool server: separate OS identity/container, allowlist, schema validation,
+outbound-network restrictions, and — critically — **the host overlays policy; the worker
+cannot self-declare safety**. The open decision was the *isolation mechanism* and how far
+it binds across production vs. CI, since that mechanism is a security boundary (invariants
+1 and 3) and is expensive to change later. Options weighed: (A) per-trust **container** in
+production with a **separate-process + isolated profile-directory** fallback behind one
+host protocol; (B) process + `rlimit`s only; (C) `bubblewrap`/user-namespace sandbox.
+
+**Decision.** Adopt **Option A**.
+- **Production contract = a per-trust-domain container** (matches docs/02 §12 "workers =
+  per-trust containers, read-only mounts default, CPU/mem/time/net limits"). The container
+  runtime, mounts, and network policy are **ops/host configuration** applied when the
+  worker is launched — not something the worker or any page content can influence.
+- **Dev/CI fallback = a separate OS process with an isolated Playwright profile directory**,
+  speaking the **same host↔worker stdio protocol** as the containerised worker. CI runs a
+  **fake** worker (no browser binaries in CI, per F3a.8); real Playwright is manual-verify.
+- **One protocol both sides honour:** line-delimited JSON over the worker's stdio (like the
+  MCP host, F2.7, and `claude-cli`). The host sends a **typed action**; the worker returns
+  a **result** (status + page-derived text). The worker's response is **Z4 untrusted**:
+  the host reads only the fields it models and **ignores everything else** — a worker can
+  neither introduce a new action nor declare a tool call (invariant 1).
+- **Host owns ToolPolicy** via the same overlay discipline as the MCP host (F2.7): each
+  typed action is a host-registered tool with a **host-authored `ToolPolicy`**; an action
+  the host has not written a policy for is not registrable. The worker's output never
+  influences risk, scopes, or reversibility.
+- **Credentials are host-injected as environment/secret-store references at launch, never
+  passed in the worker's argv and never prompted** (invariant 5, docs/06 §5). Keyring
+  resolution happens at the jarvisd boundary; the adapter receives already-resolved launch
+  configuration.
+- **All page-derived strings are sanitized** with the F2.8 result validator
+  (`sanitize_result_content`: strip C0/C1/DEL control chars, bidi/zero-width format chars,
+  size-cap) before they reach a log, span, or the model (docs/06 §5 tool-result smuggling,
+  CF-13).
+
+**Consequences.**
+- (+) One wire protocol means CI (fake worker), dev (process+profile-dir), and production
+  (container) exercise the *same* host code path — the security-relevant logic
+  (policy overlay, Z4 sanitization, per-step audit, "a page cannot inject a tool call") is
+  unit-testable **without a browser** and is identical across environments.
+- (+) The container requirement is deferred to ops packaging, not blocked on it — the
+  adapter and its guarantees land now; the container profile is an F3a.8 / deployment
+  concern.
+- (−) The process+profile-dir dev fallback is weaker isolation than a container (shared
+  kernel, host filesystem visible subject to profile-dir scoping) — acceptable for
+  dev/CI, **not** for production; the gate must confirm production runs the container
+  profile. (Rejected B: `rlimit`s alone give no filesystem/network isolation. Rejected C:
+  `bubblewrap` adds a second isolation mechanism to maintain alongside the container one
+  we already need for docs/02 §12.)
+- Revisit trigger: if the container runtime choice (podman/docker/systemd-nspawn) forces a
+  different launch handshake, that is a follow-up ADR, not a protocol change — the stdio
+  contract is deliberately runtime-agnostic.
+
 
 ---
 
