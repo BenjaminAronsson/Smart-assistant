@@ -1,0 +1,16 @@
+{
+  "name": "jarvis-coding-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Out-of-process coding worker for Jarvis (F3a.6, ADR-004/ADR-027). Runs a delegated coding task in a disposable git worktree and returns a reviewable patch — never applies or deploys it.",
+  "type": "module",
+  "bin": {
+    "jarvis-coding-worker": "src/index.mjs"
+  },
+  "scripts": {
+    "start": "node src/index.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

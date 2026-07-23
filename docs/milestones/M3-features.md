@@ -113,7 +113,7 @@ evidence, and timer firing.
   Deps: F3a.4 (visible window placement), F2.8 (sanitization). security-auditor + rust-reviewer
   mandatory. **Isolation model may need an ADR — stop and draft if so.**
 
-- [ ] **F3a.6 — Sandboxed coding worker → patch artifact in a disposable worktree (golden 7; PATCH-ONLY) (tools + adapters)** · *strong model*
+- [x] **F3a.6 — Sandboxed coding worker → patch artifact in a disposable worktree (golden 7; PATCH-ONLY) (tools + adapters)** · *strong model*
   `tools/coding-worker`: run a delegated coding task in a **disposable git worktree**,
   producing a **reviewable patch artifact** (F3a.1 `code/text`/diff kind) — **never a direct
   host mutation or deployment** (golden 7, docs/02 §8). **Owner decision: patch-only —
@@ -316,3 +316,21 @@ promotion pattern.)
   small) but a streaming/size-capped read port is needed before large-artifact producers
   (F3a.6 patches are still small; **M6 `Bundle`** is the real trigger). Verify-on-read
   currently requires buffering to re-hash, so streaming needs chunked-hash-then-emit.
+- **D-M3a-3 (F3a.6): coding worker host + Node worker shipped; the *replayable* `artifact.created`
+  WS event + orchestrator/tool-stack wiring deferred.** Shipped: `jarvis-adapters::coding`
+  (`CodingWorkerHost::produce_patch_artifact` — runs the worker, stores the diff as an
+  immutable `CodeText` patch artifact via `BlobStore`+`ArtifactStore`, `text/x-diff`, size-cap,
+  Z4-sanitized summary, self-poisoning stdio transport), `coding_patch_policy()` (R1 data
+  output), and the real `tools/coding-worker` (Node, disposable git worktree + `git diff`,
+  **no apply/commit/deploy path** — golden 7). The **durable `artifact.created` audit event** is
+  written atomically with the manifest by `create_version` (invariant 6) — this is the
+  first real artifact producer, discharging the F3a.3/D-M3a-1 "wire it with its first producer"
+  intent for the *durable* record. **Deferred, by design** (same slice discipline as F2.6/F2.7,
+  D-M3a-2): (a) the *replayable* `artifact.created` **WS event** through the orchestrator/outbox
+  (CF-8 WS-fan-out family) — lands with the coding tool's orchestrator/run-loop wiring, when the
+  run's actor/RunId/ArtifactId replace the host-injected placeholders; (b) registering the tool
+  in jarvisd's live `ToolStack`; (c) real `claude -p` coding step is manual-verify — **CI runs a
+  fake worker** (no git/model), aligning with F3a.8. Golden 7 *scenario* lands in F3a.8. Owner:
+  confirm the deferrals at the M3a `/gate`. **Gate item:** confirm the production coding
+  container's read-only repo mount + egress policy (ADR-027; the dev/CI process fallback runs
+  `git worktree` on the host — disposable + removed, but not container-isolated).
