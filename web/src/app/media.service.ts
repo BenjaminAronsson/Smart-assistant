@@ -123,8 +123,10 @@ export class MediaService {
 
 /**
  * Pull the human-readable line out of an RFC 9457 problem body (docs/05 §7),
- * falling back to a neutral message. The server's `detail` is authored by
- * jarvisd — never by a player — so it is safe to show.
+ * falling back to a neutral message. The `detail` is authored by jarvisd, but
+ * some variants interpolate the player-published `identity` — which jarvisd has
+ * already sanitized (control/bidi stripped, length-capped) — so it is rendered
+ * as text, never as markup.
  */
 function problemDetail(err: unknown): string {
   const body = (err as { error?: { detail?: unknown; title?: unknown } })?.error;

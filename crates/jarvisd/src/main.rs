@@ -143,6 +143,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             .then(|| jarvisd::tools::CastWiring {
                 profile: display_profile.clone(),
                 sink: hub.clone(),
+                audit: Arc::new(jarvis_infra::audit_sink::PgAuditLog::new(pool.clone())),
             });
         jarvisd::tools::register_media_tools(&mut registry, controller.clone(), max_volume, cast)?;
     }

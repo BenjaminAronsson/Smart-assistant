@@ -67,11 +67,27 @@ Out of scope by the approved M3 feature list: Spotify Web API, the `now-playing`
    the boundary; raw strings never reach the call site.
 5. **Cast-a-link as an arbitrary-launch primitive (OS boundary, invariant 1).**
    `media.open_url` must not become "run any program with any argument". Controls:
-   scheme is **https only**; the URL is a single-line token with no control characters;
-   the agent launches a **fixed, allowlisted** browser command with a fixed app-id
-   (`jarvis.media`) and a dedicated profile directory — the URL is passed as one argv
-   element, never through a shell; the agent refuses any other app-id (existing
-   `SURFACE_APP_PREFIX` discipline from F3a.4).
+   scheme is **https only**; the URL is a single-line token with no control characters
+   and is length-bounded; the agent launches a **fixed, allowlisted** browser command
+   with a fixed app-id (`jarvis.media`) and a dedicated profile directory — the URL is
+   passed as one argv element, never through a shell; the agent refuses any other
+   app-id (existing `SURFACE_APP_PREFIX` discipline from F3a.4) and re-validates the
+   URL itself rather than trusting jarvisd. With no user state directory the launch
+   fails closed rather than putting a browser profile in world-writable `/tmp`.
+   The window runs **incognito**, so "credential-free" is an enforced property and not
+   merely an initial condition: nothing a cast page stores — cookies, localStorage, a
+   sign-in — survives to the next cast. That isolation is what makes R1 defensible for
+   a URL the model proposed.
+5a. **A cast that leaves no record.** `media.open_url` is the feature's only
+   external-egress action and its only process launch, so the URL is written verbatim
+   into a durable `media.cast` audit event **before** the window opens; an unauditable
+   cast does not happen (invariant 6, the F3a.4 fail-closed reading).
+5b. **An R2 approval whose target drifts.** `media.volume_boost` requires an explicit
+   `player`, so the approved arguments name the target and the grant's argument hash
+   binds it — the human cannot approve "95% on Spotify" and have it land on whatever
+   started playing before the grant was consumed. It also refuses any verb other than
+   `set_volume`, so the model cannot make the approval card's `exact_effect` read
+   "pause" while a volume is set.
 6. **Unbounded background work / battery drain (NFR perf, docs/09 §5).** Control: state
    is **event-driven** (`PropertiesChanged` + `NameOwnerChanged` subscriptions), never
    polled; one tracked task with a `CancellationToken`; the subscription is not started

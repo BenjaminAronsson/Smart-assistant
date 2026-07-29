@@ -15,7 +15,10 @@
       </ul>
     } @else if (nowPlaying(); as track) {
       @if (track.artUrl; as art) {
-        <img class="media-art" [src]="art" alt="" />
+        <!-- Player-published (Z4) https URL: the shell fetches it, so send no
+             referrer — a local process owning an MPRIS name must not learn the
+             shell origin by publishing art it hosts. -->
+        <img class="media-art" [src]="art" alt="" referrerpolicy="no-referrer" />
       }
       <div class="media-track">
         <span class="media-title">{{ track.title }}</span>

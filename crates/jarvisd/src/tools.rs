@@ -160,6 +160,7 @@ pub fn register_media_tools(
             .register(wrap_with_timeout(MediaOpenUrlTool::descriptor(
                 cast.profile,
                 cast.sink,
+                cast.audit,
             )))
             .map_err(|e| anyhow::anyhow!("registering media.open_url: {e}"))?;
     }
@@ -171,6 +172,9 @@ pub fn register_media_tools(
 pub struct CastWiring {
     pub profile: Arc<jarvis_domain::display::DisplayProfile>,
     pub sink: Arc<dyn jarvis_application::ports::MediaWindowSink>,
+    /// Durable audit for the cast itself: the URL is recorded verbatim before
+    /// the window opens (docs/02 §11a, invariant 6).
+    pub audit: Arc<dyn jarvis_application::ports::AuditLog>,
 }
 
 /// Replace a descriptor's executor with one bounded by the tool's host-owned

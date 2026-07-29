@@ -233,23 +233,19 @@ impl ToolExecutor for MediaVolumeBoostTool {
         cancel: CancellationToken,
     ) -> Result<ToolResult, ToolError> {
         let args = MediaArgs::parse(&invocation.arguments)?;
+        boost_shape(&args, self.max_volume)?;
         let requested = args.volume()?;
-        // A within-cap level does not belong here: it would let an R2 approval
-        // be solicited for something the R1 tool already does, training the
-        // owner to approve routine actions (approval fatigue is a real control
-        // weakness, docs/06 §3).
-        if requested.within_cap(self.max_volume) {
-            return Err(ToolError::ExecutionFailed(format!(
-                "{requested} is within the {} cap; use media.playback",
-                self.max_volume
-            )));
-        }
         let snapshot = self
             .controller
             .snapshot(cancel.clone())
             .await
             .map_err(media_error)?;
-        let (player, label) = resolve_target(&snapshot, args.player.as_deref())?;
+        // `player` is REQUIRED here (unlike the R1 tool), so the approved
+        // arguments name the target and the grant's argument hash binds it. With
+        // an ambient target, the human could approve "95% on Spotify" and the
+        // effect could land on whatever happened to be playing when the grant
+        // was consumed.
+        let (player, label) = resolve_target(&snapshot, Some(args.require_player()?))?;
         // Capture the level we are replacing so the run timeline carries a real
         // compensation, not a canned string.
         let previous = snapshot.get(&player).and_then(|p| p.volume);
@@ -268,17 +264,40 @@ impl ToolExecutor for MediaVolumeBoostTool {
     fn validate_args(&self, arguments: &CanonicalValue) -> Result<(), ToolError> {
         let args = MediaArgs::parse(arguments)
             .map_err(|e| ToolError::SchemaInvalid(short(&e.to_string())))?;
-        let requested = args
-            .volume()
+        boost_shape(&args, self.max_volume)
             .map_err(|e| ToolError::SchemaInvalid(short(&e.to_string())))?;
-        if requested.within_cap(self.max_volume) {
-            return Err(ToolError::SchemaInvalid(format!(
-                "{requested} is within the {} cap; use media.playback",
-                self.max_volume
-            )));
-        }
+        args.require_player()
+            .map_err(|e| ToolError::SchemaInvalid(short(&e.to_string())))?;
         Ok(())
     }
+}
+
+/// Shape rules specific to the R2 boost tool, applied identically at execution
+/// and at approval-binding time so an edited argument set cannot take a
+/// different path than the proposal did.
+///
+/// Two refusals, both about what the human actually approved:
+/// * the verb must be `set_volume` — the executor only ever sets a volume, so a
+///   proposal saying `pause` would render "pause" on the approval card while
+///   setting a volume. The model must not control text that misdescribes the
+///   effect (docs/06 §3: the card shows the *exact* effect).
+/// * the level must be **above** the cap — soliciting an R2 approval for
+///   something the R1 tool already does trains the owner to approve routine
+///   actions, and approval fatigue is a real control weakness.
+fn boost_shape(args: &MediaArgs, max_volume: VolumePct) -> Result<(), ToolError> {
+    if args.command != "set_volume" {
+        return Err(ToolError::ExecutionFailed(format!(
+            "media.volume_boost only sets volume, got command `{}`",
+            short(&args.command)
+        )));
+    }
+    let requested = args.volume()?;
+    if requested.within_cap(max_volume) {
+        return Err(ToolError::ExecutionFailed(format!(
+            "{requested} is within the {max_volume} cap; use media.playback"
+        )));
+    }
+    Ok(())
 }
 
 /// The shared argument shape of both media tools.
@@ -326,6 +345,16 @@ impl MediaArgs {
             player,
             offset_secs: int_arg(map, "offset_secs")?,
             volume_pct: int_arg(map, "volume_pct")?,
+        })
+    }
+
+    /// The explicitly named player. Required by the R2 boost tool so the grant
+    /// binds the target (see its `execute`).
+    fn require_player(&self) -> Result<&str, ToolError> {
+        self.player.as_deref().ok_or_else(|| {
+            ToolError::ExecutionFailed(
+                "media.volume_boost requires an explicit `player`".to_owned(),
+            )
         })
     }
 
@@ -466,19 +495,28 @@ fn short(raw: &str) -> String {
 /// an empty browser profile rather than one carrying the owner's sessions. The
 /// egress is nonetheless classified `External`: bytes do leave the machine.
 ///
-/// The URL is `https`-only and appears **verbatim** in the audit event (docs/02
-/// §11a) — never a model paraphrase of where it points.
+/// The URL is `https`-only and is written **verbatim** into a durable audit
+/// event *before* the window is opened (docs/02 §11a) — never a model paraphrase
+/// of where it points, and never an effect that left no record. A cast that
+/// cannot be audited does not happen (invariant 6, the same fail-closed reading
+/// as the F3a.4 display placement).
 pub struct MediaOpenUrlTool {
     profile: Arc<jarvis_domain::display::DisplayProfile>,
     sink: Arc<dyn jarvis_application::ports::MediaWindowSink>,
+    audit: Arc<dyn jarvis_application::ports::AuditLog>,
 }
 
 impl MediaOpenUrlTool {
     pub fn new(
         profile: Arc<jarvis_domain::display::DisplayProfile>,
         sink: Arc<dyn jarvis_application::ports::MediaWindowSink>,
+        audit: Arc<dyn jarvis_application::ports::AuditLog>,
     ) -> Self {
-        Self { profile, sink }
+        Self {
+            profile,
+            sink,
+            audit,
+        }
     }
 
     pub fn id() -> ToolId {
@@ -503,12 +541,13 @@ impl MediaOpenUrlTool {
     pub fn descriptor(
         profile: Arc<jarvis_domain::display::DisplayProfile>,
         sink: Arc<dyn jarvis_application::ports::MediaWindowSink>,
+        audit: Arc<dyn jarvis_application::ports::AuditLog>,
     ) -> ToolDescriptor {
         ToolDescriptor {
             id: Self::id(),
             version: ToolVersion::new(1, 0, 0),
             policy: Some(Self::policy()),
-            executor: Arc::new(Self::new(profile, sink)),
+            executor: Arc::new(Self::new(profile, sink, audit)),
         }
     }
 
@@ -571,6 +610,30 @@ impl ToolExecutor for MediaOpenUrlTool {
                     "no monitor is configured for the media window".to_owned(),
                 )
             })?;
+
+        // Durable audit BEFORE the window opens, carrying the URL verbatim
+        // (docs/02 §11a). This is the feature's only external-egress action and
+        // its only process launch: an unauditable cast must not happen.
+        //
+        // The actor is a placeholder until the coding/browser-style orchestrator
+        // wiring lands and supplies the run's real actor + correlation id (the
+        // same deferral as D-M3a-2/D-M3a-3).
+        let event = jarvis_domain::audit::AuditEvent {
+            occurred_at: std::time::SystemTime::now(),
+            actor: "system".to_owned(),
+            event_type: "media.cast".to_owned(),
+            target: url.clone(),
+            correlation_id: None,
+            payload_json: serde_json::json!({
+                "url": url,
+                "monitor": placement.monitor.as_str(),
+            })
+            .to_string(),
+        };
+        self.audit.record(&event).await.map_err(|e| {
+            tracing::error!(error = %e, "media cast audit failed; not opening the window");
+            ToolError::ExecutionFailed("that cast could not be recorded".to_owned())
+        })?;
 
         let delivered = self.sink.open_url(&url, &placement.monitor).await;
         Ok(ToolResult {
@@ -1057,7 +1120,14 @@ mod tests {
             .execute(
                 invocation(
                     MediaVolumeBoostTool::id(),
-                    vec![("volume_pct", CanonicalValue::Int(85))],
+                    vec![
+                        ("command", CanonicalValue::str("set_volume")),
+                        ("volume_pct", CanonicalValue::Int(85)),
+                        (
+                            "player",
+                            CanonicalValue::str("org.mpris.MediaPlayer2.spotify"),
+                        ),
+                    ],
                 ),
                 None,
                 CancellationToken::new(),
@@ -1086,7 +1156,14 @@ mod tests {
             .execute(
                 invocation(
                     MediaVolumeBoostTool::id(),
-                    vec![("volume_pct", CanonicalValue::Int(50))],
+                    vec![
+                        ("command", CanonicalValue::str("set_volume")),
+                        ("volume_pct", CanonicalValue::Int(50)),
+                        (
+                            "player",
+                            CanonicalValue::str("org.mpris.MediaPlayer2.spotify"),
+                        ),
+                    ],
                 ),
                 None,
                 CancellationToken::new(),
@@ -1105,7 +1182,14 @@ mod tests {
                 .execute(
                     invocation(
                         MediaVolumeBoostTool::id(),
-                        vec![("volume_pct", CanonicalValue::Int(level))],
+                        vec![
+                            ("command", CanonicalValue::str("set_volume")),
+                            ("volume_pct", CanonicalValue::Int(level)),
+                            (
+                                "player",
+                                CanonicalValue::str("org.mpris.MediaPlayer2.spotify"),
+                            ),
+                        ],
                     ),
                     None,
                     CancellationToken::new(),
@@ -1149,6 +1233,28 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct FakeAuditLog {
+        events: Mutex<Vec<jarvis_domain::audit::AuditEvent>>,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl jarvis_application::ports::AuditLog for FakeAuditLog {
+        async fn record(
+            &self,
+            audit: &jarvis_domain::audit::AuditEvent,
+        ) -> Result<(), jarvis_application::ports::RepositoryError> {
+            if self.fail {
+                return Err(jarvis_application::ports::RepositoryError::Storage(
+                    "audit forced failure".into(),
+                ));
+            }
+            self.events.lock().unwrap().push(audit.clone());
+            Ok(())
+        }
+    }
+
     fn media_profile() -> Arc<jarvis_domain::display::DisplayProfile> {
         Arc::new(jarvis_domain::display::DisplayProfile::new([(
             jarvis_domain::display::Surface::MediaWindow,
@@ -1160,7 +1266,14 @@ mod tests {
         profile: Arc<jarvis_domain::display::DisplayProfile>,
         sink: Arc<FakeWindowSink>,
     ) -> MediaOpenUrlTool {
-        MediaOpenUrlTool::new(profile, sink)
+        MediaOpenUrlTool::new(profile, sink, Arc::new(FakeAuditLog::default()))
+    }
+
+    fn open_url_tool_with_audit(
+        sink: Arc<FakeWindowSink>,
+        audit: Arc<FakeAuditLog>,
+    ) -> MediaOpenUrlTool {
+        MediaOpenUrlTool::new(media_profile(), sink, audit)
     }
 
     #[tokio::test]
@@ -1326,5 +1439,130 @@ mod tests {
             CanonicalValue::str("https://example.com/v"),
         )]))
         .expect("an https URL binds");
+    }
+
+    #[tokio::test]
+    async fn a_cast_is_audited_verbatim_before_the_window_opens() {
+        // docs/02 §11a: the URL appears verbatim in the audit event — and the
+        // record is written BEFORE the effect (invariant 6).
+        let sink = Arc::new(FakeWindowSink {
+            connected: true,
+            ..FakeWindowSink::default()
+        });
+        let audit = Arc::new(FakeAuditLog::default());
+        open_url_tool_with_audit(sink.clone(), audit.clone())
+            .execute(
+                invocation(
+                    MediaOpenUrlTool::id(),
+                    vec![(
+                        "url",
+                        CanonicalValue::str("https://www.youtube.com/watch?v=abc"),
+                    )],
+                ),
+                None,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let events = audit.events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "media.cast");
+        assert_eq!(events[0].target, "https://www.youtube.com/watch?v=abc");
+        assert!(
+            events[0]
+                .payload_json
+                .contains("https://www.youtube.com/watch?v=abc"),
+            "the payload carries the URL verbatim: {}",
+            events[0].payload_json
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cast_that_cannot_be_audited_does_not_open_a_window() {
+        let sink = Arc::new(FakeWindowSink::default());
+        let audit = Arc::new(FakeAuditLog {
+            fail: true,
+            ..FakeAuditLog::default()
+        });
+        let err = open_url_tool_with_audit(sink.clone(), audit)
+            .execute(
+                invocation(
+                    MediaOpenUrlTool::id(),
+                    vec![("url", CanonicalValue::str("https://example.com/v"))],
+                ),
+                None,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::ExecutionFailed(m) if m.contains("could not be recorded"))
+        );
+        assert!(
+            sink.opened.lock().unwrap().is_empty(),
+            "no audit, no launch"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_r2_boost_requires_an_explicit_player_so_the_grant_binds_it() {
+        // Without this, the human approves "95%" and the effect can land on
+        // whatever happens to be playing when the grant is consumed.
+        let controller = FakeController::with(playing_snapshot());
+        let err = boost(controller.clone())
+            .execute(
+                invocation(
+                    MediaVolumeBoostTool::id(),
+                    vec![
+                        ("command", CanonicalValue::str("set_volume")),
+                        ("volume_pct", CanonicalValue::Int(85)),
+                    ],
+                ),
+                None,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::ExecutionFailed(m) if m.contains("explicit `player`")));
+        assert!(controller.applied().is_empty());
+
+        // And the same refusal at approval-binding time.
+        assert!(
+            boost(controller)
+                .validate_args(&CanonicalValue::obj(vec![
+                    ("command", CanonicalValue::str("set_volume")),
+                    ("volume_pct", CanonicalValue::Int(85)),
+                ]))
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_r2_boost_refuses_a_verb_that_would_misdescribe_the_effect() {
+        // A proposal saying `pause` would render "pause" on the approval card
+        // while setting a volume — the model must not control text that
+        // misdescribes what executes (docs/06 §3).
+        let controller = FakeController::with(playing_snapshot());
+        let err = boost(controller.clone())
+            .execute(
+                invocation(
+                    MediaVolumeBoostTool::id(),
+                    vec![
+                        ("command", CanonicalValue::str("pause")),
+                        ("volume_pct", CanonicalValue::Int(95)),
+                        (
+                            "player",
+                            CanonicalValue::str("org.mpris.MediaPlayer2.spotify"),
+                        ),
+                    ],
+                ),
+                None,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::ExecutionFailed(m) if m.contains("only sets volume")));
+        assert!(controller.applied().is_empty());
     }
 }

@@ -165,6 +165,13 @@ impl Compositor for HyprctlClient {
     }
 
     async fn open_media_window(&self, url: &str) -> Result<(), CompositorError> {
+        let profile_dir = media_profile_dir().ok_or_else(|| {
+            CompositorError::ipc(
+                "no user state directory (XDG_STATE_HOME/HOME unset) for the media \
+                 window profile"
+                    .to_owned(),
+            )
+        })?;
         let program = media_browser().ok_or_else(|| {
             CompositorError::ipc(
                 "no allowlisted browser found for the media window (chromium, \
@@ -181,13 +188,21 @@ impl Compositor for HyprctlClient {
         command
             .arg(format!("--app={url}"))
             .arg(format!("--class={}", MEDIA_APP_ID))
-            .arg(format!("--user-data-dir={}", media_profile_dir().display()))
+            .arg(format!("--user-data-dir={}", profile_dir.display()))
             // The media window renders third-party video and must never carry
             // the owner's browsing identity: its own profile dir is empty and
             // separate from both the shell and the browser worker (docs/02 §11a
             // "own app-id, own profile, no credentials").
             .arg("--no-first-run")
             .arg("--no-default-browser-check")
+            // Incognito is what makes "credential-free" a *property* rather than
+            // an initial condition. The profile directory persists (so the
+            // window keeps its size and position), but nothing a cast page sets
+            // — cookies, localStorage, a sign-in — survives to the next cast.
+            // Without this, one manual sign-in in that window would leave every
+            // subsequent model-proposed URL loading against real credentials,
+            // which is precisely the isolation ADR-012 relies on.
+            .arg("--incognito")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
@@ -229,14 +244,17 @@ fn media_browser() -> Option<&'static str> {
 /// The media window's dedicated, credential-free profile directory. Under the
 /// user's state dir so it survives restarts (the window keeps its size/position)
 /// but is separate from every other browser profile on the machine.
-fn media_profile_dir() -> std::path::PathBuf {
+///
+/// `None` when neither `XDG_STATE_HOME` nor `HOME` is set: falling back to a
+/// world-writable `/tmp` path would put a browser profile somewhere another
+/// local user can pre-create or symlink. No state dir ⇒ no cast (fail closed).
+fn media_profile_dir() -> Option<std::path::PathBuf> {
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| {
             std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/state"))
-        })
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("jarvis/media-profile")
+        })?;
+    Some(base.join("jarvis/media-profile"))
 }
 
 // --- fake for tests ------------------------------------------------------
