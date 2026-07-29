@@ -34,6 +34,10 @@ const REQUIRED_DEFINITIONS: &[&str] = &[
     "DisplayDirective",
     "OpenArtifactRequest",
     "OpenArtifactResponse",
+    "MediaStateDto",
+    "MediaStateResponse",
+    "MediaCommandRequest",
+    "MediaCommandResponse",
 ];
 
 fn snapshot_path() -> std::path::PathBuf {

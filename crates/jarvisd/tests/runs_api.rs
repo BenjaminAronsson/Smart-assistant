@@ -21,7 +21,7 @@ use jarvis_domain::identity::Device;
 use jarvis_domain::ids::{RunId, SessionId};
 use jarvis_domain::run::{Run, RunBudget, RunEvent};
 use jarvis_infra::dispatcher::OutboxRecord;
-use jarvisd::api::{AppState, RunWiring, router_with};
+use jarvisd::api::{AppState, RunWiring, Wiring, router_with};
 use jarvisd::auth::AuthState;
 use jarvisd::runs::{PassthroughAssembler, RunApi, RunEngine, SystemClock};
 use jarvisd::ws::{EventReader, WsHub, WsState};
@@ -222,11 +222,10 @@ async fn app_with_token(model: FakeModel, run_store: Arc<FakeRunStore>) -> (Rout
 
     let app = router_with(
         AppState::new().with_auth(auth.clone()),
-        None,
-        Some(RunWiring { runs: run_api, ws }),
-        None,
-        None,
-        None,
+        Wiring {
+            runs: Some(RunWiring { runs: run_api, ws }),
+            ..Wiring::default()
+        },
     );
     // Pair through the real endpoint for a live token.
     let response = app

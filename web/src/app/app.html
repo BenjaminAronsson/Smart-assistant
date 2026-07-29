@@ -52,4 +52,15 @@
       </section>
     }
   </div>
+
+  <!-- Media bar (FR-22): ambient, absent when nothing is playing. -->
+  @if (media.available() && media.state(); as mediaState) {
+    <app-media-bar
+      [state]="mediaState"
+      [pending]="media.pending()"
+      [error]="media.error()"
+      (transport)="onMediaCommand($event)"
+      (volume)="onMediaVolume($event)"
+    />
+  }
 </main>

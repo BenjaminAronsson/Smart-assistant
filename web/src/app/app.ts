@@ -1,23 +1,37 @@
 import { KeyValuePipe } from '@angular/common';
-import { Component, OnInit, inject, signal, ChangeDetectionStrategy } from '@angular/core';
+import {
+  Component,
+  OnDestroy,
+  OnInit,
+  inject,
+  signal,
+  ChangeDetectionStrategy,
+} from '@angular/core';
 import { RouterLink, RouterOutlet } from '@angular/router';
 import type { HealthResponse, SessionDto } from '../generated/api-types';
 import { ApiService } from './api.service';
+import { MediaBar } from './media-bar';
+import { MediaService } from './media.service';
 
 /**
  * Jarvis shell root (docs/03 §3). M0 scope: health page, first-run pairing,
  * and the session round-trip proving the persisted vertical slice (FR-02).
  * Conversation surfaces land in M1 (F1.8).
+ *
+ * The media bar (F3a.7, FR-22) lives at the shell root because it is ambient:
+ * it controls whatever is playing regardless of which view is routed, and it is
+ * absent entirely when nothing is.
  */
 @Component({
   selector: 'app-root',
-  imports: [KeyValuePipe, RouterLink, RouterOutlet],
+  imports: [KeyValuePipe, RouterLink, RouterOutlet, MediaBar],
   templateUrl: './app.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './app.scss',
 })
-export class App implements OnInit {
+export class App implements OnInit, OnDestroy {
   private readonly api = inject(ApiService);
+  protected readonly media = inject(MediaService);
 
   protected readonly title = signal('Jarvis');
   protected readonly health = signal<HealthResponse | null>(null);
@@ -29,6 +43,22 @@ export class App implements OnInit {
   ngOnInit(): void {
     this.paired.set(this.api.hasToken());
     void this.refresh();
+    // Media control is device-authenticated: only start it once paired.
+    if (this.paired()) {
+      void this.media.start();
+    }
+  }
+
+  ngOnDestroy(): void {
+    this.media.stop();
+  }
+
+  protected onMediaCommand(event: { command: string; player: string }): void {
+    void this.media.command(event.command, event.player);
+  }
+
+  protected onMediaVolume(event: { player: string; volumePct: number }): void {
+    void this.media.setVolume(event.player, event.volumePct);
   }
 
   protected async refresh(): Promise<void> {
@@ -52,6 +82,8 @@ export class App implements OnInit {
       await this.api.pair(code, 'web-shell');
       this.paired.set(true);
       await this.refresh();
+      // Now authenticated: the media surface becomes reachable.
+      void this.media.start();
     } catch {
       this.error.set('pairing failed');
     }

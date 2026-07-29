@@ -13,6 +13,9 @@ import type {
   ProvidersResponse,
   RunAck,
   ApprovalDecisionDto,
+  MediaCommandRequest,
+  MediaCommandResponse,
+  MediaStateResponse,
 } from '../generated/api-types';
 
 const TOKEN_KEY = 'jarvis.deviceToken';
@@ -102,6 +105,31 @@ export class ApiService {
   ): Promise<void> {
     await firstValueFrom(
       this.http.post(`/api/v1/runs/${runId}/approvals/${approvalId}`, decision, {
+        headers: this.authHeaders(),
+      }),
+    );
+  }
+
+  /**
+   * Current local playback state (FR-22). Needed on connect because
+   * `media.state` is a *transient* WS event and is never replayed (docs/05 §3):
+   * the bar reads this once, then follows events.
+   */
+  getMediaState(): Promise<MediaStateResponse> {
+    return firstValueFrom(
+      this.http.get<MediaStateResponse>('/api/v1/media/state', { headers: this.authHeaders() }),
+    );
+  }
+
+  /**
+   * Apply a transport command (exit evidence #4). Omitting `player` targets the
+   * unambiguous active player; the server refuses (409) rather than guessing
+   * when two players are active, and refuses any volume above the configured
+   * cap — the bar never overrides either decision locally.
+   */
+  sendMediaCommand(request: MediaCommandRequest): Promise<MediaCommandResponse> {
+    return firstValueFrom(
+      this.http.post<MediaCommandResponse>('/api/v1/media/command', request, {
         headers: this.authHeaders(),
       }),
     );

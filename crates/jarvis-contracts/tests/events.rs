@@ -7,6 +7,7 @@ use jarvis_contracts::approvals::{
     ApprovalCardDto, ApprovalResolutionDto, DataEgressDto, RiskLevelDto,
 };
 use jarvis_contracts::events::{DomainEvent, TransientEvent};
+use jarvis_contracts::media::MediaStateDto;
 use jarvis_contracts::messages::{MessageDto, MessageRole};
 use jarvis_contracts::providers::{ProviderDto, ProviderState};
 use jarvis_contracts::runs::{RunOutcome, RunOutcomeKind, RunStateDto};
@@ -94,20 +95,51 @@ fn domain_events_round_trip_and_carry_their_type_tag() {
     }
 }
 
+fn every_transient_event() -> Vec<TransientEvent> {
+    vec![
+        TransientEvent::TextDelta {
+            run_id: RUN.parse().unwrap(),
+            text: "hel".into(),
+        },
+        // F3a.7: media state is a current-value readout with no run scope —
+        // deliberately transient (docs/02 §11a, docs/05 §3).
+        TransientEvent::MediaState {
+            state: MediaStateDto {
+                players: vec![],
+                active_player: None,
+                max_volume_pct: 70,
+            },
+        },
+    ]
+}
+
 #[test]
-fn transient_events_round_trip() {
+fn transient_events_round_trip_and_carry_their_type_tag() {
+    for event in every_transient_event() {
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["type"], event.event_type());
+        let back: TransientEvent = serde_json::from_value(value).unwrap();
+        assert_eq!(back, event);
+    }
+
     let delta = TransientEvent::TextDelta {
         run_id: RUN.parse().unwrap(),
         text: "hel".into(),
     };
-    let value = serde_json::to_value(&delta).unwrap();
     assert_eq!(
-        value,
+        serde_json::to_value(&delta).unwrap(),
         json!({ "type": "text.delta", "runId": RUN, "text": "hel" })
     );
-    assert_eq!(delta.event_type(), "text.delta");
-    let back: TransientEvent = serde_json::from_value(value).unwrap();
-    assert_eq!(back, delta);
+    assert_eq!(
+        serde_json::to_value(TransientEvent::MediaState {
+            state: MediaStateDto::default()
+        })
+        .unwrap(),
+        json!({
+            "type": "media.state",
+            "state": { "players": [], "maxVolumePct": 0 }
+        })
+    );
 }
 
 #[test]
@@ -118,11 +150,10 @@ fn persisted_and_transient_type_tags_are_disjoint() {
         .iter()
         .map(|e| e.event_type())
         .collect();
-    let transient = [TransientEvent::TextDelta {
-        run_id: RUN.parse().unwrap(),
-        text: String::new(),
-    }
-    .event_type()];
+    let transient: Vec<&str> = every_transient_event()
+        .iter()
+        .map(|e| e.event_type())
+        .collect();
     for t in transient {
         assert!(
             !domain.contains(&t),

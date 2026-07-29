@@ -9,6 +9,7 @@ pub mod auth;
 pub mod config;
 pub mod display;
 pub mod location;
+pub mod media;
 pub mod observability;
 pub mod problem;
 pub mod runs;

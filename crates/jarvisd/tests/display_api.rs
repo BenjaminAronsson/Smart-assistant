@@ -24,7 +24,7 @@ use jarvis_domain::display::{DisplayProfile, MonitorId, Surface, SurfacePlacemen
 use jarvis_domain::identity::Device;
 use jarvis_domain::ids::{ArtifactId, RunId};
 use jarvis_domain::location::Sensitivity;
-use jarvisd::api::{AppState, router_with};
+use jarvisd::api::{AppState, Wiring, router_with};
 use jarvisd::auth::AuthState;
 use jarvisd::display::DisplayApi;
 use tower::ServiceExt;
@@ -183,11 +183,10 @@ async fn harness(profile: DisplayProfile, audit: FakeAuditLog, connected: bool) 
 
     let app = router_with(
         AppState::new().with_auth(auth),
-        None,
-        None,
-        None,
-        Some(display),
-        None,
+        Wiring {
+            display: Some(display),
+            ..Wiring::default()
+        },
     );
     let response = app
         .clone()

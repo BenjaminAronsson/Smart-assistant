@@ -131,12 +131,25 @@ pub enum TransientEvent {
         run_id: RunId,
         text: String,
     },
+    /// Current local playback state, feeding the media bar (FR-22, docs/02
+    /// §11a — "a `media.state` transient WS event").
+    ///
+    /// Transient is the correct classification, not a shortcut: this is a
+    /// *current-value readout* of whatever is playing right now, not a fact
+    /// about the run timeline. A client that missed one is not missing history
+    /// — it holds a stale value that the next change corrects, and a client
+    /// that just connected reads `GET /api/v1/media/state` instead of replaying.
+    /// It is also not run-scoped: media state exists with no run in flight,
+    /// which is why this variant carries no `RunId`.
+    #[serde(rename = "media.state")]
+    MediaState { state: crate::media::MediaStateDto },
 }
 
 impl TransientEvent {
     pub fn event_type(&self) -> &'static str {
         match self {
             Self::TextDelta { .. } => "text.delta",
+            Self::MediaState { .. } => "media.state",
         }
     }
 }

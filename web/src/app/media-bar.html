@@ -1,0 +1,85 @@
+@if (!hidden()) {
+  <section class="media-bar" role="group" aria-label="Media controls">
+    @if (ambiguous()) {
+      <!-- Two players are active. The server refuses to pick and so do we
+           (ADR-016): the human names one. -->
+      <p class="media-ask" role="status">Which player?</p>
+      <ul class="media-choices">
+        @for (player of players(); track player.player) {
+          <li>
+            <button type="button" (click)="choose(player.player)">
+              {{ player.identity }}
+            </button>
+          </li>
+        }
+      </ul>
+    } @else if (nowPlaying(); as track) {
+      @if (track.artUrl; as art) {
+        <img class="media-art" [src]="art" alt="" />
+      }
+      <div class="media-track">
+        <span class="media-title">{{ track.title }}</span>
+        <span class="media-artist">{{ track.artist }}</span>
+      </div>
+
+      @if (target(); as player) {
+        <div class="media-controls">
+          <button
+            type="button"
+            aria-label="Previous track"
+            [disabled]="pending() || !player.canGoPrevious"
+            (click)="send('previous')"
+          >
+            ⏮
+          </button>
+          @if (player.status === 'playing') {
+            <button
+              type="button"
+              aria-label="Pause"
+              [disabled]="pending() || !player.canPause"
+              (click)="send('pause')"
+            >
+              ⏸
+            </button>
+          } @else {
+            <button
+              type="button"
+              aria-label="Play"
+              [disabled]="pending() || !player.canPlay"
+              (click)="send('play')"
+            >
+              ▶
+            </button>
+          }
+          <button
+            type="button"
+            aria-label="Next track"
+            [disabled]="pending() || !player.canGoNext"
+            (click)="send('next')"
+          >
+            ⏭
+          </button>
+
+          @if (player.volumePct !== null && player.volumePct !== undefined) {
+            <label class="media-volume">
+              <span class="visually-hidden">Volume</span>
+              <input
+                type="range"
+                min="0"
+                [max]="state().maxVolumePct"
+                [value]="player.volumePct"
+                [disabled]="pending()"
+                (change)="onVolume($event)"
+              />
+            </label>
+          }
+        </div>
+        <span class="media-source">{{ player.identity }}</span>
+      }
+    }
+
+    @if (error(); as message) {
+      <p class="media-error" role="alert">{{ message }}</p>
+    }
+  </section>
+}

@@ -96,22 +96,40 @@ pub struct RunWiring {
     pub ws: crate::ws::WsState,
 }
 
+/// Which optional surfaces to mount. Each is absent by default: an unwired
+/// surface serves no routes at all, which is the stricter default (a surface
+/// that was not deliberately wired must not be reachable).
+///
+/// A struct rather than a positional argument list because the list only grows
+/// — with six `Option`s of different types, a mis-ordered call site is a real
+/// hazard, and every one of these mounts an authenticated surface.
+#[derive(Default)]
+pub struct Wiring {
+    pub sessions: Option<crate::sessions::SessionApi>,
+    pub runs: Option<RunWiring>,
+    pub artifacts: Option<crate::artifacts::ArtifactApi>,
+    pub display: Option<crate::display::DisplayApi>,
+    pub media: Option<crate::media::MediaApi>,
+    pub web_assets: Option<std::path::PathBuf>,
+}
+
 pub fn router(state: AppState) -> Router {
-    router_with(state, None, None, None, None, None)
+    router_with(state, Wiring::default())
 }
 
 /// Full router: unauthenticated surface (loopback health + pair), the
 /// authenticated session/run APIs + WebSocket hub behind the bearer middleware,
 /// and optional static web assets (docs/03 §3: Angular built assets served by
 /// jarvisd).
-pub fn router_with(
-    state: AppState,
-    sessions: Option<crate::sessions::SessionApi>,
-    runs: Option<RunWiring>,
-    artifacts: Option<crate::artifacts::ArtifactApi>,
-    display: Option<crate::display::DisplayApi>,
-    web_assets: Option<std::path::PathBuf>,
-) -> Router {
+pub fn router_with(state: AppState, wiring: Wiring) -> Router {
+    let Wiring {
+        sessions,
+        runs,
+        artifacts,
+        display,
+        media,
+        web_assets,
+    } = wiring;
     // Health and pair are unauthenticated by design but loopback-only:
     // config validation rejects non-loopback binds until M7 (docs/06 §7).
     let mut router = Router::new().route("/api/v1/diagnostics/health", get(health));
@@ -184,6 +202,17 @@ pub fn router_with(
                     .route(
                         "/api/v1/artifacts/{id}/open",
                         axum::routing::post(crate::display::open_artifact),
+                    )
+                    .with_state(api),
+            );
+        }
+        if let Some(api) = media {
+            protected = protected.merge(
+                Router::new()
+                    .route("/api/v1/media/state", get(crate::media::get_state))
+                    .route(
+                        "/api/v1/media/command",
+                        axum::routing::post(crate::media::post_command),
                     )
                     .with_state(api),
             );

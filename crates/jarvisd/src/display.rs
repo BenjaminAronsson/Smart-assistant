@@ -164,6 +164,7 @@ fn surface_from_wire(name: &str) -> Option<Surface> {
         "artifact_canvas" => Some(Surface::ArtifactCanvas),
         "ambient_status" => Some(Surface::AmbientStatus),
         "diagnostics" => Some(Surface::Diagnostics),
+        "media_window" => Some(Surface::MediaWindow),
         _ => None,
     }
 }

@@ -105,13 +105,20 @@ export type ContentBlock =
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "DisplayDirective".
  */
-export type DisplayDirective = {
-  appId: string;
-  monitor: string;
-  surface: SurfaceDto;
-  type: "display.place_surface";
-  [k: string]: unknown;
-};
+export type DisplayDirective =
+  | {
+      appId: string;
+      monitor: string;
+      surface: SurfaceDto;
+      type: "display.place_surface";
+      [k: string]: unknown;
+    }
+  | {
+      monitor: string;
+      type: "display.open_media_url";
+      url: string;
+      [k: string]: unknown;
+    };
 /**
  * A logical UI surface (docs/02 §8). Wire mirror of
  * `jarvis_domain::display::Surface`; jarvisd maps between them.
@@ -120,7 +127,8 @@ export type DisplayDirective = {
  * via the `definition` "SurfaceDto".
  */
 export type SurfaceDto =
-  "conversation" | "run_timeline" | "approval_tray" | "artifact_canvas" | "ambient_status" | "diagnostics";
+  | ("conversation" | "run_timeline" | "approval_tray" | "artifact_canvas" | "ambient_status" | "diagnostics")
+  | "media_window";
 /**
  * Persisted, replayable events (docs/05 §3 "persisted event categories").
  * Every variant must be representable in the timeline snapshot — a client that
@@ -264,6 +272,13 @@ export type ErrorCode =
  */
 export type ServiceStatus = "ok" | "degraded";
 /**
+ * Wire mirror of `jarvis_domain::media::PlaybackStatus`.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "PlaybackStatusDto".
+ */
+export type PlaybackStatusDto = "playing" | "paused" | "stopped";
+/**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "SessionStatus".
  */
@@ -293,12 +308,18 @@ export type TimelineItem =
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "TransientEvent".
  */
-export type TransientEvent = {
-  runId: UlidString;
-  text: string;
-  type: "text.delta";
-  [k: string]: unknown;
-};
+export type TransientEvent =
+  | {
+      runId: UlidString;
+      text: string;
+      type: "text.delta";
+      [k: string]: unknown;
+    }
+  | {
+      state: MediaStateDto;
+      type: "media.state";
+      [k: string]: unknown;
+    };
 
 /**
  * Jarvis wire contract v1 (generated — do not edit)
@@ -543,6 +564,154 @@ export interface HealthResponse {
    * jarvisd semver, for support/diagnostics.
    */
   version: string;
+  [k: string]: unknown;
+}
+/**
+ * `POST /api/v1/media/command` — the owner-driven transport control behind the
+ * media bar (exit evidence #4).
+ *
+ * `command` is one of the closed transport verbs (`play`, `pause`,
+ * `play_pause`, `stop`, `next`, `previous`, `seek`, `set_volume`); unknown
+ * verbs are a 400, never forwarded. Omitting `player` targets the unambiguous
+ * active player and fails cleanly (409) when the choice is ambiguous — the
+ * server never picks one.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MediaCommandRequest".
+ */
+export interface MediaCommandRequest {
+  command: string;
+  /**
+   * Required by `seek`; ignored otherwise. Negative rewinds.
+   */
+  offsetSecs?: number | null;
+  player?: string | null;
+  /**
+   * Required by `set_volume`. **Must not exceed the configured cap** — the
+   * media bar cannot raise volume above it at all; going higher is the R2
+   * approved tool path, deliberately not reachable from a UI button
+   * (docs/02 §11a).
+   */
+  volumePct?: number | null;
+  [k: string]: unknown;
+}
+/**
+ * Response to `POST …/media/command`: the effect that was audited and applied,
+ * plus the state immediately afterwards so the bar re-renders without waiting
+ * for the event.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MediaCommandResponse".
+ */
+export interface MediaCommandResponse {
+  /**
+   * The verb that was applied (echo of the request's `command`).
+   */
+  command: string;
+  /**
+   * The player it was applied to.
+   */
+  player: string;
+  state: MediaStateDto;
+  [k: string]: unknown;
+}
+/**
+ * Payload of the transient `media.state` event and of `GET …/media/state`.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MediaStateDto".
+ */
+export interface MediaStateDto {
+  /**
+   * The player an untargeted command applies to, when exactly one is
+   * unambiguous. `null` with a non-empty `players` means the choice is
+   * genuinely ambiguous (two players playing) — the bar shows both and the
+   * voice path asks (ADR-016), it never guesses.
+   */
+  activePlayer?: string | null;
+  /**
+   * The configured volume cap in percent. The bar clamps its own slider to
+   * this; the server enforces it regardless (hearing protection, docs/02
+   * §11a).
+   */
+  maxVolumePct: number;
+  /**
+   * Players currently on the session bus, in a stable order. Empty means
+   * nothing is running — the bar hides itself rather than showing an empty
+   * shell.
+   */
+  players: MediaPlayerDto[];
+  [k: string]: unknown;
+}
+/**
+ * One player's state on the media bar.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MediaPlayerDto".
+ */
+export interface MediaPlayerDto {
+  canGoNext: boolean;
+  canGoPrevious: boolean;
+  canPause: boolean;
+  /**
+   * What the player says it supports — the bar disables the rest rather than
+   * offering a control that will silently do nothing.
+   */
+  canPlay: boolean;
+  canSeek: boolean;
+  /**
+   * Human-readable player name ("Spotify"), sanitized player-published text.
+   */
+  identity: string;
+  metadata: TrackMetadataDto;
+  /**
+   * The MPRIS bus name (`org.mpris.MediaPlayer2.spotify`) — the handle a
+   * command targets. Validated as a bus name server-side on the way back in.
+   */
+  player: string;
+  status: PlaybackStatusDto;
+  /**
+   * Current volume in whole percent, when the player exposes one.
+   */
+  volumePct?: number | null;
+  [k: string]: unknown;
+}
+/**
+ * Track metadata as published by the player — **untrusted display data**
+ * (docs/06 §2 Z4). Absent fields are omitted rather than blank so the card can
+ * render "unknown" instead of an empty line.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "TrackMetadataDto".
+ */
+export interface TrackMetadataDto {
+  album?: string | null;
+  /**
+   * `https`-only album art (the domain drops every other scheme). The client
+   * may render it directly; a player cannot use this field to make the shell
+   * fetch a local file or an internal address.
+   */
+  artUrl?: string | null;
+  artist?: string | null;
+  lengthSecs?: number | null;
+  title?: string | null;
+  [k: string]: unknown;
+}
+/**
+ * `GET /api/v1/media/state`. Present because `media.state` is transient and
+ * therefore never replayed on resync (docs/05 §3): a client fetches the current
+ * value once on connect and follows events afterwards.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MediaStateResponse".
+ */
+export interface MediaStateResponse {
+  /**
+   * False when media control is not configured or no session bus is present.
+   * The bar renders nothing at all rather than dead buttons.
+   */
+  available: boolean;
+  state: MediaStateDto;
   [k: string]: unknown;
 }
 /**
