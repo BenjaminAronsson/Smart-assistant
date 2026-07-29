@@ -145,9 +145,13 @@ const MEDIA_APP_ID: &str = "jarvis.media";
 /// keeps an oversized argv out of a process launch.
 const MAX_MEDIA_URL_BYTES: usize = 2048;
 
-/// `https`-only scheme check, ASCII-case-insensitive.
+/// `https`-only scheme check, ASCII-case-insensitive. Mirrors
+/// `jarvis_domain::media::is_https_url` (the agent may not depend on that crate
+/// — arch rule). Compares **bytes**: a string-slice index panics when byte 8
+/// falls inside a multi-byte character, and this input is attacker-influenced.
 fn is_https_url(url: &str) -> bool {
-    url.len() > "https://".len() && url[.."https://".len()].eq_ignore_ascii_case("https://")
+    const PREFIX: &[u8] = b"https://";
+    url.len() > PREFIX.len() && url.as_bytes()[..PREFIX.len()].eq_ignore_ascii_case(PREFIX)
 }
 
 #[cfg(test)]
@@ -233,6 +237,9 @@ mod tests {
             "https://",
             "",
             "  https://example.com",
+            // Multi-byte at the scheme boundary: reject, never panic.
+            "https:/\u{20ac}evil.example/x",
+            "https:/\u{20ac}",
         ] {
             let err = apply(&open(hostile, "DP-1"), &comp).await.unwrap_err();
             assert_eq!(

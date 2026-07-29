@@ -129,12 +129,52 @@ impl HyprctlClient {
             .map_err(|e| CompositorError::ipc(format!("read: {e}")))?;
         Ok(reply)
     }
+
+    /// Poll `j/clients` until a window with `app_id` is mapped, or the deadline
+    /// passes. Hyprland reports the app-mode app-id as the window `class`.
+    ///
+    /// A poll rather than an event subscription because the agent's Hyprland
+    /// client is deliberately request/response only (one short-lived socket per
+    /// command); subscribing to the event socket for this one case would be a
+    /// larger surface than the problem warrants.
+    async fn await_window(&self, app_id: &str) -> Result<(), CompositorError> {
+        let deadline = std::time::Instant::now() + WINDOW_MAP_TIMEOUT;
+        loop {
+            if let Ok(reply) = self.request("j/clients").await
+                && let Ok(clients) = serde_json::from_str::<Vec<HyprClient>>(&reply)
+                && clients.iter().any(|c| c.class == app_id)
+            {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(CompositorError::ipc(format!(
+                    "the {app_id} window did not appear within {WINDOW_MAP_TIMEOUT:?}"
+                )));
+            }
+            tokio::time::sleep(WINDOW_MAP_POLL).await;
+        }
+    }
 }
 
 #[derive(Deserialize)]
 struct HyprMonitor {
     name: String,
 }
+
+/// A mapped window as reported by `j/clients`. Only the class is read — the
+/// agent never inspects window titles (they carry page content).
+#[derive(Deserialize)]
+struct HyprClient {
+    class: String,
+}
+
+/// How long to wait for the media window to map before giving up. A browser
+/// cold start on a loaded ultrabook can take a while; failing closed here is
+/// better than moving the wrong window.
+const WINDOW_MAP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Gap between `j/clients` polls while waiting for the window.
+const WINDOW_MAP_POLL: std::time::Duration = std::time::Duration::from_millis(150);
 
 impl Compositor for HyprctlClient {
     async fn list_monitors(&self) -> Result<Vec<Monitor>, CompositorError> {
@@ -212,6 +252,13 @@ impl Compositor for HyprctlClient {
         let mut child = command
             .spawn()
             .map_err(|e| CompositorError::ipc(format!("launching the media window: {e}")))?;
+        // Wait for the window to actually appear before returning, because the
+        // caller places it next and `place_window` works by focusing the app-id
+        // and moving the *active* window. A browser takes hundreds of ms to map
+        // its window; returning immediately would make `focuswindow` match
+        // nothing and `movewindow` relocate whatever the user currently has
+        // focused — a deterministic wrong-window move, not a rare race.
+        self.await_window(MEDIA_APP_ID).await?;
         // Do not reap: dropping the handle without waiting leaves a zombie until
         // the agent exits. Detach the wait onto the runtime instead — bounded
         // work (one browser process), and it keeps the process table clean.

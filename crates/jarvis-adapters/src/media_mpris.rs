@@ -47,11 +47,22 @@ const ROOT_INTERFACE: &str = "org.mpris.MediaPlayer2";
 /// run or the media bar; it is reported as "no longer running" instead.
 const DBUS_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Budget for a whole snapshot sweep, which makes one round trip per property
+/// per player. Generous relative to `DBUS_TIMEOUT` precisely because it covers
+/// many of them; exceeding it is reported as a bus failure, not a lost player.
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// How long to coalesce a burst of `PropertiesChanged` signals before
 /// re-reading state. Players emit several per track change (metadata, status,
 /// position); one snapshot per burst is enough and keeps the bar from
 /// re-rendering three times per song.
 const CHANGE_DEBOUNCE: Duration = Duration::from_millis(150);
+
+/// Upper bound on signals coalesced into one snapshot. A player emitting faster
+/// than this loop drains must not keep it runnable forever (it would pin a core
+/// and delay shutdown); past the bound we simply take the snapshot and let the
+/// next iteration pick up the rest.
+const MAX_DRAIN_PER_BURST: usize = 64;
 
 /// Upper bound on players a single snapshot will read. A session with more MPRIS
 /// names than this is either pathological or hostile; the bar is not a reason to
@@ -189,10 +200,16 @@ impl MprisController {
             .and_then(|b| b.path(MPRIS_OBJECT_PATH))
             .map_err(map_dbus_error)?
             .build();
+        // Namespace-filtered: without `arg0namespace` every application start,
+        // stop and D-Bus activation on the session bus would wake the watcher
+        // and cost a full multi-player sweep — exactly the always-on cost
+        // docs/09 §5 forbids.
         let owners = zbus::MatchRule::builder()
             .msg_type(zbus::message::Type::Signal)
             .interface("org.freedesktop.DBus")
             .and_then(|b| b.member("NameOwnerChanged"))
+            .map_err(map_dbus_error)?
+            .arg0ns(MPRIS_NAME_PREFIX.trim_end_matches('.'))
             .map_err(map_dbus_error)?
             .build();
 
@@ -214,12 +231,17 @@ impl MprisController {
 #[async_trait]
 impl MediaController for MprisController {
     async fn snapshot(&self, cancel: CancellationToken) -> Result<MediaSnapshot, MediaError> {
-        let read = async {
+        // The whole sweep gets its own, larger budget: `DBUS_TIMEOUT` is a
+        // *per-round-trip* bound (applied inside `read_player` and the command
+        // methods), and a snapshot makes many. Sharing one 3 s budget across up
+        // to `MAX_PLAYERS` players would report a merely slow bus as a failure.
+        let per_player = cancel.clone();
+        let read = async move {
             let mut players = Vec::new();
             for player in self.player_names().await? {
                 // One bad player must not blank the whole bar: skip it and keep
                 // the others.
-                match self.read_player(&player).await {
+                match with_deadline(self.read_player(&player), per_player.clone()).await {
                     Ok(Some(state)) => players.push(state),
                     Ok(None) => {}
                     Err(e) => {
@@ -229,7 +251,16 @@ impl MediaController for MprisController {
             }
             Ok(MediaSnapshot::new(players))
         };
-        with_deadline(read, cancel).await
+        // A sweep that exceeds even the generous budget is a bus problem, not a
+        // vanished player — mapping it to `PlayerGone` would make
+        // `GET /api/v1/media/state` answer 409 "that player is no longer
+        // running" for a slow session bus.
+        match with_budget(read, SNAPSHOT_TIMEOUT, cancel).await {
+            Err(MediaError::PlayerGone) => {
+                Err(MediaError::Failed("media snapshot timed out".into()))
+            }
+            other => other,
+        }
     }
 
     async fn transport(
@@ -287,21 +318,34 @@ impl MediaController for MprisController {
     }
 }
 
-/// Run `op` under both the D-Bus timeout and the caller's cancellation token
-/// (invariant 4 — nothing that can outlive a user's patience runs unbounded).
+/// Run `op` under the single-round-trip D-Bus deadline and the caller's
+/// cancellation token (invariant 4 — nothing that can outlive a user's patience
+/// runs unbounded).
 async fn with_deadline<T, F>(op: F, cancel: CancellationToken) -> Result<T, MediaError>
+where
+    F: std::future::Future<Output = Result<T, MediaError>>,
+{
+    with_budget(op, DBUS_TIMEOUT, cancel).await
+}
+
+/// As [`with_deadline`], with an explicit budget. An elapsed budget maps to
+/// [`MediaError::PlayerGone`]: for a single command that is the same
+/// user-visible situation ("that player is not responding") and it keeps a
+/// wedged player from being retried in a loop. Callers whose budget spans many
+/// players remap it (see `snapshot`).
+async fn with_budget<T, F>(
+    op: F,
+    budget: Duration,
+    cancel: CancellationToken,
+) -> Result<T, MediaError>
 where
     F: std::future::Future<Output = Result<T, MediaError>>,
 {
     tokio::select! {
         biased;
         () = cancel.cancelled() => Err(MediaError::Cancelled),
-        result = tokio::time::timeout(DBUS_TIMEOUT, op) => match result {
+        result = tokio::time::timeout(budget, op) => match result {
             Ok(inner) => inner,
-            // A player that does not answer within the deadline is treated as
-            // gone rather than as a hard failure: it is the same user-visible
-            // situation ("that player is not responding") and it keeps a wedged
-            // player from being retried in a loop.
             Err(_) => Err(MediaError::PlayerGone),
         },
     }
@@ -439,15 +483,25 @@ pub async fn watch_media_state<S>(
             () = cancel.cancelled() => return,
             () = tokio::time::sleep(CHANGE_DEBOUNCE) => {}
         }
-        // Drain what arrived during the debounce window. A terminated stream
-        // polls `Ready(None)` forever, so the `None` must break the drain —
-        // otherwise this spins.
+        // Drain what arrived during the debounce window. Two bounds, both
+        // load-bearing: a terminated stream polls `Ready(None)` forever (so the
+        // `None` must break), and a player emitting signals faster than we drain
+        // would otherwise keep this loop `Ready` indefinitely — pinning a core
+        // and starving the cancellation check below.
         let mut ended = false;
-        while let std::task::Poll::Ready(item) = futures_util::poll!(changes.next()) {
-            if item.is_none() {
-                ended = true;
-                break;
+        for _ in 0..MAX_DRAIN_PER_BURST {
+            match futures_util::poll!(changes.next()) {
+                std::task::Poll::Ready(Some(())) => continue,
+                std::task::Poll::Ready(None) => {
+                    ended = true;
+                    break;
+                }
+                std::task::Poll::Pending => break,
             }
+        }
+        // A flood must not delay shutdown past the drain.
+        if cancel.is_cancelled() {
+            return;
         }
 
         match controller.snapshot(cancel.clone()).await {
@@ -669,7 +723,13 @@ mod tests {
             tokio::time::sleep(CHANGE_DEBOUNCE * 4).await;
         }
         drop(tx); // stream ends → the watcher returns
-        watcher.await.expect("watcher task must not panic");
+        // Bounded: if the drain regressed into a spin, the watcher would never
+        // return and this test would hang forever rather than fail. Under
+        // `start_paused` the timeout is virtual, so it costs nothing.
+        tokio::time::timeout(Duration::from_secs(30), watcher)
+            .await
+            .expect("the watcher must return, not spin")
+            .expect("watcher task must not panic");
         (controller, sink)
     }
 

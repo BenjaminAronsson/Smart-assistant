@@ -184,11 +184,25 @@ fn sanitize_field(value: Option<&str>) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
-/// `https`-only check for an art URL. Deliberately a scheme test and nothing
-/// more — the domain does not parse or fetch URLs.
-fn is_https_url(url: &str) -> bool {
-    url.len() > "https://".len() && url[.."https://".len()].eq_ignore_ascii_case("https://")
+/// `https`-only scheme check, ASCII-case-insensitive. Deliberately a scheme test
+/// and nothing more — the domain does not parse or fetch URLs.
+///
+/// Compares **bytes**, not a string slice: `url[..8]` panics when byte 8 falls
+/// inside a multi-byte character (`"https:/\u{20ac}…"`), and every caller here
+/// is a Z4 boundary where a player or a model chooses the string. A hostile URL
+/// must be *rejected*, never a panic.
+///
+/// Shared rather than re-implemented per crate so a fix lands everywhere at
+/// once; `jarvis-agent` keeps its own copy only because the arch rule forbids it
+/// depending on this crate.
+pub fn is_https_url(url: &str) -> bool {
+    const PREFIX: &[u8] = b"https://";
+    url.len() > PREFIX.len() && url.as_bytes()[..PREFIX.len()].eq_ignore_ascii_case(PREFIX)
 }
+
+/// Longest castable/reportable media URL. Shared with the cast-a-link tool so
+/// the domain and the tool cannot disagree on the bound.
+pub const MAX_MEDIA_URL_BYTES: usize = 2048;
 
 /// A volume level in percent, `0..=100`. MPRIS models volume as a `f64` where
 /// 1.0 is nominal; the domain works in whole percent so the cap comparison and
@@ -572,6 +586,24 @@ mod tests {
     }
 
     #[test]
+    fn https_check_rejects_a_multibyte_url_instead_of_panicking() {
+        // Regression: a byte-index slice panics when byte 8 is inside a
+        // multi-byte char. Every caller is a Z4 boundary, so this must be a
+        // rejection, not a crash.
+        for hostile in [
+            "https:/\u{20ac}evil.example/x",
+            "https:/\u{20ac}",
+            "http\u{fe0f}://x",
+            "\u{1f600}\u{1f600}",
+        ] {
+            assert!(!is_https_url(hostile), "must reject {hostile:?}");
+        }
+        assert!(is_https_url("https://ok.example/x"));
+        assert!(is_https_url("HTTPS://ok.example/x"));
+        assert!(!is_https_url("https://"));
+    }
+
+    #[test]
     fn metadata_keeps_only_https_art_urls() {
         let keep = TrackMetadata::sanitized(None, None, None, Some("https://cdn/art.jpg"), None);
         assert_eq!(keep.art_url.as_deref(), Some("https://cdn/art.jpg"));
@@ -583,6 +615,7 @@ mod tests {
             "http://169.254.169.254/latest/meta-data",
             "data:image/png;base64,AAAA",
             "https://",
+            "https:/\u{20ac}evil.example/art.jpg",
         ] {
             let dropped = TrackMetadata::sanitized(None, None, None, Some(hostile), None);
             assert_eq!(dropped.art_url, None, "must drop {hostile:?}");

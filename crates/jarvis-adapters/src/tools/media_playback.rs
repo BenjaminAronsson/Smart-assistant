@@ -555,7 +555,7 @@ impl MediaOpenUrlTool {
     /// rules the agent re-applies before it launches anything.
     fn validated_url(arguments: &CanonicalValue) -> Result<String, ToolError> {
         let url = crate::tools::required_str(arguments, "url")?;
-        if url.len() > MAX_MEDIA_URL_BYTES {
+        if url.len() > jarvis_domain::media::MAX_MEDIA_URL_BYTES {
             return Err(ToolError::ExecutionFailed(
                 "that URL is too long".to_owned(),
             ));
@@ -565,9 +565,7 @@ impl MediaOpenUrlTool {
                 "a URL must not contain control characters".to_owned(),
             ));
         }
-        if !(url.len() > "https://".len()
-            && url[.."https://".len()].eq_ignore_ascii_case("https://"))
-        {
+        if !jarvis_domain::media::is_https_url(url) {
             return Err(ToolError::ExecutionFailed(
                 "only https URLs can be cast to the media window".to_owned(),
             ));
@@ -575,9 +573,6 @@ impl MediaOpenUrlTool {
         Ok(url.to_owned())
     }
 }
-
-/// Longest castable URL — mirrors the agent's own bound.
-const MAX_MEDIA_URL_BYTES: usize = 2048;
 
 #[async_trait]
 impl ToolExecutor for MediaOpenUrlTool {
@@ -1325,6 +1320,8 @@ mod tests {
             "data:text/html,x",
             "https://",
             "https://ok.example\nsecond",
+            // Multi-byte at the scheme boundary: reject, never panic.
+            "https:/\u{20ac}evil.example/v",
         ] {
             let err = open_url_tool(media_profile(), sink.clone())
                 .execute(
