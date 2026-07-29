@@ -653,8 +653,10 @@ fn ipv4_is_blocked(v4: std::net::Ipv4Addr) -> bool {
 /// which are unreachable without a gateway/relay a loopback-bound host lacks.
 /// Missing host ⇒ block.
 /// This runs on the initial URL AND on every redirect hop (see the fetch client's
-/// redirect policy), so a public page cannot 3xx to a private target.
-fn is_blocked_host(url: &reqwest::Url) -> bool {
+/// redirect policy), so a public page cannot 3xx to a private target. Shared with
+/// the browser worker host (F3a.5) as a first-line SSRF guard on navigate/download
+/// URLs before they reach the worker.
+pub(crate) fn is_blocked_host(url: &reqwest::Url) -> bool {
     use std::net::IpAddr;
     let Some(host) = url.host_str() else {
         return true;
