@@ -581,6 +581,26 @@
           "const": "artifact.integrity_failed",
           "description": "A stored artifact blob failed content-address verification on read —\non-disk corruption or tampering (F3a.2 CAS verify-on-read). 500; the\nbytes are never returned (fail closed).",
           "type": "string"
+        },
+        {
+          "const": "media.nothing_playing",
+          "description": "No media player is running, so an untargeted transport command has\nnothing to act on (F3a.7, FR-22). 409. Distinct from\n`media.target_ambiguous`: the client shows an empty state rather than\nasking which player.",
+          "type": "string"
+        },
+        {
+          "const": "media.target_ambiguous",
+          "description": "Two or more players are active and the request named none, so the server\nrefuses to guess (ADR-016 — the choice is asked, never inferred). 409.\nThe client's cue to ask which player and retry with `player` set.",
+          "type": "string"
+        },
+        {
+          "const": "media.player_gone",
+          "description": "The named player left the bus between the snapshot and the command. 409.\nA normal race, and safely retryable after a state refresh — which is why\nit is not `resource.not_found` (that means \"no such id, ever\").",
+          "type": "string"
+        },
+        {
+          "const": "media.control_unsupported",
+          "description": "The player is present but reports it cannot perform this control\n(`CanGoNext = false`). 409 — the request was well-formed, so this is not\n`validation.failed`; retrying the same call will not help, but a\ndifferent control on the same player may.",
+          "type": "string"
         }
       ]
     },

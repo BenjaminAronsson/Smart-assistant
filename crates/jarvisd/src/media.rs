@@ -167,7 +167,7 @@ pub async fn post_command(
         if !supported {
             return Err(problem(
                 StatusCode::CONFLICT,
-                ErrorCode::ValidationFailed,
+                ErrorCode::MediaControlUnsupported,
                 &format!("{identity} does not support that control"),
                 None,
             ));
@@ -287,19 +287,19 @@ fn fault_response(fault: MediaFault) -> Response {
         MediaFault::MalformedPlayer => bad_request("player is not a valid MPRIS name"),
         MediaFault::PlayerNotRunning => problem(
             StatusCode::NOT_FOUND,
-            ErrorCode::ResourceNotFound,
+            ErrorCode::MediaPlayerGone,
             "that player is no longer running",
             None,
         ),
         MediaFault::NothingPlaying => problem(
             StatusCode::CONFLICT,
-            ErrorCode::ResourceVersionConflict,
+            ErrorCode::MediaNothingPlaying,
             "nothing is playing",
             None,
         ),
         MediaFault::Ambiguous => problem(
             StatusCode::CONFLICT,
-            ErrorCode::ResourceVersionConflict,
+            ErrorCode::MediaTargetAmbiguous,
             "more than one player is active: name one in `player`",
             None,
         ),
@@ -319,13 +319,13 @@ fn media_problem(error: MediaError) -> Response {
     match error {
         MediaError::PlayerGone => problem(
             StatusCode::CONFLICT,
-            ErrorCode::ResourceVersionConflict,
+            ErrorCode::MediaPlayerGone,
             "that player is no longer running",
             None,
         ),
         MediaError::Unsupported => problem(
             StatusCode::CONFLICT,
-            ErrorCode::ValidationFailed,
+            ErrorCode::MediaControlUnsupported,
             "the player does not support that control",
             None,
         ),

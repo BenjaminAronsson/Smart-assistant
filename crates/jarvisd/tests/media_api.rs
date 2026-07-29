@@ -474,6 +474,60 @@ async fn a_control_the_player_does_not_support_is_refused() {
 }
 
 #[tokio::test]
+async fn each_media_failure_has_its_own_machine_code() {
+    // docs/05 §7: codes exist for client logic. "nothing is playing", "pick a
+    // player" and "that player vanished" lead to three different client
+    // behaviours (empty state / ask / refresh-and-retry), so they must not
+    // collapse into one code.
+    let idle = harness(
+        FakeController::showing(MediaSnapshot::none()),
+        FakeAuditLog::default(),
+    )
+    .await;
+    let (status, body) = idle
+        .command(serde_json::json!({ "command": "pause" }))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "media.nothing_playing");
+
+    let ambiguous = harness(
+        FakeController::showing(two_playing()),
+        FakeAuditLog::default(),
+    )
+    .await;
+    let (status, body) = ambiguous
+        .command(serde_json::json!({ "command": "pause" }))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "media.target_ambiguous");
+
+    let gone = harness(
+        FakeController::failing(one_playing(), MediaError::PlayerGone),
+        FakeAuditLog::default(),
+    )
+    .await;
+    let (_, body) = gone
+        .command(serde_json::json!({ "command": "pause" }))
+        .await;
+    assert_eq!(body["code"], "media.player_gone");
+
+    let no_seek = MediaSnapshot::new([state("spotify", "Spotify", PlaybackStatus::Playing)
+        .with_capabilities(true, true, true, true, false)]);
+    let unsupported = harness(FakeController::showing(no_seek), FakeAuditLog::default()).await;
+    let (_, body) = unsupported
+        .command(serde_json::json!({ "command": "seek", "offsetSecs": 30 }))
+        .await;
+    assert_eq!(body["code"], "media.control_unsupported");
+
+    // A genuinely malformed request stays a validation failure.
+    let (status, body) = ambiguous
+        .command(serde_json::json!({ "command": "pause", "player": "not.an.mpris.name" }))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "validation.failed");
+}
+
+#[tokio::test]
 async fn state_reports_players_and_the_cap() {
     let h = harness(
         FakeController::showing(one_playing()),

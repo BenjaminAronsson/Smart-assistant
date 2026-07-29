@@ -265,7 +265,11 @@ export type ErrorCode =
       | "artifact.too_large"
       | "degraded.queued"
     )
-  | "artifact.integrity_failed";
+  | "artifact.integrity_failed"
+  | "media.nothing_playing"
+  | "media.target_ambiguous"
+  | "media.player_gone"
+  | "media.control_unsupported";
 /**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "ServiceStatus".
