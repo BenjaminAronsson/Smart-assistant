@@ -124,7 +124,8 @@ pub fn register_web_tools(
 }
 
 /// Register the media tools against a live [`MediaController`] (F3a.7, FR-22,
-/// docs/02 §11a). jarvisd calls this **only** when `[media].enabled` is set and
+/// docs/02 §11a). jarvisd calls this **only** when `[integrations.media]` is
+/// enabled and
 /// a session bus was reachable — same opt-in stance as the web tools: no
 /// configured media ⇒ no media tools ⇒ no ambient playback authority.
 ///

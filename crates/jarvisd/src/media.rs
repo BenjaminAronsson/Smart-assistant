@@ -16,7 +16,7 @@
 //!
 //! Two rules the handler enforces regardless of what the client sends:
 //!
-//! 1. **The volume cap holds here too.** `set_volume` above `[media]
+//! 1. **The volume cap holds here too.** `set_volume` above `[integrations.media]
 //!    max_volume_pct` is refused (409) — the bar cannot exceed it at all.
 //!    Raising volume above the cap is an R2 action that goes through the
 //!    approval flow with `media.volume_boost`, deliberately not reachable from

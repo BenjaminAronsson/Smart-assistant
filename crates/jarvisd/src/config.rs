@@ -27,15 +27,22 @@ pub struct Config {
     pub storage: StorageConfig,
     #[serde(default)]
     pub display: DisplayConfig,
-    #[serde(default)]
-    pub media: MediaConfig,
 }
 
-/// `[media]` (FR-22, docs/02 §11a, ADR-012). Local MPRIS transport control.
+/// `[integrations.media]` (FR-22, docs/02 §11a, ADR-012, docs/09 §1). Local
+/// MPRIS transport control.
 ///
 /// `enabled` defaults to **false**: media control is an ambient capability over
 /// the session bus, and an unconfigured host should register no media tools and
-/// expose no control surface (the same opt-in stance as `[integrations.*]`).
+/// expose no control surface (the same opt-in stance as every other
+/// `[integrations.*]` section).
+///
+/// Two keys documented in docs/09 §1 are deliberately **not** implemented here,
+/// because F3a.4 already shipped the mechanisms they would duplicate:
+/// `media_window_app_id` (the app-id is the fixed `jarvis.media` from
+/// `Surface::MediaWindow`, and the agent accepts only the `jarvis.` namespace)
+/// and `default_display` (the media window is placed through the ordinary
+/// display profile, `[display].profile.media_window`). Flagged for /sync-docs.
 ///
 /// `max_volume_pct` is the hearing-protection cap. At or below it, a volume set
 /// is R1 and auto-authorizes; above it requires an approved `media.volume_boost`
@@ -69,7 +76,7 @@ impl MediaConfig {
     /// must not read as "no cap".
     pub fn max_volume(&self) -> anyhow::Result<jarvis_domain::media::VolumePct> {
         jarvis_domain::media::VolumePct::new(self.max_volume_pct)
-            .map_err(|e| anyhow::anyhow!("[media].max_volume_pct: {e}"))
+            .map_err(|e| anyhow::anyhow!("[integrations.media].max_volume_pct: {e}"))
     }
 }
 
@@ -149,6 +156,10 @@ pub struct IntegrationsConfig {
     /// which is the external-egress consent gate (CF-5, docs/06 §5).
     #[serde(default)]
     pub web_search: Option<WebSearchConfig>,
+    /// `[integrations.media]` (F3a.7, FR-22). Disabled by default ⇒ no media
+    /// tools, no media routes, no session-bus connection.
+    #[serde(default)]
+    pub media: MediaConfig,
 }
 
 /// `[integrations.web_search]` (docs/02 §11b, ADR-014). The API key is a secret
@@ -269,7 +280,6 @@ impl Default for Config {
             location: LocationConfig::default(),
             storage: StorageConfig::default(),
             display: DisplayConfig::default(),
-            media: MediaConfig::default(),
         }
     }
 }

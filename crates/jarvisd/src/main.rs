@@ -115,18 +115,19 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         )?;
     }
     // Local media control (F3a.7, FR-22, ADR-012): registered ONLY when
-    // `[media].enabled` is set AND a session bus is actually reachable — the
+    // `[integrations.media].enabled` is set AND a session bus is reachable — the
     // same opt-in stance as the web tools. Absent ⇒ no media tools, no media
     // routes, no D-Bus subscription (nothing resident, docs/09 §5).
-    let max_volume = config.media.max_volume()?;
+    let max_volume = config.integrations.media.max_volume()?;
     let media_controller: Option<Arc<jarvis_adapters::media_mpris::MprisController>> = if config
+        .integrations
         .media
         .enabled
     {
         match jarvis_adapters::media_mpris::MprisController::connect().await {
             Ok(controller) => Some(Arc::new(controller)),
             Err(e) => {
-                tracing::warn!(error = %e, "[media].enabled but no session bus; media control off");
+                tracing::warn!(error = %e, "[integrations.media].enabled but no session bus; media control off");
                 None
             }
         }
