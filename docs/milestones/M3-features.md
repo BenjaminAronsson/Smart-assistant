@@ -125,7 +125,7 @@ evidence, and timer firing.
   `golden-traces`. Deps: F3a.2 (artifact store), F3a.5 (worker-isolation pattern).
   security-auditor + rust-reviewer mandatory.
 
-- [ ] **F3a.7 — MPRIS adapter + `media.playback` + media-bar `media.state` + cast-a-link media window (adapters + web)** · *strong model (web part may be Sonnet)*
+- [x] **F3a.7 — MPRIS adapter + `media.playback` + media-bar `media.state` + cast-a-link media window (adapters + web)** · *strong model (web part may be Sonnet)*
   `jarvis-adapters::media_mpris` (zbus, D-Bus session bus): discover
   `org.mpris.MediaPlayer2.*`, expose `media.playback` (play/pause/next/previous/seek/volume
   — transport + volume-within-cap **R1**, volume-above-cap **R2** per docs/02 §11a) and a
@@ -370,3 +370,64 @@ promotion pattern.)
   confirm the deferrals at the M3a `/gate`. **Gate item:** confirm the production coding
   container's read-only repo mount + egress policy (ADR-027; the dev/CI process fallback runs
   `git worktree` on the host — disposable + removed, but not container-isolated).
+- **D-M3a-4 (F3a.7): media control shipped end-to-end; the model-facing tool path is
+  registered but not yet reachable, and Spotify/now-playing stay M5.** Shipped:
+  `jarvis-domain::media` (validated `PlayerId`, Z4-sanitized `TrackMetadata`, `VolumePct`
+  with the single `within_cap` cap decision, `MediaSnapshot` with ask-don't-guess target
+  selection), the `MediaController`/`MediaStateSink`/`MediaWindowSink` ports, the
+  `media_mpris` zbus adapter with an event-driven (never polling) debounced watcher,
+  three tools with host-owned policy, the transient `media.state` event + `GET
+  /api/v1/media/state` + `POST /api/v1/media/command`, `[integrations.media]` config
+  (opt-in, `max_volume_pct = 70`), and the Angular media bar. **Exit evidence #4 is
+  demonstrated through the owner-driven REST path** (`media_api.rs::
+  pause_from_the_media_bar_pauses_the_active_player`), which is the media bar's own
+  route — the model's path to the same effect is the registered `media.playback` tool
+  through `policy::evaluate`.
+  - **Owner: confirm at the M3a gate.**
+    (i) **The two-tool split.** docs/02 §11a says "volume above cap requires approval",
+    but `policy::evaluate` classifies on the registered `ToolPolicy`, **not** on
+    arguments — argument-dependent risk escalation does not exist in the engine. So the
+    cap became a *policy* boundary via two tools: `media.playback` (R1, and it has no
+    code path to an above-cap level) and `media.volume_boost` (R2, approval + grant).
+    This deviates from the media-integration skill's implied single `media.volume`.
+    (ii) **R1 for cast-a-link.** Neither ADR-012 nor docs/02 §11a actually assigns
+    `media.open_url` a tier; R1 comes from the skill's incidental "the R1 audit event".
+    It is the agent's first process-launch capability and the only `DataEgress::External`
+    media action, so the tier wants an explicit decision.
+    (iii) **The REST media surface is not scope-checked** (no `media:control`), matching
+    the F3a.4 placement endpoint's shape — owner-driven endpoints authenticate the
+    device but do not check tool scopes. Deliberate, worth confirming.
+    (iv) **Devices pair with `["ui"]` scope only**, so `media:control` is never granted
+    and the *tool* path is currently unreachable end-to-end (fails closed at
+    `policy::evaluate`); the tool tier behaviour is unit-tested, not run-tested.
+    (v) **`media_window_app_id`/`default_display` from docs/09 §1 were not implemented** —
+    F3a.4's `jarvis.` app-id namespace and display profile already cover them; docs/09
+    updated to match. `/sync-docs` should keep the stale docs/02 §11a → "docs/12 §5"
+    cross-reference in mind: docs/12 has no media-bar section (§5 is backgrounds).
+  - **Reviews (all four ran).** security-auditor: no BLOCKING; SHOULD-FIX applied
+    in-branch — the cast URL is now written verbatim into a durable `media.cast` audit
+    event *before* the window opens (the threat note claimed this control before it
+    existed), `media.volume_boost` requires an explicit `player` so the grant's argument
+    hash binds the target, the boost tool refuses a verb that would misdescribe the
+    approval card, the media window runs incognito (making "credential-free" enforced
+    rather than an initial condition), the profile dir no longer falls back to
+    world-writable `/tmp`, and player-published album art is fetched with
+    `referrerpolicy="no-referrer"`. rust-reviewer: **1 BLOCKING, fixed** — `is_https_url`
+    used a byte-index string slice and *panicked* on a multi-byte URL
+    (`"https:/\u{20ac}…"`) at all three Z4 boundaries, including inside the detached
+    watcher task; now a byte comparison, shared from the domain, with multi-byte
+    regression cases. Also fixed: cast-a-link deterministically moved the user's focused
+    window (it placed before the browser had mapped), the debounce drain could spin, the
+    per-round-trip timeout wrapped a whole sweep and reported a slow bus as
+    "player gone", and the `NameOwnerChanged` rule was unfiltered. contract-keeper:
+    **1 BLOCKING, fixed** — `media.nothing_playing`/`target_ambiguous`/`player_gone`/
+    `control_unsupported` are now registered codes in `errors.rs` + docs/05 §7 instead of
+    being folded into `resource.version_conflict`. perf-warden: **PASS** — media is off
+    by default (no session-bus connection, no task, no tools), the watcher is bounded and
+    event-driven, +4 MB binary / +24 crates for zbus.
+  - **Deferred (not defects):** `read_player` makes ~9 property round trips per player
+    where one `GetAll` would do (bounded by `MAX_PLAYERS = 16`; runs on each change burst
+    and on each REST command, so real cost tracks player count — typically 1–2); a
+    cap-naming `exact_effect` for the R2 card needs tool-aware effect rendering in
+    `jarvis-application`; **Spotify Web API, the `now-playing` query (FR-32) and voice
+    transport remain M5** per the milestone's own scope control.
