@@ -101,7 +101,7 @@ evidence, and timer firing.
   screenshot/clipboard scope) + rust-reviewer mandatory. **If Hyprland IPC surfaces an
   irreversible protocol/isolation choice, stop and draft an ADR.**
 
-- [ ] **F3a.5 — Isolated Playwright browser worker + typed tool actions + audit evidence (tools + adapters)** · *strong model*
+- [x] **F3a.5 — Isolated Playwright browser worker + typed tool actions + audit evidence (tools + adapters)** · *strong model*
   `tools/browser-worker` (out-of-process, per-trust-domain isolated profiles, visible mode
   for consequential ops, credentials from the secret store — never prompted). Typed actions
   (navigate, extract, click, download, screenshot) with per-step **audit evidence**;
@@ -316,6 +316,42 @@ promotion pattern.)
   small) but a streaming/size-capped read port is needed before large-artifact producers
   (F3a.6 patches are still small; **M6 `Bundle`** is the real trigger). Verify-on-read
   currently requires buffering to re-hash, so streaming needs chunked-hash-then-emit.
+- **D-M3a-2 (F3a.5): browser worker host + Node/Playwright worker shipped; jarvisd tool-stack
+  wiring + keyring credential resolution + container launch profile deferred.** Shipped: the
+  `jarvis-adapters::browser` host (host-owned `BrowserPolicyTable` overlay, typed actions
+  navigate/extract/click/download/screenshot, Z4 sanitization, append-only per-step audit via
+  `AuditLog`, http/https scheme guard, cancellable+timeout stdio transport), the real
+  `tools/browser-worker` (Node/Playwright, same stdio protocol), and **ADR-027** (isolation:
+  container = production contract, process+profile-dir = dev/CI fallback). The
+  "page-cannot-inject-a-tool-call" adversarial property is unit-tested host-side (no browser),
+  per docs/06 §8 gate 2. **Not** shipped, by design (same slice discipline as the F2.6/F2.7
+  MCP-host slices): (a) registration into jarvisd's live `ToolStack` + orchestrator run wiring
+  — when that lands, the run's actor/correlation replaces the placeholder `system` actor;
+  (b) keyring credential resolution + the container launch `Command` (ops/deployment config,
+  ADR-027 defers it); (c) real Playwright is manual-verify — **CI runs a fake worker** (no
+  browser binaries), aligning with F3a.8. **ADR-027 is *Proposed*; owner accepts at the M3a
+  `/gate`.** Owner: confirm the deferrals + ADR at gate.
+  - **Reviews (rust-reviewer + security-auditor, both ran):** 1 BLOCKING fixed in-branch —
+    the stdio transport had no request/response correlation, so a cancel/timeout after the
+    request was sent would desync the next call and mis-attribute its audit row (invariants
+    #4/#6). Fix: `ChildWorkerTransport` now owns the read deadline and **poisons itself** on
+    any interrupted exchange (timeout/cancel/write-error/EOF/unparseable), so later calls fail
+    closed instead of desyncing (3 duplex tests). SHOULD-FIX applied in-branch: bounded the
+    reader codec (`MAX_WORKER_LINE_BYTES` 256 KB, was unbounded → OOM); host-side SSRF guard on
+    navigate/download reusing F2.8 `is_blocked_host` (blocks localhost/RFC-1918/metadata IP
+    *literals*); audit the worker-failure path too (a failed action still leaves a row) +
+    honest comment that effect-then-audit cannot undo a mutating effect; strip `user:token@`
+    userinfo from audit targets; risk-floor drops any `click`/`download` registered below R2.
+  - **Gate-confirmation items (from security-auditor S2/S3/S4, O1):** (i) confirm the
+    **production container's outbound-network allowlist** — the dev/CI process fallback has
+    open host network and the in-code SSRF guard only catches literal private IPs, not
+    DNS-name/DNS-rebind targets; (ii) confirm the production `BrowserPolicyTable` assigns
+    `click`/`download` **≥ R2** (adapter drops sub-R2 mutating actions, but the live table is
+    the real control); (iii) consider a **pre-dispatch "intent" audit row** for mutating
+    actions so a transport-level timeout/crash mid-action still leaves evidence (residual: a
+    timeout before the worker replies currently records nothing); (iv) **`.claude/settings.json`**
+    carried a pre-existing, unrelated permission-allowlist change (git-push ask→allow) in the
+    working tree — kept **out** of this feature commit; owner to handle separately.
 - **D-M3a-3 (F3a.6): coding worker host + Node worker shipped; the *replayable* `artifact.created`
   WS event + orchestrator/tool-stack wiring deferred.** Shipped: `jarvis-adapters::coding`
   (`CodingWorkerHost::produce_patch_artifact` — runs the worker, stores the diff as an

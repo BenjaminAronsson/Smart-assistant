@@ -1,0 +1,19 @@
+{
+  "name": "jarvis-browser-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Out-of-process Playwright browser worker for Jarvis (F3a.5, ADR-027). Host-driven, one typed action per stdio line.",
+  "type": "module",
+  "bin": {
+    "jarvis-browser-worker": "src/index.mjs"
+  },
+  "scripts": {
+    "start": "node src/index.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "playwright": "1.49.1"
+  }
+}
