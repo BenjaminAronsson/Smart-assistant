@@ -106,6 +106,13 @@ ulid_id!(
     ArtifactId
 );
 ulid_id!(
+    /// One timer, alarm, or one-shot reminder (FR-33, ADR-023). Minted at the
+    /// edge that creates it (host owns randomness) and carried unchanged through
+    /// the fire/snooze/dismiss lifecycle, so the WS `timer.fired` event, the HUD
+    /// card, and the `POST /timers/{id}/action` decision all name the same row.
+    TimerId
+);
+ulid_id!(
     /// A single pending human-approval request (F2.5, docs/06 §3). Minted at the
     /// approval-gate boundary (host owns randomness) so the WS `approval.requested`
     /// event and the `POST /runs/{id}/approvals/{approval_id}` decision can be

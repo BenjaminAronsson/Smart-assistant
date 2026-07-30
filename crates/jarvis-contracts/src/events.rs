@@ -87,6 +87,24 @@ pub enum DomainEvent {
     /// `WaitingApproval` still sees the pending card and can act on it.
     #[serde(rename = "approval.requested")]
     ApprovalRequested { card: ApprovalCardDto },
+    /// A timer, alarm or reminder went off (F3b.7, FR-33, ADR-023).
+    ///
+    /// Persisted rather than transient, deliberately: a timer going off is a
+    /// *fact about a moment*, and a client that was disconnected when the
+    /// kitchen timer rang must still learn about it on resync — unlike
+    /// `media.state`, which is a current-value readout with no history worth
+    /// replaying. It is also not run-scoped (a timer fires with no run in
+    /// flight), which is why it carries no `RunId`.
+    ///
+    /// This feature is the event's only producer: the timer module fires it, and
+    /// nothing else may. `missed` is the honest notice ADR-023 requires — the
+    /// timer came due while jarvisd was not running, and the human is told so
+    /// rather than shown something that looks like it just rang.
+    #[serde(rename = "timer.fired")]
+    TimerFired {
+        timer: crate::timers::TimerDto,
+        missed: bool,
+    },
     /// A pending approval was answered (F2.5). Replayed so the resolved outcome
     /// survives reconnect and the client can retire the card it was showing.
     #[serde(rename = "approval.resolved")]
@@ -114,6 +132,7 @@ impl DomainEvent {
             Self::CheckpointSaved { .. } => "run.checkpoint_saved",
             Self::ApprovalRequested { .. } => "approval.requested",
             Self::ApprovalResolved { .. } => "approval.resolved",
+            Self::TimerFired { .. } => "timer.fired",
         }
     }
 }

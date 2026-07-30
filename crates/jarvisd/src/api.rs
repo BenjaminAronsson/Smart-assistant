@@ -110,6 +110,7 @@ pub struct Wiring {
     pub artifacts: Option<crate::artifacts::ArtifactApi>,
     pub display: Option<crate::display::DisplayApi>,
     pub media: Option<crate::media::MediaApi>,
+    pub timers: Option<crate::timers::TimerApi>,
     pub web_assets: Option<std::path::PathBuf>,
 }
 
@@ -128,6 +129,7 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
         artifacts,
         display,
         media,
+        timers,
         web_assets,
     } = wiring;
     // Health and pair are unauthenticated by design but loopback-only:
@@ -202,6 +204,20 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
                     .route(
                         "/api/v1/artifacts/{id}/open",
                         axum::routing::post(crate::display::open_artifact),
+                    )
+                    .with_state(api),
+            );
+        }
+        if let Some(api) = timers {
+            protected = protected.merge(
+                Router::new()
+                    .route(
+                        "/api/v1/timers",
+                        get(crate::timers::list).post(crate::timers::create),
+                    )
+                    .route(
+                        "/api/v1/timers/{id}/action",
+                        axum::routing::post(crate::timers::act),
                     )
                     .with_state(api),
             );

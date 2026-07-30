@@ -7,5 +7,6 @@ pub mod claude_cli;
 pub mod coding;
 pub mod mcp_host;
 pub mod media_mpris;
+pub mod timer_alert;
 pub mod tools;
 pub mod web;

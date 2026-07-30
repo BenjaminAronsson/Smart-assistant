@@ -73,6 +73,15 @@ pub fn export() -> Value {
     generator.subschema_for::<crate::media::MediaStateResponse>();
     generator.subschema_for::<crate::media::MediaCommandRequest>();
     generator.subschema_for::<crate::media::MediaCommandResponse>();
+    // Timer surface (F3b.7, FR-33, ADR-023). `TimerDto` rides inside the
+    // persisted `timer.fired` event, but the HUD also lists timers over REST on
+    // connect and the create/action request+response are referenced by no event
+    // — each must be its own root or it ships absent from the wire schema.
+    generator.subschema_for::<crate::timers::TimerDto>();
+    generator.subschema_for::<crate::timers::TimerListResponse>();
+    generator.subschema_for::<crate::timers::CreateTimerRequest>();
+    generator.subschema_for::<crate::timers::TimerActionRequest>();
+    generator.subschema_for::<crate::timers::TimerActionResponse>();
 
     let definitions: Value =
         serde_json::to_value(generator.definitions()).expect("schemas are valid JSON");

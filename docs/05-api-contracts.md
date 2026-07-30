@@ -218,3 +218,5 @@ and grows additively. HTTP mapping via RFC 9457 problem details.
 | `media.target_ambiguous` | Two or more players active and none named; the server never guesses (ADR-016) | 409 |
 | `media.player_gone` | Named player left the bus between snapshot and command; retryable | 409 |
 | `media.control_unsupported` | Player reports it cannot perform this control | 409 |
+| `timer.invalid_transition` | Verb illegal for the timer's state (snooze before it rang, cancel after) — FR-33 | 409 |
+| `timer.stale` | Timer changed between read and decision (fired, or another device answered); retryable after refresh | 409 |

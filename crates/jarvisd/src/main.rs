@@ -78,6 +78,9 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     // runs; the dispatcher only stops once those runs have drained.
     let serve_shutdown = CancellationToken::new();
     let dispatch_shutdown = CancellationToken::new();
+    // The timer scheduler is a tracked task (invariant 4): joined, bounded, on
+    // the shutdown path below rather than left to be killed mid-fire.
+    let mut timer_scheduler: Option<tokio::task::JoinHandle<()>> = None;
     spawn_signal_listener(serve_shutdown.clone());
 
     // The human-approval seam (F2.5), shared by the REST surface (resolve) and
@@ -232,6 +235,38 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         )
     });
 
+    // Timers / alarms / reminders (F3b.7, FR-33, ADR-023). Deliberately NOT
+    // gated on any external capability: the whole point is that a timer works
+    // offline, in degraded mode, and with no voice pipeline. The scheduler's
+    // first pass is the missed-alarm sweep — anything that came due while this
+    // process was stopped fires immediately with a "missed" notice.
+    //
+    // `SilentAnnouncer` is the M5 seam: voice replaces that one binding and
+    // nothing else here changes. The audible alert is deliberately NOT part of
+    // that seam (an alarm must sound with voice absent entirely).
+    let timer_api = if config.timers.enabled {
+        let service = Arc::new(jarvis_application::timers::TimerService::new(
+            Arc::new(jarvis_infra::timers::PgTimerStore::new(pool.clone())),
+            Arc::new(jarvis_adapters::timer_alert::CommandAlertPlayer::new(
+                config.timers.alert_command.clone(),
+                config.timers.alert_args.clone(),
+            )),
+            Arc::new(jarvis_adapters::timer_alert::SilentAnnouncer),
+            Arc::new(jarvisd::timers::TimerEncoder),
+            Arc::new(SystemClock),
+        ));
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let scheduler = tokio::spawn(jarvisd::timers::run_scheduler(
+            service.clone(),
+            wake.clone(),
+            serve_shutdown.clone(),
+        ));
+        timer_scheduler = Some(scheduler);
+        Some(jarvisd::timers::TimerApi::new(service, wake))
+    } else {
+        None
+    };
+
     let state = jarvisd::api::AppState::with_database(pool, auth);
     let app = jarvisd::api::router_with(
         state,
@@ -244,6 +279,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             artifacts: Some(artifacts),
             display: Some(display),
             media: media_api,
+            timers: timer_api,
             web_assets: config.server.web_assets.clone(),
         },
     )
@@ -274,6 +310,11 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     // them to checkpoint their terminal state, THEN stop the dispatcher so those
     // final events are still published.
     let _ = tokio::time::timeout(DRAIN_DEADLINE, engine.drain()).await;
+    if let Some(scheduler) = timer_scheduler {
+        // Bounded join: the scheduler is already cancelled by `serve_shutdown`;
+        // this only waits for the pass in flight to unwind.
+        let _ = tokio::time::timeout(DRAIN_DEADLINE, scheduler).await;
+    }
     dispatch_shutdown.cancel();
     let _ = tokio::time::timeout(DRAIN_DEADLINE, dispatcher_task).await;
 

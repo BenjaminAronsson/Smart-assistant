@@ -98,6 +98,15 @@ export type ContentBlock =
       [k: string]: unknown;
     };
 /**
+ * Wire mirror of `jarvis_domain::timers::TimerKind`, flattened: the
+ * kind-specific payload rides in [`TimerDto`]'s optional `durationSecs`/`note`
+ * so a client can switch on one string.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "TimerKindDto".
+ */
+export type TimerKindDto = "countdown" | "alarm" | "reminder";
+/**
  * A directive the server sends to the agent on the `display` channel. The
  * `type` discriminator is dotted-namespaced (`display.place_surface`), matching
  * the envelope convention; the agent routes on it.
@@ -198,6 +207,12 @@ export type DomainEvent =
       [k: string]: unknown;
     }
   | {
+      missed: boolean;
+      timer: TimerDto;
+      type: "timer.fired";
+      [k: string]: unknown;
+    }
+  | {
       approvalId: UlidString;
       outcome: ApprovalResolutionDto;
       runId: UlidString;
@@ -240,6 +255,14 @@ export type MessageRole = "user" | "assistant" | "system";
  */
 export type ProviderState = "healthy" | "degraded" | "unavailable";
 /**
+ * Wire mirror of `jarvis_domain::timers::TimerState`. Total projection (no `_`
+ * arm) so a new state forces a decision here rather than silently mapping.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "TimerStateDto".
+ */
+export type TimerStateDto = ("pending" | "snoozed" | "dismissed" | "cancelled") | "fired";
+/**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "ErrorCode".
  */
@@ -269,7 +292,9 @@ export type ErrorCode =
   | "media.nothing_playing"
   | "media.target_ambiguous"
   | "media.player_gone"
-  | "media.control_unsupported";
+  | "media.control_unsupported"
+  | "timer.invalid_transition"
+  | "timer.stale";
 /**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "ServiceStatus".
@@ -465,6 +490,33 @@ export interface CreateSessionRequest {
   [k: string]: unknown;
 }
 /**
+ * `POST /api/v1/timers`. Exactly one of `durationSecs` (a countdown) or
+ * `fireAt` (an alarm/reminder) must be given; `note` is required by — and only
+ * meaningful for — `reminder`.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "CreateTimerRequest".
+ */
+export interface CreateTimerRequest {
+  /**
+   * "…in ten minutes", relative to the server's clock at set time.
+   */
+  durationSecs?: number | null;
+  /**
+   * "…at seven", RFC 3339. Absolute so the server never has to guess a
+   * timezone or a "next Tuesday".
+   */
+  fireAt?: string | null;
+  kind: TimerKindDto;
+  /**
+   * Optional label. Omitted ⇒ the server uses the kind's default ("Timer",
+   * "Alarm", "Reminder") so every timer is enumerable and addressable.
+   */
+  name?: string | null;
+  note?: string | null;
+  [k: string]: unknown;
+}
+/**
  * Terminal outcome of a run (docs/02 §4). `detail` is a short human sentence,
  * never raw provider/driver text (docs/06 §5).
  *
@@ -518,6 +570,42 @@ export interface QuotaState {
    * reports one — the user sees *when* service returns (docs/03 §4).
    */
   resetAt?: string | null;
+  [k: string]: unknown;
+}
+/**
+ * One timer as the HUD renders it.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "TimerDto".
+ */
+export interface TimerDto {
+  /**
+   * The countdown's original span — present only for `countdown`, so the card
+   * can show "10 min" alongside the live remainder.
+   */
+  durationSecs?: number | null;
+  /**
+   * When it goes (or went) off, RFC 3339 UTC.
+   */
+  fireAt: string;
+  id: UlidString;
+  kind: TimerKindDto;
+  /**
+   * Human label ("pasta timer"), sanitized. Rendered as text.
+   */
+  name: string;
+  /**
+   * The reminder's spoken line ("call Mom") — present only for `reminder`.
+   */
+  note?: string | null;
+  /**
+   * Seconds left **at the moment this DTO was produced**. Absent when the
+   * timer is not armed (ringing or finished). The card ticks its own display
+   * down from here rather than polling the server — one value, then local
+   * arithmetic (docs/09 §5: no polling loop for something a clock can do).
+   */
+  remainingSecs?: number | null;
+  state: TimerStateDto;
   [k: string]: unknown;
 }
 /**
@@ -902,5 +990,52 @@ export interface TimelineResponse {
    * absent when the snapshot reaches the head.
    */
   nextSince?: number | null;
+  [k: string]: unknown;
+}
+/**
+ * `POST /api/v1/timers/{id}/action`.
+ *
+ * `action` is one of `cancel`, `dismiss`, `snooze`. There is deliberately **no
+ * `fire`**: firing is something the clock does, never something a request asks
+ * for — an unknown verb is a 400 and never reaches the store.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "TimerActionRequest".
+ */
+export interface TimerActionRequest {
+  action: string;
+  /**
+   * How long to push a ringing timer out by. Honoured by `snooze` only;
+   * omitted ⇒ the nine-minute default.
+   */
+  snoozeSecs?: number | null;
+  [k: string]: unknown;
+}
+/**
+ * The timer after the action was applied and audited, so the card re-renders
+ * without waiting for an event.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "TimerActionResponse".
+ */
+export interface TimerActionResponse {
+  timer: TimerDto;
+  [k: string]: unknown;
+}
+/**
+ * `GET /api/v1/timers` — everything outstanding, earliest first. Terminal
+ * timers are not listed: "what have I got set?" means the live ones.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "TimerListResponse".
+ */
+export interface TimerListResponse {
+  /**
+   * Server time when the list was taken, RFC 3339. The card uses it to
+   * correct for clock skew between the browser and the daemon instead of
+   * trusting `Date.now()`.
+   */
+  now: string;
+  timers: TimerDto[];
   [k: string]: unknown;
 }

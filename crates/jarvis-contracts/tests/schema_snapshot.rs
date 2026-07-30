@@ -38,6 +38,11 @@ const REQUIRED_DEFINITIONS: &[&str] = &[
     "MediaStateResponse",
     "MediaCommandRequest",
     "MediaCommandResponse",
+    "TimerDto",
+    "TimerListResponse",
+    "CreateTimerRequest",
+    "TimerActionRequest",
+    "TimerActionResponse",
 ];
 
 fn snapshot_path() -> std::path::PathBuf {
