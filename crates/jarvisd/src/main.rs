@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use jarvis_adapters::claude_cli::ClaudeCliModel;
 use jarvis_application::orchestrator::RunInput;
 use jarvis_application::ports::{MessageStore, RunStore};
@@ -232,6 +233,27 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         )
     });
 
+    // Local map serving (F3b.5, ADR-013): mounted ONLY when `[maps]
+    // pmtiles_path` names an archive that opens and validates. Absent ⇒ no map
+    // routes at all and the HUD takes the docs/12 §3 coverage fallback.
+    //
+    // A configured-but-broken archive is a config error, not a degraded mode:
+    // the operator asked for this file by name, so a wrong magic, a truncated
+    // download or an unsupported codec fails startup with a precise message
+    // (docs/09 §1) rather than surfacing as 503s on every tile.
+    let maps = match config.maps.archive_path() {
+        Some(path) => {
+            let archive = jarvisd::pmtiles::Archive::open(path)
+                .await
+                .with_context(|| format!("[maps].pmtiles_path {}", path.display()))?;
+            Some(jarvisd::maps::MapApi::new(
+                Arc::new(archive),
+                config.maps.attribution_override(),
+            ))
+        }
+        None => None,
+    };
+
     let state = jarvisd::api::AppState::with_database(pool, auth);
     let app = jarvisd::api::router_with(
         state,
@@ -244,6 +266,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             artifacts: Some(artifacts),
             display: Some(display),
             media: media_api,
+            maps,
             web_assets: config.server.web_assets.clone(),
         },
     )

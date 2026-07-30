@@ -16,6 +16,7 @@ pub mod envelope;
 pub mod errors;
 pub mod events;
 pub mod health;
+pub mod maps;
 pub mod media;
 pub mod messages;
 pub mod providers;

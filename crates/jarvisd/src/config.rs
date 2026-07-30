@@ -27,6 +27,56 @@ pub struct Config {
     pub storage: StorageConfig,
     #[serde(default)]
     pub display: DisplayConfig,
+    #[serde(default)]
+    pub maps: MapsConfig,
+}
+
+/// `[maps]` (ADR-013, docs/09 §1, docs/12 §3). The locally served PMTiles
+/// region extract.
+///
+/// Absent (or an empty path) ⇒ **no map endpoints are registered at all**, the
+/// same opt-in stance as `[integrations.*]`: a host without an extract has no
+/// local map surface rather than a broken one, and the HUD takes the documented
+/// coverage fallback (online raster, or a coordinates-only card offline).
+///
+/// The extract itself is produced out of band and is *not* in the repo. The
+/// documented default (docs/08 §6) is a downloaded regional extract, e.g.:
+///
+/// ```text
+/// pmtiles extract \
+///   https://r2-public.protomaps.com/protomaps-sample-datasets/protomaps_vector_planet_odbl_z10.pmtiles \
+///   /var/lib/jarvis/maps/region.pmtiles --bbox=13.0,52.3,13.8,52.7
+/// ```
+///
+/// `attribution` overrides what the archive declares. It cannot *remove*
+/// attribution: whatever is configured, the served string always names
+/// OpenStreetMap (docs/12 §3 — attribution is never hidden).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MapsConfig {
+    #[serde(default)]
+    pub pmtiles_path: Option<PathBuf>,
+    #[serde(default)]
+    pub attribution: Option<String>,
+}
+
+impl MapsConfig {
+    /// The configured archive path, or `None` when maps are not enabled. An
+    /// empty string is "not configured" (docs/09 §1 documents `pmtiles_path =
+    /// ""` as the off state), not a path to the current directory.
+    pub fn archive_path(&self) -> Option<&std::path::Path> {
+        self.pmtiles_path
+            .as_deref()
+            .filter(|p| !p.as_os_str().is_empty())
+    }
+
+    /// The operator's attribution override, if it says anything.
+    pub fn attribution_override(&self) -> Option<String> {
+        self.attribution
+            .as_ref()
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+    }
 }
 
 /// `[integrations.media]` (FR-22, docs/02 §11a, ADR-012, docs/09 §1). Local
@@ -280,6 +330,7 @@ impl Default for Config {
             location: LocationConfig::default(),
             storage: StorageConfig::default(),
             display: DisplayConfig::default(),
+            maps: MapsConfig::default(),
         }
     }
 }
@@ -318,6 +369,17 @@ impl Config {
              remote nodes exist (docs/06 §7)"
         );
         validate_secret_ref(&self.database.url_secret)?;
+        // A relative map path would resolve against whatever directory the
+        // service happens to start in — fail fast at config time rather than
+        // "no such file" at startup or, worse, a different file after a
+        // working-directory change.
+        if let Some(path) = self.maps.archive_path() {
+            anyhow::ensure!(
+                path.is_absolute(),
+                "[maps].pmtiles_path {} must be an absolute path",
+                path.display()
+            );
+        }
         Ok(())
     }
 
@@ -388,6 +450,47 @@ mod tests {
         assert_eq!(cli.workdir, PathBuf::from("/var/lib/jarvis/claude-work"));
         assert!(cli.reasoning_disable_builtin_tools);
         assert_eq!(cli.idle_timeout_secs, 60);
+    }
+
+    #[test]
+    fn maps_are_off_by_default_and_an_empty_path_stays_off() {
+        // The safe default: no archive ⇒ no map endpoints at all (F3b.5).
+        let config = Config::from_figment(Figment::new()).expect("defaults are valid");
+        assert!(config.maps.archive_path().is_none());
+        assert!(config.maps.attribution_override().is_none());
+
+        // docs/09 §1 documents `pmtiles_path = ""` as the off state — it must not
+        // read as a path to the working directory.
+        let config = Config::from_figment(
+            Figment::new().merge(Toml::string("[maps]\npmtiles_path = \"\"\n")),
+        )
+        .expect("an empty path is valid config");
+        assert!(config.maps.archive_path().is_none());
+    }
+
+    #[test]
+    fn a_relative_map_archive_path_is_rejected_at_startup() {
+        // A relative path would resolve against whatever directory the service
+        // started in — fail fast rather than serve a different file later.
+        let error = Config::from_figment(Figment::new().merge(Toml::string(
+            "[maps]\npmtiles_path = \"maps/region.pmtiles\"\n",
+        )))
+        .expect_err("a relative archive path must be refused");
+        assert!(
+            error.to_string().contains("absolute"),
+            "unexpected error: {error}"
+        );
+
+        let config = Config::from_figment(Figment::new().merge(Toml::string(
+            "[maps]\npmtiles_path = \"/var/lib/jarvis/maps/region.pmtiles\"\nattribution = \"  \"\n",
+        )))
+        .expect("an absolute archive path is valid");
+        assert_eq!(
+            config.maps.archive_path(),
+            Some(std::path::Path::new("/var/lib/jarvis/maps/region.pmtiles"))
+        );
+        // A blank override is no override — the archive/default attribution wins.
+        assert!(config.maps.attribution_override().is_none());
     }
 
     #[test]

@@ -12,6 +12,27 @@ bind = "127.0.0.1:8741"          # loopback only until M7 (docs/06 §7)
 url_secret = "env:JARVIS_DB_URL" # secret REFERENCE — never a literal URL here
 max_connections = 8
 
+[maps]
+# Local PMTiles region extract (ADR-013, docs/12 §3). Absent or empty => the map
+# endpoints are NOT registered and the HUD takes its coverage fallback; the map
+# never reaches a third-party tile service on its own.
+#
+# Cut an extract (docs/08 §6 default: a downloaded regional extract) with
+# go-pmtiles — it reads the remote archive over HTTP range requests, so only the
+# region you ask for is transferred (~4 MB for the box below):
+#
+#   pmtiles extract \
+#     https://r2-public.protomaps.com/protomaps-sample-datasets/protomaps_vector_planet_odbl_z10.pmtiles \
+#     /var/lib/jarvis/maps/region.pmtiles --bbox=13.0,52.3,13.8,52.7
+#
+# Must be an absolute path; a configured file that is missing, truncated or not
+# a v3 archive fails startup with a precise error rather than serving nothing.
+# pmtiles_path = "/var/lib/jarvis/maps/region.pmtiles"
+#
+# Optional attribution override. It can only ADD to the credit line — whatever is
+# configured, the served attribution always names OpenStreetMap (docs/12 §3).
+# attribution = "© OpenStreetMap contributors"
+
 [observability]
 # Collector is off by default (docs/09 §5). Uncomment while the compose
 # collector is running to ship spans:

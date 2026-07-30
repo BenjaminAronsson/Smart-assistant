@@ -1029,6 +1029,129 @@
         }
       ]
     },
+    "MapBoundsDto": {
+      "description": "A WGS84 bounding box in degrees, `min <= max` on both axes. As an archive's\ncoverage, it is the region the extract covers: outside it the client must\nfall back (docs/12 §3), and the server refuses those tiles either way.",
+      "properties": {
+        "maxLat": {
+          "format": "double",
+          "type": "number"
+        },
+        "maxLon": {
+          "format": "double",
+          "type": "number"
+        },
+        "minLat": {
+          "format": "double",
+          "type": "number"
+        },
+        "minLon": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "minLon",
+        "minLat",
+        "maxLon",
+        "maxLat"
+      ],
+      "type": "object"
+    },
+    "MapCenterDto": {
+      "description": "The archive's suggested opening view.",
+      "properties": {
+        "lat": {
+          "format": "double",
+          "type": "number"
+        },
+        "lon": {
+          "format": "double",
+          "type": "number"
+        },
+        "zoom": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "lon",
+        "lat",
+        "zoom"
+      ],
+      "type": "object"
+    },
+    "MapCoverageResponse": {
+      "description": "`GET /api/v1/map/coverage` — what the locally served archive covers.\n\nThe endpoint exists only when an archive is configured (`[maps]\npmtiles_path`); with none, the map routes are not registered at all and this\nis a 404, which the client reads as \"no local map, use the fallback\" —\nabsent rather than broken.",
+      "properties": {
+        "attribution": {
+          "description": "Mandatory, non-empty, plain text, and always names OpenStreetMap\n(docs/12 §3: attribution is never hidden).",
+          "type": "string"
+        },
+        "bounds": {
+          "$ref": "#/definitions/MapBoundsDto"
+        },
+        "center": {
+          "$ref": "#/definitions/MapCenterDto"
+        },
+        "maxZoom": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "minZoom": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "The archive's own name, when it declares one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tileFormat": {
+          "$ref": "#/definitions/MapTileFormatDto"
+        },
+        "tileUrlTemplate": {
+          "description": "Tile URL template with `{z}`/`{x}`/`{y}` placeholders, ready to hand to\nMapLibre as a source URL. Server-relative and same-origin: tiles are\nserved by `jarvisd`, so no map traffic leaves the machine (ADR-013).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bounds",
+        "minZoom",
+        "maxZoom",
+        "center",
+        "tileUrlTemplate",
+        "tileFormat",
+        "attribution"
+      ],
+      "type": "object"
+    },
+    "MapTileFormatDto": {
+      "description": "What the archive's tiles are, so the client picks a vector or raster source.",
+      "oneOf": [
+        {
+          "enum": [
+            "png",
+            "jpeg",
+            "webp",
+            "avif"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "mvt",
+          "description": "Mapbox Vector Tile — the ADR-013 production case (MapLibre GL vector source).",
+          "type": "string"
+        }
+      ]
+    },
     "MediaCommandRequest": {
       "description": "`POST /api/v1/media/command` — the owner-driven transport control behind the\nmedia bar (exit evidence #4).\n\n`command` is one of the closed transport verbs (`play`, `pause`,\n`play_pause`, `stop`, `next`, `previous`, `seek`, `set_volume`); unknown\nverbs are a 400, never forwarded. Omitting `player` targets the unambiguous\nactive player and fails cleanly (409) when the choice is ambiguous — the\nserver never picks one.",
       "properties": {

@@ -110,6 +110,10 @@ pub struct Wiring {
     pub artifacts: Option<crate::artifacts::ArtifactApi>,
     pub display: Option<crate::display::DisplayApi>,
     pub media: Option<crate::media::MediaApi>,
+    /// Local PMTiles map serving (F3b.5, ADR-013). `None` when no archive is
+    /// configured — the map routes are then absent, not empty (the client reads
+    /// a 404 on coverage as "no local map" and takes the docs/12 §3 fallback).
+    pub maps: Option<crate::maps::MapApi>,
     pub web_assets: Option<std::path::PathBuf>,
 }
 
@@ -128,6 +132,7 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
         artifacts,
         display,
         media,
+        maps,
         web_assets,
     } = wiring;
     // Health and pair are unauthenticated by design but loopback-only:
@@ -214,6 +219,14 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
                         "/api/v1/media/command",
                         axum::routing::post(crate::media::post_command),
                     )
+                    .with_state(api),
+            );
+        }
+        if let Some(api) = maps {
+            protected = protected.merge(
+                Router::new()
+                    .route("/api/v1/map/coverage", get(crate::maps::get_coverage))
+                    .route("/api/v1/map/tiles/{z}/{x}/{y}", get(crate::maps::get_tile))
                     .with_state(api),
             );
         }
