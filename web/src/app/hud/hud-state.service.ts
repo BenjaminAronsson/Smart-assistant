@@ -1,5 +1,24 @@
 import { Injectable, computed, signal } from '@angular/core';
 import type { HudCardDto } from '../../generated/api-types';
+import { hudCardId } from './cards/card-id';
+import { type BackgroundKind, type GlassTokens, glassTokensFor } from './backgrounds';
+
+/** The shelf holds at most 4 panels; the oldest drops (docs/12 §4). */
+const MAX_SHELF = 4;
+
+/** A canvas set collapsed into a labeled shelf chip (docs/12 §4). */
+export interface ShelvedPanel {
+  id: string;
+  /** Chip label, e.g. "Ramen places". */
+  label: string;
+  cards: HudCardDto[];
+  shelvedAt: number;
+}
+
+/** Approvals are exempt from shelving, clear-all and TTL (docs/12 §4). */
+export function isApproval(card: HudCardDto): boolean {
+  return card.type === 'card.approval';
+}
 
 /**
  * Presence states (docs/12 §2.1). Exhaustive on purpose — a new state needs a
@@ -80,6 +99,17 @@ export class HudStateService {
    * F3b.4 — this service only holds the current list.
    */
   private readonly cardsSignal = signal<HudCardDto[]>([]);
+  /** Shelved panel sets, oldest first (docs/12 §4, F3b.4). */
+  private readonly shelfSignal = signal<ShelvedPanel[]>([]);
+  private readonly panelTtlHoursSignal = signal(2);
+  private readonly backgroundSignal = signal<BackgroundKind>('none');
+  private readonly backgroundAssetSignal = signal<string | null>(null);
+
+  /** When each card first appeared, for the silent TTL sweep. */
+  private readonly seenAt = new Map<string, number>();
+  private shelfSeq = 0;
+  /** Label for whatever is currently on the canvas, used when a restore swaps. */
+  private lastCanvasLabel = 'Previous';
 
   private revealTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -87,6 +117,13 @@ export class HudStateService {
   readonly caption = this.captionSignal.asReadonly();
   readonly opsOpen = this.opsOpenSignal.asReadonly();
   readonly cards = this.cardsSignal.asReadonly();
+  readonly shelf = this.shelfSignal.asReadonly();
+  readonly background = this.backgroundSignal.asReadonly();
+  readonly backgroundAsset = this.backgroundAssetSignal.asReadonly();
+
+  /** The `--glass-*` set for the active background (docs/12 §5) — one switch
+   * for the whole system, so no component hand-tunes for a wallpaper. */
+  readonly glass = computed<GlassTokens>(() => glassTokensFor(this.backgroundSignal()));
 
   /** The hue token the orb (and only the orb) paints itself with. */
   readonly hue = computed(() => PRESENCE_HUE[this.presenceSignal()]);
@@ -161,15 +198,162 @@ export class HudStateService {
     this.batterySaverSignal.set(saving);
   }
 
-  /** Replace the canvas outright — a new topic shelves the old set (F3b.4). */
+  /**
+   * Replace the canvas — **pending approvals survive** (docs/12 §4).
+   *
+   * A bulk replace that dropped an undecided approval would silently discard a
+   * decision the human still owes, so approvals already on the canvas are
+   * carried over unless the new set supersedes them by id. This is the same
+   * exemption `newQuery` and `clearAll` honour; keeping it here means no
+   * producer can lose an approval by accident.
+   */
   setCards(cards: HudCardDto[]): void {
-    this.cardsSignal.set(cards);
+    const incomingIds = new Set(cards.map(hudCardId));
+    const survivingApprovals = this.cardsSignal().filter(
+      (card) => isApproval(card) && !incomingIds.has(hudCardId(card)),
+    );
+    const next = [...survivingApprovals, ...cards];
+    this.cardsSignal.set(next);
+    this.touchCards(next);
   }
 
   /** Extend the live canvas — a continuation appends, it never shelves (FR-24,
    * docs/12 §2.5; the continuation-vs-new-topic router lands in F3b.6). */
   appendCards(cards: HudCardDto[]): void {
     this.cardsSignal.update((existing) => [...existing, ...cards]);
+    this.touchCards(cards);
+  }
+
+  // --- panel lifecycle (FR-24, docs/12 §4) --------------------------------
+
+  /**
+   * A new **topic** arrives: the current canvas collapses into a labeled shelf
+   * chip and the canvas starts empty (docs/12 §4).
+   *
+   * Two rules that are easy to get wrong and are therefore tested: pending
+   * **approval cards are exempt** — they stay on the canvas and are never
+   * shelved, because they are the human's job and a new question does not
+   * retract them — and the shelf holds **at most 4**, oldest dropped.
+   *
+   * A continuation must call [`appendCards`] instead; deciding which is which is
+   * the router's job in F3b.6, not this service's.
+   */
+  newQuery(label: string, now = Date.now()): void {
+    const current = this.cardsSignal();
+    const approvals = current.filter(isApproval);
+    const shelvable = current.filter((card) => !isApproval(card));
+
+    if (shelvable.length > 0) {
+      const entry: ShelvedPanel = {
+        id: `shelf-${now}-${this.shelfSeq++}`,
+        label,
+        cards: shelvable,
+        shelvedAt: now,
+      };
+      this.shelfSignal.update((shelf) => [...shelf, entry].slice(-MAX_SHELF));
+    }
+    // Approvals survive the topic change; everything else is now on the shelf.
+    this.cardsSignal.set(approvals);
+  }
+
+  /**
+   * Swap a shelved set back onto the canvas, shelving what was there (docs/12
+   * §4). Pending approvals stay put through the swap, same as [`newQuery`].
+   */
+  restore(shelfId: string, now = Date.now()): void {
+    const entry = this.shelfSignal().find((panel) => panel.id === shelfId);
+    if (!entry) {
+      return;
+    }
+    const current = this.cardsSignal();
+    const approvals = current.filter(isApproval);
+    const displaced = current.filter((card) => !isApproval(card));
+
+    this.shelfSignal.update((shelf) => {
+      const rest = shelf.filter((panel) => panel.id !== shelfId);
+      if (displaced.length === 0) {
+        return rest;
+      }
+      const swapped: ShelvedPanel = {
+        id: `shelf-${now}-${this.shelfSeq++}`,
+        label: entry.label === this.lastCanvasLabel ? 'Previous' : this.lastCanvasLabel,
+        cards: displaced,
+        shelvedAt: now,
+      };
+      return [...rest, swapped].slice(-MAX_SHELF);
+    });
+    this.lastCanvasLabel = entry.label;
+    this.cardsSignal.set([...approvals, ...entry.cards]);
+    this.touchCards(entry.cards, now);
+  }
+
+  /** Dismiss one card from the canvas (the per-card `×`, docs/12 §4). */
+  dismissCard(cardId: string): void {
+    this.cardsSignal.update((cards) => cards.filter((card) => hudCardId(card) !== cardId));
+  }
+
+  /** Dismiss one shelf chip (its `×`, docs/12 §4). */
+  dismissShelf(shelfId: string): void {
+    this.shelfSignal.update((shelf) => shelf.filter((panel) => panel.id !== shelfId));
+  }
+
+  /**
+   * "Clear all" (docs/12 §4) — canvas and shelf, **except pending approvals**,
+   * which a bulk action must not silently drop.
+   */
+  clearAll(): void {
+    this.cardsSignal.update((cards) => cards.filter(isApproval));
+    this.shelfSignal.set([]);
+  }
+
+  /**
+   * Silent TTL expiry (docs/12 §4: "expiry is silent — no animation, no
+   * notification"). Displayed and shelved panels older than `panel_ttl_hours`
+   * (docs/09 §1, default 2) simply stop being there. Approvals are exempt: they
+   * persist until decided or until their own grant expires.
+   *
+   * Takes `now` so the sweep is deterministic in tests; the view drives it on a
+   * timer.
+   */
+  sweepExpired(now = Date.now()): void {
+    const cutoff = now - this.ttlMs();
+    this.cardsSignal.update((cards) =>
+      cards.filter((card) => isApproval(card) || (this.seenAt.get(hudCardId(card)) ?? now) > cutoff),
+    );
+    this.shelfSignal.update((shelf) => shelf.filter((panel) => panel.shelvedAt > cutoff));
+  }
+
+  /** `[ui] panel_ttl_hours` (docs/09 §1, default 2). */
+  setPanelTtlHours(hours: number): void {
+    if (Number.isFinite(hours) && hours > 0) {
+      this.panelTtlHoursSignal.set(hours);
+    }
+  }
+
+  private ttlMs(): number {
+    return this.panelTtlHoursSignal() * 60 * 60 * 1000;
+  }
+
+  /** Remember when each card first appeared, for the TTL sweep. */
+  private touchCards(cards: HudCardDto[], now = Date.now()): void {
+    for (const card of cards) {
+      const id = hudCardId(card);
+      if (!this.seenAt.has(id)) {
+        this.seenAt.set(id, now);
+      }
+    }
+  }
+
+  // --- background (FR-23, docs/12 §5) -------------------------------------
+
+  /**
+   * Switch the background. The `--glass-*` token set moves with it as a unit —
+   * that is the whole point of the token system (docs/12 §5); no component
+   * adjusts itself for a wallpaper.
+   */
+  setBackground(kind: BackgroundKind, photoAsset?: string): void {
+    this.backgroundSignal.set(kind);
+    this.backgroundAssetSignal.set(photoAsset ?? null);
   }
 
   /** Stop the reveal timer — called on teardown so no timer outlives the view. */

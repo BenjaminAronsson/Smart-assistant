@@ -1,4 +1,11 @@
 <section class="hud" aria-label="Jarvis HUD">
+  <!-- Background + scrim (FR-23, docs/12 §5). Any text over an unpredictable
+       background sits on glass or scrim — never raw. -->
+  @if (hud.background() !== 'none') {
+    <div class="wallpaper" aria-hidden="true" [style.background-image]="wallpaperUrl()"></div>
+    <div class="scrim" aria-hidden="true" [style.background]="hud.glass().scrim"></div>
+  }
+
   <header class="presence">
     <app-presence-orb
       [state]="hud.presence()"
@@ -24,6 +31,29 @@
     </button>
   </header>
 
+  <!-- Shelf row (FR-24, docs/12 §4): a new topic collapses the canvas into a
+       labeled chip. Max 4, oldest drops. Every action is a real button, so
+       dismissal never requires hover (docs/12 §8). -->
+  @if (hud.shelf().length > 0 || hud.cards().length > 0) {
+    <div class="shelf" role="group" aria-label="Shelved panels">
+      @for (panel of hud.shelf(); track panel.id) {
+        <span class="chip">
+          <span class="chip-label">Earlier: {{ panel.label }}</span>
+          <button type="button" class="chip-action" (click)="hud.restore(panel.id)">Restore</button>
+          <button
+            type="button"
+            class="chip-action chip-dismiss"
+            [attr.aria-label]="'Dismiss ' + panel.label"
+            (click)="hud.dismissShelf(panel.id)"
+          >
+            ×
+          </button>
+        </span>
+      }
+      <button type="button" class="clear-all" (click)="hud.clearAll()">Clear all</button>
+    </div>
+  }
+
   <!-- Materialization canvas: registered card types only (F3b.2), never
        model-authored layout or HTML. -->
   <div class="canvas" aria-label="Results" role="region">
@@ -31,7 +61,21 @@
       <p class="canvas-empty">Nothing on the canvas yet.</p>
     } @else {
       @for (card of hud.cards(); track cardKey(card); let i = $index) {
-        <app-hud-card [card]="card" [index]="i" [reducedMotion]="hud.reducedMotion()" />
+        <div class="canvas-slot">
+          <app-hud-card [card]="card" [index]="i" [reducedMotion]="hud.reducedMotion()" />
+          <!-- Approvals are exempt from lifecycle actions: they persist until
+               decided (docs/12 §4), so they carry no dismiss affordance. -->
+          @if (!isApproval(card)) {
+            <button
+              type="button"
+              class="card-dismiss"
+              [attr.aria-label]="'Dismiss card ' + (i + 1)"
+              (click)="hud.dismissCard(cardKey(card))"
+            >
+              ×
+            </button>
+          }
+        </div>
       }
     }
   </div>

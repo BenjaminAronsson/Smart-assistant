@@ -102,3 +102,103 @@
     animation-duration: 1ms;
   }
 }
+
+/* --- background + scrim (FR-23, docs/12 §5) ------------------------------ */
+
+.hud {
+  position: relative;
+  /* The glass token set for the active background is applied here as a unit,
+     so every glass surface inside the HUD moves together (docs/12 §5). */
+  isolation: isolate;
+}
+
+.wallpaper,
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.wallpaper {
+  background-size: cover;
+  background-position: center;
+}
+
+/* --- shelf row (FR-24, docs/12 §4) --------------------------------------- */
+
+.shelf {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1vmin;
+  align-items: center;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.8ch;
+  padding: 0.6vmin 1.2vmin;
+  border-radius: 1vmin;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  font-size: clamp(11px, 1.5vmin, 14px);
+}
+
+.chip-label {
+  color: var(--ink-dim);
+}
+
+.chip-action,
+.clear-all {
+  font: inherit;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  padding: 0.2vmin 0.6vmin;
+  border-radius: 0.6vmin;
+  text-decoration: underline;
+}
+
+.clear-all {
+  margin-inline-start: auto;
+  color: var(--ink-dim);
+}
+
+/* --- per-card dismissal (docs/12 §4/§8) ---------------------------------- */
+
+.canvas-slot {
+  position: relative;
+}
+
+/* Operable without hover: the × is always in the tab order and becomes visible
+   on hover OR focus-within, so keyboard users are never locked out. */
+.card-dismiss {
+  position: absolute;
+  inset-block-start: 0.6vmin;
+  inset-inline-end: 0.6vmin;
+  inline-size: 2.4vmin;
+  min-inline-size: 22px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  color: var(--ink);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 160ms ease-out;
+}
+
+.canvas-slot:hover .card-dismiss,
+.canvas-slot:focus-within .card-dismiss,
+.card-dismiss:focus-visible {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card-dismiss {
+    transition-duration: 1ms;
+  }
+}

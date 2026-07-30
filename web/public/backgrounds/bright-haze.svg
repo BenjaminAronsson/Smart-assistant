@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Bright haze wallpaper">
+  <!-- Worst case for LIGHT glass: a near-white field, where a translucent white
+       panel almost disappears into the background (docs/12 §5/§9). Bundled as
+       SVG so it scales to any display and needs no network. -->
+  <defs>
+    <radialGradient id="haze" cx="30%" cy="25%" r="85%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="55%" stop-color="#fbfaf6" />
+      <stop offset="100%" stop-color="#eef1f4" />
+    </radialGradient>
+  </defs>
+  <rect width="1600" height="900" fill="url(#haze)" />
+  <g fill="#ffffff" opacity="0.9">
+    <ellipse cx="1180" cy="240" rx="360" ry="200" />
+    <ellipse cx="420" cy="700" rx="420" ry="230" />
+  </g>
+</svg>

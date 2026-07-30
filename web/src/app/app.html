@@ -1,7 +1,13 @@
 <main class="shell">
-  <!-- Front face: the HUD (docs/12 §1). No chat transcript here. -->
+  <!-- Front face: the HUD (docs/12 §1). No chat transcript here.
+       HUD-surface routes (the ArtifactCanvas, F3b.3) render *on* the face, so
+       an artifact opens where the canvas materializes rather than needing the
+       operator layer; ops-surface routes render inside it (below). -->
   @if (!hud.opsOpen()) {
     <app-hud />
+    @if (routedSurface() === 'hud') {
+      <div class="routed-surface"><router-outlet></router-outlet></div>
+    }
   }
 
   <!-- Ops layer (Ctrl+. or the orb): the M0/M1 operator surfaces, reused as-is —
@@ -16,8 +22,11 @@
         </button>
       </div>
 
-      <!-- Router outlet for conversation view (F1.8) -->
-      <router-outlet></router-outlet>
+      <!-- Ops-surface routes: the conversation/timeline view (F1.8), whose
+           transcript belongs here rather than on the HUD face (docs/12 §1). -->
+      @if (routedSurface() !== 'hud') {
+        <router-outlet></router-outlet>
+      }
 
       <!-- Shell UI (sessions list, pairing) -->
       <div class="shell-ui">

@@ -9,7 +9,8 @@ import {
   effect,
   ChangeDetectionStrategy,
 } from '@angular/core';
-import { RouterLink, RouterOutlet } from '@angular/router';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { NavigationEnd, Router, RouterLink, RouterOutlet } from '@angular/router';
 import type { HealthResponse, SessionDto } from '../generated/api-types';
 import { ApiService } from './api.service';
 import { Hud } from './hud/hud';
@@ -41,6 +42,7 @@ export class App implements OnInit, OnDestroy {
   private readonly api = inject(ApiService);
   protected readonly media = inject(MediaService);
   protected readonly hud = inject(HudStateService);
+  private readonly router = inject(Router);
 
   protected readonly title = signal('Jarvis');
   protected readonly health = signal<HealthResponse | null>(null);
@@ -49,7 +51,32 @@ export class App implements OnInit, OnDestroy {
   protected readonly error = signal<string | null>(null);
   protected readonly newSessionTitle = signal('');
 
+  /**
+   * Which layer the active route belongs to (`data.surface`, see `app.routes`).
+   * `null` when no route is active — the bare HUD face.
+   */
+  protected readonly routedSurface = signal<'hud' | 'ops' | null>(null);
+
   constructor() {
+    // Track the deepest activated route's surface so the outlet renders in the
+    // right layer. An ops-surface route also opens the layer: navigating to a
+    // conversation should show it, not leave it hidden behind Ctrl+.
+    this.router.events.pipe(takeUntilDestroyed()).subscribe((event) => {
+      if (!(event instanceof NavigationEnd)) {
+        return;
+      }
+      let route = this.router.routerState.root;
+      while (route.firstChild) {
+        route = route.firstChild;
+      }
+      const surface = route.snapshot.data['surface'];
+      const resolved = surface === 'hud' ? 'hud' : surface === 'ops' ? 'ops' : null;
+      this.routedSurface.set(resolved);
+      if (resolved === 'ops') {
+        this.hud.setOpsOpen(true);
+      }
+    });
+
     // Presence is derived, never set by hand: an unreachable or degraded daemon
     // is a HUD state (docs/12 §2.1), not just a line of text in the ops layer.
     // Run-driven states (listening/speaking/tool/waiting) arrive with the HUD's
