@@ -1,0 +1,19 @@
+<button
+  type="button"
+  class="orb"
+  [attr.aria-label]="'Jarvis: ' + label() + '. Open the operator layer.'"
+  (click)="onActivate()"
+>
+  <span class="ring ring-outer" aria-hidden="true"></span>
+  <span class="ring ring-inner" aria-hidden="true"></span>
+  <span class="core" aria-hidden="true">
+    <!-- Listening: waveform bars. Speaking/thinking: two counter-orbiting sparks. -->
+    <span class="bars">
+      <i></i><i></i><i></i>
+    </span>
+    <span class="spark spark-a"></span>
+    <span class="spark spark-b"></span>
+  </span>
+</button>
+<!-- State changes are announced by name, never by colour or motion alone. -->
+<span class="sr-only" role="status">{{ label() }}</span>

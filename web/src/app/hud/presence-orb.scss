@@ -1,0 +1,222 @@
+/* Presence orb (docs/12 §2.1/§6/§7). Sizes are vmin-based clamps so the orb
+ * holds from a 1080p laptop to a 4K TV to a portrait phone; every motion here is
+ * ambient and therefore gated on `.motion-still` and `prefers-reduced-motion`. */
+
+:host {
+  display: inline-flex;
+  align-items: center;
+  --spin: 12s;
+}
+
+.orb {
+  position: relative;
+  inline-size: var(--orb-size);
+  block-size: var(--orb-size);
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  flex: none;
+}
+
+.ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 0.28vmin solid color-mix(in srgb, var(--hue) 70%, transparent);
+  animation: spin var(--spin) linear infinite;
+}
+
+.ring-inner {
+  inset: 14%;
+  border-style: dashed;
+  animation-direction: reverse;
+  animation-duration: calc(var(--spin) * 0.7);
+}
+
+.core {
+  position: absolute;
+  inset: 26%;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--hue) 22%, var(--glass-bg));
+  backdrop-filter: blur(var(--glass-blur));
+  box-shadow: var(--glass-shadow);
+  display: grid;
+  place-items: center;
+  animation: breathe 3s ease-in-out infinite;
+}
+
+/* --- state signatures ---------------------------------------------------- */
+
+.bars,
+.spark {
+  display: none;
+}
+
+:host(.state-listening) .bars {
+  display: flex;
+  gap: 0.4vmin;
+  align-items: center;
+  block-size: 45%;
+}
+
+.bars i {
+  inline-size: 0.4vmin;
+  block-size: 100%;
+  background: var(--hue);
+  border-radius: 0.2vmin;
+  animation: wave 900ms ease-in-out infinite;
+}
+
+.bars i:nth-child(2) {
+  animation-delay: 150ms;
+}
+
+.bars i:nth-child(3) {
+  animation-delay: 300ms;
+}
+
+:host(.state-speaking) .spark,
+:host(.state-tool) .spark {
+  display: block;
+  position: absolute;
+  inline-size: 0.7vmin;
+  block-size: 0.7vmin;
+  border-radius: 50%;
+  background: var(--hue);
+  animation: orbit 1.6s linear infinite;
+}
+
+:host(.state-speaking) .spark-b,
+:host(.state-tool) .spark-b {
+  animation-direction: reverse;
+  opacity: 0.6;
+}
+
+/* Tool running: progress arc sweep on the outer ring. */
+:host(.state-tool) .ring-outer {
+  border-top-color: transparent;
+  border-right-color: transparent;
+  animation-duration: 1.2s;
+}
+
+/* Waiting on you: urgency pulse. Amber arrives only via the hue token. */
+:host(.state-waiting) .ring-outer {
+  animation: urgency 1.1s ease-in-out infinite;
+}
+
+/* Done: a single bloom, then still. Error: one shake, then a static ring. */
+:host(.state-done) .core {
+  animation: bloom 700ms ease-out 1;
+}
+
+:host(.state-error) .orb {
+  animation: shake 480ms ease-in-out 1;
+}
+
+:host(.state-error) .ring,
+:host(.state-degraded) .ring {
+  animation-play-state: paused;
+}
+
+/* Degraded: rings slow right down, desaturate, dashed. */
+:host(.state-degraded) {
+  --spin: 60s;
+}
+
+:host(.state-degraded) .ring {
+  border-style: dashed;
+  filter: saturate(0.25);
+  animation-play-state: running;
+}
+
+/* --- motion & power policy (docs/12 §6) ---------------------------------- */
+
+:host(.motion-still) .ring,
+:host(.motion-still) .core,
+:host(.motion-still) .bars i,
+:host(.motion-still) .spark {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ring,
+  .core,
+  .bars i,
+  .spark,
+  .orb {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+}
+
+@keyframes wave {
+  0%,
+  100% {
+    transform: scaleY(0.4);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes orbit {
+  from {
+    transform: rotate(0deg) translateX(1.6vmin);
+  }
+  to {
+    transform: rotate(360deg) translateX(1.6vmin);
+  }
+}
+
+@keyframes urgency {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--hue) 55%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 0.9vmin color-mix(in srgb, var(--hue) 0%, transparent);
+  }
+}
+
+@keyframes bloom {
+  0% {
+    transform: scale(1);
+  }
+  60% {
+    transform: scale(1.35);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-0.6vmin);
+  }
+  75% {
+    transform: translateX(0.6vmin);
+  }
+}
