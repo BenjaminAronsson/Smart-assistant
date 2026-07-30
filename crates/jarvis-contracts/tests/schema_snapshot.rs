@@ -38,6 +38,8 @@ const REQUIRED_DEFINITIONS: &[&str] = &[
     "MediaStateResponse",
     "MediaCommandRequest",
     "MediaCommandResponse",
+    "MapCoverageResponse",
+    "MapBoundsDto",
 ];
 
 fn snapshot_path() -> std::path::PathBuf {

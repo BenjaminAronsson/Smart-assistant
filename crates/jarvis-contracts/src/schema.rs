@@ -73,6 +73,11 @@ pub fn export() -> Value {
     generator.subschema_for::<crate::media::MediaStateResponse>();
     generator.subschema_for::<crate::media::MediaCommandRequest>();
     generator.subschema_for::<crate::media::MediaCommandResponse>();
+    // Map surface (F3b.5, FR-25, ADR-013). Coverage is a REST-only read the map
+    // card makes before it draws anything — it rides in no event, so it must be
+    // its own root. `MapBoundsDto` comes along by reference and is a named type
+    // the card uses on its own (in-region vs out-of-region, docs/12 §3).
+    generator.subschema_for::<crate::maps::MapCoverageResponse>();
 
     let definitions: Value =
         serde_json::to_value(generator.definitions()).expect("schemas are valid JSON");

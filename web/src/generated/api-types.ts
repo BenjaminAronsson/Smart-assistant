@@ -276,6 +276,13 @@ export type ErrorCode =
  */
 export type ServiceStatus = "ok" | "degraded";
 /**
+ * What the archive's tiles are, so the client picks a vector or raster source.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MapTileFormatDto".
+ */
+export type MapTileFormatDto = ("png" | "jpeg" | "webp" | "avif") | "mvt";
+/**
  * Wire mirror of `jarvis_domain::media::PlaybackStatus`.
  *
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
@@ -568,6 +575,67 @@ export interface HealthResponse {
    * jarvisd semver, for support/diagnostics.
    */
   version: string;
+  [k: string]: unknown;
+}
+/**
+ * A WGS84 bounding box in degrees, `min <= max` on both axes. As an archive's
+ * coverage, it is the region the extract covers: outside it the client must
+ * fall back (docs/12 §3), and the server refuses those tiles either way.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MapBoundsDto".
+ */
+export interface MapBoundsDto {
+  maxLat: number;
+  maxLon: number;
+  minLat: number;
+  minLon: number;
+  [k: string]: unknown;
+}
+/**
+ * The archive's suggested opening view.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MapCenterDto".
+ */
+export interface MapCenterDto {
+  lat: number;
+  lon: number;
+  zoom: number;
+  [k: string]: unknown;
+}
+/**
+ * `GET /api/v1/map/coverage` — what the locally served archive covers.
+ *
+ * The endpoint exists only when an archive is configured (`[maps]
+ * pmtiles_path`); with none, the map routes are not registered at all and this
+ * is a 404, which the client reads as "no local map, use the fallback" —
+ * absent rather than broken.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MapCoverageResponse".
+ */
+export interface MapCoverageResponse {
+  /**
+   * Mandatory, non-empty, plain text, and always names OpenStreetMap
+   * (docs/12 §3: attribution is never hidden).
+   */
+  attribution: string;
+  bounds: MapBoundsDto;
+  center: MapCenterDto;
+  maxZoom: number;
+  minZoom: number;
+  /**
+   * The archive's own name, when it declares one.
+   */
+  name?: string | null;
+  tileFormat: MapTileFormatDto;
+  /**
+   * Tile URL template with `{z}`/`{x}`/`{y}` placeholders, ready to hand to
+   * MapLibre as a source URL. Server-relative and same-origin: tiles are
+   * served by `jarvisd`, so no map traffic leaves the machine (ADR-013).
+   */
+  tileUrlTemplate: string;
   [k: string]: unknown;
 }
 /**

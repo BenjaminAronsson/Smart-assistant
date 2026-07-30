@@ -18,6 +18,8 @@
 | `GET /api/v1/artifacts/{id}/versions` | FR-08 | List versions + provenance. |
 | `GET /api/v1/artifacts/{id}/versions/{version}/blob` | FR-08 | Download a version's bytes; content-addressed `ETag`, `nosniff` + `attachment` (served, never rendered inline). |
 | `POST /api/v1/artifacts/{id}/open` | FR-09/10 | Request rendering on a selected display. |
+| `GET /api/v1/map/coverage` | FR-25 | Locally served PMTiles extract: bounds, zoom range, centre, tile-URL template, mandatory OSM attribution. Absent (404) when no archive is configured — the card then takes the coverage fallback (docs/12 §3). |
+| `GET /api/v1/map/tiles/{z}/{x}/{y}` | FR-25 | One tile from the local extract, served as stored (`nosniff`, strong `ETag`). Outside the archive's bbox/zoom ⇒ 404 (refused, never approximated); in-region but empty ⇒ 204. |
 | `GET /api/v1/tools` | FR-04 | Curated tool catalogue + grants. |
 | `GET /api/v1/memories?layer=&query=&cursor=` | FR-16 | Review memory items with provenance. |
 | `PATCH /api/v1/memories/{id}` | FR-16 | Edit text, pin, set retention. |

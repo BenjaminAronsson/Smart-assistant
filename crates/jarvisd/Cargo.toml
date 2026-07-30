@@ -16,6 +16,10 @@ jarvis-contracts.workspace = true
 jarvis-infra.workspace = true
 jarvis-adapters.workspace = true
 anyhow.workspace = true
+# Typed errors for the PMTiles reader (F3b.5): parsing an untrusted archive
+# needs a real error enum, not anyhow strings, so the HTTP layer can map each
+# failure to the right status without matching on text.
+thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 async-trait = "0.1"
@@ -28,6 +32,11 @@ tower-http = { version = "0.6", features = ["trace", "fs"] }
 figment = { version = "0.10", features = ["toml", "env"] }
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls"] }
 rand = "0.9"
+# PMTiles directories and metadata are gzip-encoded inside the archive (F3b.5,
+# ADR-013). Pure-Rust inflate (miniz_oxide) — no C toolchain, no TLS stack, and
+# only the *directory* pages are ever decoded: tile bodies are forwarded to the
+# browser exactly as stored.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 sha2 = "0.10"
 hex = "0.4"
 ulid = "1"
@@ -41,6 +50,9 @@ opentelemetry-otlp = { version = "0.30", features = ["grpc-tonic"] }
 
 [dev-dependencies]
 http-body-util = "0.1"
+# The map tests build a synthetic PMTiles archive byte-for-byte (no network, no
+# committed binary fixture), which means gzipping its directories.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 # FakeModel + fake ports for the gateway integration tests (never in the binary).
 jarvis-application = { workspace = true, features = ["fixtures"] }
 # `#[sqlx::test]` throwaway DBs for the end-to-end streaming/resync test; the
