@@ -139,5 +139,8 @@ jobs:
         run: npm ci && npm run build
       - name: session round-trip smoke (exit evidence)
         run: bash infra/ci/smoke.sh
-      - name: golden traces (harness slot; scenarios land M1)
+      # Traces 1-6 are pure application-layer suites; trace 7 and the M3a
+      # acceptance scenarios (F3a.8) need this job's compose Postgres plus node
+      # and git for the real coding worker.
+      - name: golden traces 1-7 + M3a acceptance scenarios
         run: cargo xtask golden
