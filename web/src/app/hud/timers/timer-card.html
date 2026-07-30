@@ -1,0 +1,42 @@
+<article class="card" [attr.aria-label]="status()">
+  <header class="head">
+    <h3 class="name">{{ timer().name }}</h3>
+    <span class="kind">{{ timer().kind }}</span>
+  </header>
+
+  @if (missed()) {
+    <!-- ADR-023: a timer that came due while Jarvis was not running says so.
+         Never dressed up as a fresh ring. -->
+    <p class="missed">Missed while offline</p>
+  }
+
+  @if (countdown(); as left) {
+    <!-- tabular-nums so the digits do not jitter as they tick. -->
+    <p class="countdown" aria-hidden="true">{{ left }}</p>
+  } @else if (ringing()) {
+    <p class="ringing" aria-hidden="true">Time's up</p>
+  }
+
+  @if (timer().note; as note) {
+    <p class="note">{{ note }}</p>
+  }
+
+  <!-- The whole meaning of the card in words: what a screen reader gets, and
+       what is announced when it starts ringing (docs/12 §8). -->
+  <p class="sr-only" aria-live="polite">{{ status() }}</p>
+
+  <footer class="actions">
+    @if (ringing()) {
+      <button type="button" class="action primary" [disabled]="pending()" (click)="onDismiss()">
+        Dismiss
+      </button>
+      <button type="button" class="action" [disabled]="pending()" (click)="onSnooze()">
+        Snooze
+      </button>
+    } @else if (armed()) {
+      <button type="button" class="action" [disabled]="pending()" (click)="onCancel()">
+        Cancel
+      </button>
+    }
+  </footer>
+</article>

@@ -310,6 +310,47 @@
       },
       "type": "object"
     },
+    "CreateTimerRequest": {
+      "description": "`POST /api/v1/timers`. Exactly one of `durationSecs` (a countdown) or\n`fireAt` (an alarm/reminder) must be given; `note` is required by — and only\nmeaningful for — `reminder`.",
+      "properties": {
+        "durationSecs": {
+          "description": "\"…in ten minutes\", relative to the server's clock at set time.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "fireAt": {
+          "description": "\"…at seven\", RFC 3339. Absolute so the server never has to guess a\ntimezone or a \"next Tuesday\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/TimerKindDto"
+        },
+        "name": {
+          "description": "Optional label. Omitted ⇒ the server uses the kind's default (\"Timer\",\n\"Alarm\", \"Reminder\") so every timer is enumerable and addressable.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
     "DataEgressDto": {
       "description": "Wire projection of [`jarvis_domain::policy::DataEgress`] (docs/06 §5): how far\nthe tool's data may travel, surfaced so the human approves egress knowingly.",
       "enum": [
@@ -525,6 +566,27 @@
           "type": "object"
         },
         {
+          "description": "A timer, alarm or reminder went off (F3b.7, FR-33, ADR-023).\n\nPersisted rather than transient, deliberately: a timer going off is a\n*fact about a moment*, and a client that was disconnected when the\nkitchen timer rang must still learn about it on resync — unlike\n`media.state`, which is a current-value readout with no history worth\nreplaying. It is also not run-scoped (a timer fires with no run in\nflight), which is why it carries no `RunId`.\n\nThis feature is the event's only producer: the timer module fires it, and\nnothing else may. `missed` is the honest notice ADR-023 requires — the\ntimer came due while jarvisd was not running, and the human is told so\nrather than shown something that looks like it just rang.",
+          "properties": {
+            "missed": {
+              "type": "boolean"
+            },
+            "timer": {
+              "$ref": "#/definitions/TimerDto"
+            },
+            "type": {
+              "const": "timer.fired",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "timer",
+            "missed"
+          ],
+          "type": "object"
+        },
+        {
           "description": "A pending approval was answered (F2.5). Replayed so the resolved outcome\nsurvives reconnect and the client can retire the card it was showing.",
           "properties": {
             "approvalId": {
@@ -600,6 +662,16 @@
         {
           "const": "media.control_unsupported",
           "description": "The player is present but reports it cannot perform this control\n(`CanGoNext = false`). 409 — the request was well-formed, so this is not\n`validation.failed`; retrying the same call will not help, but a\ndifferent control on the same player may.",
+          "type": "string"
+        },
+        {
+          "const": "timer.invalid_transition",
+          "description": "The requested verb is not legal for the timer's current state — snoozing\none that has not rung, cancelling one that already did (F3b.7, ADR-023).\n409: the request was well-formed, so it is not `validation.failed`, and\nretrying it unchanged will not help; the client re-reads the timer first.",
+          "type": "string"
+        },
+        {
+          "const": "timer.stale",
+          "description": "The timer moved between the client's read and its decision — it fired in\nthe same instant, or another device answered first. 409 and **safely\nretryable** after a refresh, which is why it is distinct from\n`timer.invalid_transition`.",
           "type": "string"
         }
       ]
@@ -1949,6 +2021,153 @@
         "items"
       ],
       "type": "object"
+    },
+    "TimerActionRequest": {
+      "description": "`POST /api/v1/timers/{id}/action`.\n\n`action` is one of `cancel`, `dismiss`, `snooze`. There is deliberately **no\n`fire`**: firing is something the clock does, never something a request asks\nfor — an unknown verb is a 400 and never reaches the store.",
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "snoozeSecs": {
+          "description": "How long to push a ringing timer out by. Honoured by `snooze` only;\nomitted ⇒ the nine-minute default.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "TimerActionResponse": {
+      "description": "The timer after the action was applied and audited, so the card re-renders\nwithout waiting for an event.",
+      "properties": {
+        "timer": {
+          "$ref": "#/definitions/TimerDto"
+        }
+      },
+      "required": [
+        "timer"
+      ],
+      "type": "object"
+    },
+    "TimerDto": {
+      "description": "One timer as the HUD renders it.",
+      "properties": {
+        "durationSecs": {
+          "description": "The countdown's original span — present only for `countdown`, so the card\ncan show \"10 min\" alongside the live remainder.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "fireAt": {
+          "description": "When it goes (or went) off, RFC 3339 UTC.",
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "kind": {
+          "$ref": "#/definitions/TimerKindDto"
+        },
+        "name": {
+          "description": "Human label (\"pasta timer\"), sanitized. Rendered as text.",
+          "type": "string"
+        },
+        "note": {
+          "description": "The reminder's spoken line (\"call Mom\") — present only for `reminder`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remainingSecs": {
+          "description": "Seconds left **at the moment this DTO was produced**. Absent when the\ntimer is not armed (ringing or finished). The card ticks its own display\ndown from here rather than polling the server — one value, then local\narithmetic (docs/09 §5: no polling loop for something a clock can do).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/TimerStateDto"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "state",
+        "fireAt"
+      ],
+      "type": "object"
+    },
+    "TimerKindDto": {
+      "description": "Wire mirror of `jarvis_domain::timers::TimerKind`, flattened: the\nkind-specific payload rides in [`TimerDto`]'s optional `durationSecs`/`note`\nso a client can switch on one string.",
+      "oneOf": [
+        {
+          "const": "countdown",
+          "description": "\"Ten minutes from now.\"",
+          "type": "string"
+        },
+        {
+          "const": "alarm",
+          "description": "\"At seven.\"",
+          "type": "string"
+        },
+        {
+          "const": "reminder",
+          "description": "\"At six, to call Mom.\"",
+          "type": "string"
+        }
+      ]
+    },
+    "TimerListResponse": {
+      "description": "`GET /api/v1/timers` — everything outstanding, earliest first. Terminal\ntimers are not listed: \"what have I got set?\" means the live ones.",
+      "properties": {
+        "now": {
+          "description": "Server time when the list was taken, RFC 3339. The card uses it to\ncorrect for clock skew between the browser and the daemon instead of\ntrusting `Date.now()`.",
+          "type": "string"
+        },
+        "timers": {
+          "items": {
+            "$ref": "#/definitions/TimerDto"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "timers",
+        "now"
+      ],
+      "type": "object"
+    },
+    "TimerStateDto": {
+      "description": "Wire mirror of `jarvis_domain::timers::TimerState`. Total projection (no `_`\narm) so a new state forces a decision here rather than silently mapping.",
+      "oneOf": [
+        {
+          "enum": [
+            "pending",
+            "snoozed",
+            "dismissed",
+            "cancelled"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "fired",
+          "description": "Ringing, awaiting dismiss or snooze — **not** terminal.",
+          "type": "string"
+        }
+      ]
     },
     "TrackMetadataDto": {
       "description": "Track metadata as published by the player — **untrusted display data**\n(docs/06 §2 Z4). Absent fields are omitted rather than blank so the card can\nrender \"unknown\" instead of an empty line.",

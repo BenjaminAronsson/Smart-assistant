@@ -1,0 +1,150 @@
+/* Timer / reminder card (docs/12 §2.3/§5/§7/§8).
+ *
+ * Every colour comes from the shared hue tokens and every size from a vmin
+ * clamp — no hand-tuned colours, no fixed pixels in layout, so the card holds
+ * from a 1080p laptop to a 4K TV to a portrait phone (§7) and adapts as a unit
+ * when a wallpaper switches the glass system (§5).
+ *
+ * Amber discipline (§2.1): a ringing timer wants a human decision, which is
+ * exactly what `--c-wait` means. It is referenced only in the `state-fired`
+ * block below — nothing else in this file touches it. */
+
+:host {
+  display: block;
+  --hue: var(--c-idle);
+}
+
+:host(.state-fired) {
+  --hue: var(--c-wait);
+}
+
+:host(.state-snoozed) {
+  --hue: var(--c-tool);
+}
+
+:host(.state-dismissed),
+:host(.state-cancelled) {
+  --hue: var(--c-degraded);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8vmin;
+  padding: 1.6vmin 2vmin;
+  border-radius: 1.2vmin;
+  border: 0.15vmin solid var(--glass-border);
+  border-inline-start: 0.5vmin solid var(--hue);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  box-shadow: var(--glass-shadow);
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1vmin;
+}
+
+.name {
+  margin: 0;
+  font-size: clamp(15px, 2.1vmin, 21px);
+  font-weight: 600;
+  color: var(--ink);
+  /* Human text of unbounded length must not blow out the card. */
+  overflow-wrap: anywhere;
+}
+
+.kind {
+  font-size: clamp(11px, 1.4vmin, 14px);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+.countdown {
+  margin: 0;
+  font-size: clamp(26px, 5vmin, 52px);
+  font-weight: 300;
+  line-height: 1;
+  /* Fixed-width digits: the number must not jitter once a second. */
+  font-variant-numeric: tabular-nums;
+  color: var(--hue);
+}
+
+.ringing {
+  margin: 0;
+  font-size: clamp(20px, 3.4vmin, 34px);
+  font-weight: 500;
+  color: var(--hue);
+}
+
+.missed {
+  margin: 0;
+  align-self: flex-start;
+  padding: 0.3vmin 0.9vmin;
+  border-radius: 0.6vmin;
+  font-size: clamp(11px, 1.4vmin, 14px);
+  color: var(--ink);
+  background: color-mix(in srgb, var(--c-wait) 22%, transparent);
+}
+
+.note {
+  margin: 0;
+  font-size: clamp(13px, 1.8vmin, 18px);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8vmin;
+}
+
+.action {
+  padding: 0.7vmin 1.6vmin;
+  border-radius: 0.8vmin;
+  border: 0.15vmin solid color-mix(in srgb, var(--hue) 45%, transparent);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: clamp(13px, 1.7vmin, 17px);
+  cursor: pointer;
+}
+
+.action.primary {
+  background: color-mix(in srgb, var(--hue) 18%, transparent);
+  font-weight: 600;
+}
+
+.action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* A ringing card pulses to draw the eye — ambient motion, so it obeys the
+ * reduced-motion policy (docs/12 §6) and the state is carried by the announced
+ * status text regardless. */
+:host(.state-fired) .card {
+  animation: attention 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :host(.state-fired) .card {
+    animation: none;
+  }
+}
+
+@keyframes attention {
+  0%,
+  100% {
+    box-shadow: var(--glass-shadow);
+  }
+  50% {
+    box-shadow:
+      var(--glass-shadow),
+      0 0 0 0.5vmin color-mix(in srgb, var(--hue) 25%, transparent);
+  }
+}

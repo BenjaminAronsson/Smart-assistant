@@ -644,6 +644,7 @@ const KNOWN_DOMAIN_EVENT_TAGS: &[&str] = &[
     "run.checkpoint_saved",
     "approval.requested",
     "approval.resolved",
+    "timer.fired",
 ];
 
 fn domain_event(row: &OutboxRecord) -> Option<DomainEvent> {

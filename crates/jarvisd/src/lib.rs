@@ -16,5 +16,6 @@ pub mod pmtiles;
 pub mod problem;
 pub mod runs;
 pub mod sessions;
+pub mod timers;
 pub mod tools;
 pub mod ws;

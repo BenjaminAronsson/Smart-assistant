@@ -72,6 +72,18 @@ pub enum ErrorCode {
     /// different control on the same player may.
     #[serde(rename = "media.control_unsupported")]
     MediaControlUnsupported,
+    /// The requested verb is not legal for the timer's current state — snoozing
+    /// one that has not rung, cancelling one that already did (F3b.7, ADR-023).
+    /// 409: the request was well-formed, so it is not `validation.failed`, and
+    /// retrying it unchanged will not help; the client re-reads the timer first.
+    #[serde(rename = "timer.invalid_transition")]
+    TimerInvalidTransition,
+    /// The timer moved between the client's read and its decision — it fired in
+    /// the same instant, or another device answered first. 409 and **safely
+    /// retryable** after a refresh, which is why it is distinct from
+    /// `timer.invalid_transition`.
+    #[serde(rename = "timer.stale")]
+    TimerStale,
 }
 
 /// RFC 9457 problem details body plus the stable machine `code` (docs/05 §2).

@@ -41,6 +41,11 @@ const REQUIRED_DEFINITIONS: &[&str] = &[
     "HudCardDto",
     "MapCoverageResponse",
     "MapBoundsDto",
+    "TimerDto",
+    "TimerListResponse",
+    "CreateTimerRequest",
+    "TimerActionRequest",
+    "TimerActionResponse",
 ];
 
 fn snapshot_path() -> std::path::PathBuf {

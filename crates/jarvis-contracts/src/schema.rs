@@ -83,6 +83,15 @@ pub fn export() -> Value {
     // its own root. `MapBoundsDto` comes along by reference and is a named type
     // the card uses on its own (in-region vs out-of-region, docs/12 §3).
     generator.subschema_for::<crate::maps::MapCoverageResponse>();
+    // Timer surface (F3b.7, FR-33, ADR-023). `TimerDto` rides inside the
+    // persisted `timer.fired` event, but the HUD also lists timers over REST on
+    // connect and the create/action request+response are referenced by no event
+    // — each must be its own root or it ships absent from the wire schema.
+    generator.subschema_for::<crate::timers::TimerDto>();
+    generator.subschema_for::<crate::timers::TimerListResponse>();
+    generator.subschema_for::<crate::timers::CreateTimerRequest>();
+    generator.subschema_for::<crate::timers::TimerActionRequest>();
+    generator.subschema_for::<crate::timers::TimerActionResponse>();
 
     let definitions: Value =
         serde_json::to_value(generator.definitions()).expect("schemas are valid JSON");
