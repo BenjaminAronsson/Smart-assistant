@@ -180,14 +180,14 @@ moves the M1/M2 conversation/approval surfaces into the ops layer (`Ctrl+.`).
   FR-09, docs/12 §2.3, invariant 1. Read: docs/12 §2.3/§9; skill `angular-shell`. Deps:
   F3b.1. Assert the no-free-form-HTML property in tests.
 
-- [ ] **F3b.3 — Artifact renderers + ArtifactCanvas surface (web)** · *Sonnet ok*
+- [x] **F3b.3 — Artifact renderers + ArtifactCanvas surface (web)** · *Sonnet ok*
   Render M3a artifacts on the ArtifactCanvas surface: Markdown/HTML (sanitized), code/text,
   image, simple chart (per the `dataviz` skill). Reopen-after-restart visible in the UI
   (composes exit-evidence #1). Bundle/generated-app rendering is **M6 sandbox** — not here.
   Refs: FR-08/09, docs/02 §6, docs/12 §2.3. Read: docs/02 §6, docs/12 §2.3; skills
   `angular-shell`, `dataviz`. Deps: F3a.3, F3b.1.
 
-- [ ] **F3b.4 — Panel lifecycle (FR-24) + backgrounds (FR-23) + glass-contrast audit (web)** · *Sonnet ok*
+- [x] **F3b.4 — Panel lifecycle (FR-24) + backgrounds (FR-23) + glass-contrast audit (web)** · *Sonnet ok*
   Panel lifecycle (docs/12 §4): new query **shelves** current panels (max 4, restorable),
   per-panel + clear-all dismissal, **2-hour TTL** (`[ui] panel_ttl_hours`), **pending
   approvals exempt**. Backgrounds (docs/12 §5): none/abstract/photo with the adaptive
