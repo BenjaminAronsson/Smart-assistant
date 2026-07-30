@@ -1,0 +1,51 @@
+<div class="markdown" role="article" aria-label="Artifact content">
+  @for (block of blocks(); track trackByIndex($index)) {
+    @switch (block.type) {
+      @case ('heading') {
+        @switch (block.level) {
+          @case (1) {
+            <h1><app-md-inline [nodes]="block.inline" /></h1>
+          }
+          @case (2) {
+            <h2><app-md-inline [nodes]="block.inline" /></h2>
+          }
+          @case (3) {
+            <h3><app-md-inline [nodes]="block.inline" /></h3>
+          }
+          @case (4) {
+            <h4><app-md-inline [nodes]="block.inline" /></h4>
+          }
+          @case (5) {
+            <h5><app-md-inline [nodes]="block.inline" /></h5>
+          }
+          @default {
+            <h6><app-md-inline [nodes]="block.inline" /></h6>
+          }
+        }
+      }
+      @case ('paragraph') {
+        <p><app-md-inline [nodes]="block.inline" /></p>
+      }
+      @case ('list') {
+        @if (block.ordered) {
+          <ol>
+            @for (item of block.items; track $index) {
+              <li><app-md-inline [nodes]="item" /></li>
+            }
+          </ol>
+        } @else {
+          <ul>
+            @for (item of block.items; track $index) {
+              <li><app-md-inline [nodes]="item" /></li>
+            }
+          </ul>
+        }
+      }
+      @case ('code') {
+        <pre class="code-block"><code>{{ block.code }}</code></pre>
+      }
+    }
+  } @empty {
+    <p class="empty">This artifact has no content.</p>
+  }
+</div>

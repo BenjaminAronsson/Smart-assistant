@@ -1,0 +1,13 @@
+.unsupported {
+  padding: 2vmin;
+  border-radius: 1vmin;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  color: var(--ink);
+  max-inline-size: 60ch;
+}
+
+.hint {
+  color: var(--ink-dim);
+  font-size: clamp(12px, 1.6vmin, 15px);
+}

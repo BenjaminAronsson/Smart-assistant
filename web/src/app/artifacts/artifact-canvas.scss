@@ -1,0 +1,151 @@
+/* No fixed pixels in layout (docs/12 §7): vmin/clamp/auto-fit, same as the
+ * HUD face, so this surface scales from a 390px viewport to a 4K display. */
+
+.canvas-surface {
+  min-block-size: 100dvh;
+  padding: 3vmin clamp(1rem, 4vmin, 4rem);
+  display: grid;
+  gap: 2vmin;
+  align-content: start;
+  color: var(--ink);
+}
+
+.status {
+  color: var(--ink-dim);
+  font-size: clamp(13px, 1.8vmin, 16px);
+}
+
+.status.error {
+  color: var(--c-error);
+}
+
+.canvas-header {
+  display: flex;
+  align-items: center;
+  gap: 2vmin;
+  flex-wrap: wrap;
+
+  h1 {
+    font-size: clamp(16px, 2.4vmin, 22px);
+    margin: 0;
+
+    code {
+      font-size: 0.75em;
+      color: var(--ink-dim);
+    }
+  }
+}
+
+.version-switcher {
+  display: flex;
+  gap: 0.8vmin;
+  margin-inline-start: auto;
+  flex-wrap: wrap;
+
+  button {
+    padding: 0.6vmin 1.4vmin;
+    border-radius: 1vmin;
+    border: 1px solid var(--glass-border);
+    background: var(--glass-bg);
+    color: var(--ink-dim);
+    font: inherit;
+    font-size: clamp(11px, 1.5vmin, 14px);
+    cursor: pointer;
+    font-variant-numeric: tabular-nums;
+
+    &.active {
+      color: var(--ink);
+      border-color: var(--c-idle);
+      font-weight: 600;
+    }
+  }
+}
+
+.canvas-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 42ch), 1fr));
+  gap: 2vmin;
+  align-items: start;
+}
+
+.renderer-slot {
+  min-inline-size: 0;
+  padding: 2vmin;
+  border-radius: 1.4vmin;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(var(--glass-blur));
+}
+
+.provenance {
+  min-inline-size: 0;
+  padding: 1.8vmin;
+  border-radius: 1.4vmin;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  font-size: clamp(12px, 1.6vmin, 14px);
+
+  h2,
+  h3 {
+    margin: 0 0 0.6em;
+    font-size: 1em;
+    color: var(--ink-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  h3 {
+    margin-top: 1.2em;
+  }
+
+  dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.4em 1ch;
+    margin: 0;
+  }
+
+  dt {
+    color: var(--ink-dim);
+  }
+
+  dd {
+    margin: 0;
+    word-break: break-word;
+  }
+}
+
+.sensitivity {
+  text-transform: capitalize;
+}
+
+.sensitivity.sensitive {
+  color: var(--c-wait);
+  font-weight: 600;
+}
+
+.sources {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5em;
+
+  li {
+    display: flex;
+    gap: 1ch;
+    align-items: baseline;
+    flex-wrap: wrap;
+  }
+}
+
+.source-kind {
+  color: var(--ink-dim);
+  text-transform: uppercase;
+  font-size: 0.85em;
+}
+
+.no-sources {
+  color: var(--ink-dim);
+}
