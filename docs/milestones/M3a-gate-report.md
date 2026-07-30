@@ -1,6 +1,8 @@
 # M3a "Artifacts, desktop agent, workers, media" — Gate Report
 
-**Status: AWAITING HUMAN SIGN-OFF** · Prepared 2026-07-30 · Milestone loop docs/11 §2
+**Status: SIGNED OFF 2026-07-30 (owner approved)** · Prepared 2026-07-30 · Milestone loop
+docs/11 §2. Owner accepted deviations **D-M3a-1 … D-M3a-7** and **ADR-027** as recommended
+in §7; tag `m3a-complete`. M3b (F3b.1–F3b.9) is unblocked.
 
 M3a is feature-complete on `main`: **F3a.1–F3a.8 all merged**. M3 was split by owner
 decision (2026-07-22, `docs/milestones/M3-features.md`) into **M3a** — which carries
@@ -173,7 +175,7 @@ Recorded during implementation, in full in `docs/milestones/M3-features.md`:
 
 ---
 
-## 7. Recommendation
+## 7. Recommendation (accepted by the owner, 2026-07-30)
 
 All five exit-evidence items are demonstrated and repeatable from one command; every CI
 gate including `cargo deny` is green; the resident-memory budget holds with room to

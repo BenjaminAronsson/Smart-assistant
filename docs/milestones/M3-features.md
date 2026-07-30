@@ -16,7 +16,9 @@ decomposition with three decisions:
    conversation + approval-tray surfaces move into the ops layer (`Ctrl+.`), not deleted.
 
 M2 signed off 2026-07-22 (`docs/milestones/M2-gate-report.md`, tag intentionally skipped
-by owner). **Start with M3a, feature F3a.1.** Do M3a's `/gate` before starting M3b.
+by owner). **M3a is complete and signed off 2026-07-30** (`docs/milestones/M3a-gate-report.md`,
+tag `m3a-complete`; deviations D-M3a-1…7 and ADR-027 accepted) — **M3b is unblocked; start
+with F3b.1.**
 
 Milestone scope (docs/08 §1): Artifact CAS + renderers, display profiles, `jarvis-agent`
 + Hyprland IPC, isolated Playwright worker, MPRIS adapter + media window + media bar

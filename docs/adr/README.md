@@ -542,8 +542,9 @@ Jarvis's.
 
 ## ADR-027 — Browser worker isolation: container is the contract, process+profile-dir is the dev fallback {#adr-027}
 
-**Status.** *Proposed (F3a.5, 22 July 2026).* Owner pre-approved the shape (Option A) at
-M3 decomposition; formal acceptance at the M3a `/gate`.
+**Status.** **Accepted (M3a gate, 30 July 2026).** Owner pre-approved the shape (Option A)
+at M3 decomposition; formally accepted at the M3a `/gate` together with deviations
+D-M3a-1 … D-M3a-7 (`docs/milestones/M3a-gate-report.md`).
 
 **Context.** FR-15 and docs/02 §8 require browser automation to run Playwright in a
 **dedicated worker process** with **isolated profiles per trust domain**, visible mode for
