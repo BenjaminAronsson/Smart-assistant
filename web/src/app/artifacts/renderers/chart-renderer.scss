@@ -1,0 +1,188 @@
+/* Chart color roles (dataviz skill, references/palette.md): defined as local
+ * custom properties so light/dark swap in one place. The rest of the HUD
+ * shell is light-only for now (docs/08 §6 defers the dark theme decision),
+ * but a chart is read under whatever OS theme the viewer has, so this
+ * component honors `prefers-color-scheme` and the viewer's `data-theme`
+ * toggle independently of that deferral. Fixed categorical order — slots are
+ * never reassigned or cycled (dataviz skill, color-formula check). */
+.viz-root {
+  color-scheme: light;
+  --chart-text: #1c2026;
+  --chart-text-dim: #52514e;
+  --chart-axis: rgb(28 32 38 / 0.22);
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+
+  max-inline-size: var(--canvas-width, min(96vw, 920px));
+  color: var(--chart-text);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme='light'])) .viz-root {
+    color-scheme: dark;
+    --chart-text: #ffffff;
+    --chart-text-dim: #c3c2b7;
+    --chart-axis: rgb(255 255 255 / 0.22);
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+  }
+}
+:root[data-theme='dark'] .viz-root {
+  color-scheme: dark;
+  --chart-text: #ffffff;
+  --chart-text-dim: #c3c2b7;
+  --chart-axis: rgb(255 255 255 / 0.22);
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+}
+
+.chart-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1.5vmin;
+  flex-wrap: wrap;
+}
+
+.chart-title {
+  margin: 0;
+  font-size: clamp(15px, 2vmin, 19px);
+}
+
+.table-toggle {
+  padding: 0.7vmin 1.4vmin;
+  border-radius: 0.8vmin;
+  border: 1px solid var(--glass-border, currentcolor);
+  background: var(--glass-bg, transparent);
+  color: var(--chart-text-dim);
+  font: inherit;
+  font-size: clamp(11px, 1.4vmin, 13px);
+  cursor: pointer;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.2em 2ch;
+  list-style: none;
+  margin: 1vmin 0 0;
+  padding: 0;
+  font-size: clamp(11px, 1.4vmin, 13px);
+  color: var(--chart-text-dim);
+
+  li {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6ch;
+  }
+}
+
+.swatch {
+  inline-size: 1.2ch;
+  block-size: 1.2ch;
+  border-radius: 0.3ch;
+  display: inline-block;
+}
+
+.hidden-note {
+  margin: 0.4em 0 0;
+  color: var(--chart-text-dim);
+  font-size: clamp(11px, 1.4vmin, 13px);
+}
+
+.chart-svg {
+  inline-size: 100%;
+  block-size: auto;
+  margin-top: 1.4vmin;
+  overflow: visible;
+}
+
+.baseline,
+.tick-label {
+  stroke: var(--chart-axis);
+}
+.baseline {
+  stroke-width: 0.25;
+}
+
+.tick-label {
+  fill: var(--chart-text-dim);
+  stroke: none;
+  font-size: 3px;
+  text-anchor: middle;
+  font-variant-numeric: tabular-nums;
+}
+
+.value-label {
+  fill: var(--chart-text);
+  font-size: 3px;
+  text-anchor: middle;
+  font-variant-numeric: tabular-nums;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+
+.line-path {
+  stroke-width: 0.9;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.mark {
+  outline: none;
+
+  rect,
+  circle {
+    transition: opacity 120ms ease-out;
+  }
+
+  &:hover,
+  &:focus-within {
+    .value-label {
+      opacity: 1;
+    }
+
+    rect,
+    circle {
+      opacity: 0.85;
+    }
+  }
+
+  &:focus-within {
+    outline: 1.5px solid var(--focus-ring, #1a56c4);
+    outline-offset: 1px;
+  }
+}
+
+.data-table {
+  margin-top: 1.4vmin;
+  border-collapse: collapse;
+  font-size: clamp(12px, 1.6vmin, 14px);
+  font-variant-numeric: tabular-nums;
+
+  th,
+  td {
+    padding: 0.5em 1ch;
+    text-align: start;
+    border-bottom: 1px solid var(--chart-axis);
+  }
+}
+
+.invalid,
+.empty {
+  color: var(--chart-text-dim);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .value-label,
+  .mark rect,
+  .mark circle {
+    transition-duration: 1ms;
+  }
+}

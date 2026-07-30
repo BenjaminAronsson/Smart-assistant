@@ -1,0 +1,14 @@
+.image-wrap {
+  display: grid;
+  justify-items: start;
+  border-radius: 1vmin;
+  overflow: hidden;
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+
+  img {
+    display: block;
+    max-inline-size: 100%;
+    block-size: auto;
+  }
+}

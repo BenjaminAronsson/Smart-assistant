@@ -1,0 +1,20 @@
+.media-type {
+  margin: 0 0 0.8vmin;
+  font-size: clamp(11px, 1.5vmin, 14px);
+  color: var(--ink-dim);
+  text-transform: lowercase;
+}
+
+.code-block {
+  margin: 0;
+  overflow-x: auto;
+  padding: 1.4vmin 2vmin;
+  border-radius: 1vmin;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-size: clamp(12px, 1.6vmin, 15px);
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--ink);
+}

@@ -1,0 +1,107 @@
+<section class="canvas-surface" aria-label="Artifact canvas">
+  @if (error(); as message) {
+    <p class="status error" role="alert">{{ message }}</p>
+  } @else if (loading() && versions().length === 0) {
+    <p class="status" role="status">Loading artifact…</p>
+  } @else if (selectedManifest(); as manifest) {
+    <header class="canvas-header">
+      <h1>Artifact <code>{{ artifactId() }}</code></h1>
+
+      @if (versions().length > 1) {
+        <div class="version-switcher" role="group" aria-label="Artifact versions">
+          @for (v of versions(); track trackByVersion($index, v)) {
+            <button
+              type="button"
+              [attr.aria-pressed]="v.version === selectedVersion()"
+              [class.active]="v.version === selectedVersion()"
+              (click)="selectVersion(v.version)"
+            >
+              v{{ v.version }}
+            </button>
+          }
+        </div>
+      }
+    </header>
+
+    <div class="canvas-body">
+      <div class="renderer-slot">
+        @if (loading()) {
+          <p class="status" role="status">Loading version {{ manifest.version }}…</p>
+        } @else {
+          @switch (manifest.kind) {
+            @case ('markdown_html') {
+              @if (textContent(); as text) {
+                <app-markdown-renderer [content]="text" />
+              }
+            }
+            @case ('code_text') {
+              @if (textContent(); as text) {
+                <app-code-renderer [content]="text" [mediaType]="manifest.mediaType" />
+              }
+            }
+            @case ('image') {
+              @if (imageBlob(); as blob) {
+                <app-image-renderer
+                  [blob]="blob"
+                  [label]="'Artifact ' + artifactId() + ', version ' + manifest.version"
+                />
+              }
+            }
+            @case ('chart') {
+              @if (textContent(); as text) {
+                <app-chart-renderer [content]="text" />
+              }
+            }
+            @default {
+              <app-unsupported-renderer [kind]="manifest.kind" />
+            }
+          }
+        }
+      </div>
+
+      <aside class="provenance" aria-label="Provenance">
+        <h2>Provenance</h2>
+        <dl>
+          <dt>Sensitivity</dt>
+          <dd>
+            <span class="sensitivity" [class.sensitive]="manifest.sensitivity === 'sensitive'">{{
+              manifest.sensitivity
+            }}</span>
+          </dd>
+          <dt>Created by run</dt>
+          <dd><code>{{ manifest.createdByRun }}</code></dd>
+          <dt>Build network</dt>
+          <dd>{{ manifest.build.network }}</dd>
+          @if (manifest.build.workerImage) {
+            <dt>Worker image</dt>
+            <dd><code>{{ manifest.build.workerImage }}</code></dd>
+          }
+          @if (manifest.build.lockfileHash) {
+            <dt>Lockfile hash</dt>
+            <dd><code>{{ manifest.build.lockfileHash }}</code></dd>
+          }
+        </dl>
+
+        @if (manifest.sources.length > 0) {
+          <h3>Sources</h3>
+          <ul class="sources">
+            @for (source of manifest.sources; track $index) {
+              <li>
+                <span class="source-kind">{{ source.kind }}</span>
+                @if (sourceHref(source); as href) {
+                  <a [href]="href" target="_blank" rel="noopener noreferrer nofollow">{{
+                    source.reference
+                  }}</a>
+                } @else {
+                  <code>{{ source.reference }}</code>
+                }
+              </li>
+            }
+          </ul>
+        } @else {
+          <p class="no-sources">No sources recorded.</p>
+        }
+      </aside>
+    </div>
+  }
+</section>

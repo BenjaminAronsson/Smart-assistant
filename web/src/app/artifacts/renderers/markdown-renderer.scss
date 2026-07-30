@@ -1,0 +1,51 @@
+/* No fixed pixels in layout (docs/12 §7): type via clamp/vmin, spacing via ch/em. */
+
+.markdown {
+  max-inline-size: 70ch;
+  line-height: 1.55;
+  color: var(--ink);
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    line-height: 1.25;
+    color: var(--ink);
+  }
+
+  p {
+    margin: 0.8em 0;
+  }
+
+  ul,
+  ol {
+    padding-inline-start: 2ch;
+  }
+
+  code {
+    font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+    font-size: 0.92em;
+    background: var(--glass-bg);
+    border-radius: 0.3em;
+    padding: 0.1em 0.4ch;
+  }
+}
+
+.code-block {
+  overflow-x: auto;
+  padding: 1.4vmin 2vmin;
+  border-radius: 1vmin;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+
+  code {
+    background: none;
+    padding: 0;
+  }
+}
+
+.empty {
+  color: var(--ink-dim);
+}

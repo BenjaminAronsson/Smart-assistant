@@ -1,0 +1,117 @@
+<div class="viz-root" role="region" [attr.aria-label]="data()?.title ?? 'Artifact chart'">
+  @if (data(); as chart) {
+    <div class="chart-head">
+      @if (chart.title) {
+        <h2 class="chart-title">{{ chart.title }}</h2>
+      }
+      <button type="button" class="table-toggle" (click)="toggleTable()">
+        {{ showTable() ? 'Show chart' : 'Show data table' }}
+      </button>
+    </div>
+
+    @if (showLegend()) {
+      <ul class="legend">
+        @for (s of renderedSeries(); track $index) {
+          <li>
+            <span class="swatch" [style.background]="'var(--series-' + ($index + 1) + ')'"></span>
+            {{ s.name }}
+          </li>
+        }
+      </ul>
+      @if (hiddenSeriesCount() > 0) {
+        <p class="hidden-note">+{{ hiddenSeriesCount() }} more series not shown</p>
+      }
+    }
+
+    @if (showTable()) {
+      <table class="data-table">
+        <caption class="sr-only">{{ chart.title ?? 'Chart data' }}</caption>
+        <thead>
+          <tr>
+            <th scope="col">Category</th>
+            @for (s of renderedSeries(); track $index) {
+              <th scope="col">{{ s.name }}</th>
+            }
+          </tr>
+        </thead>
+        <tbody>
+          @for (category of categories(); track $index; let i = $index) {
+            <tr>
+              <th scope="row">{{ category }}</th>
+              @for (s of renderedSeries(); track $index) {
+                <td>{{ s.points[i]?.value ?? '—' }}{{ chart.unit ?? '' }}</td>
+              }
+            </tr>
+          }
+        </tbody>
+      </table>
+    } @else if (categories().length === 0) {
+      <p class="empty">This chart has no data points.</p>
+    } @else {
+      <svg
+        class="chart-svg"
+        [attr.viewBox]="viewBox"
+        preserveAspectRatio="xMidYMid meet"
+        role="img"
+        [attr.aria-label]="chart.title ?? 'Chart'"
+      >
+        <!-- Recessive baseline/axis (dataviz skill: recessive grid/axes). -->
+        <line class="baseline" [attr.x1]="0" [attr.x2]="100" [attr.y1]="baselineY()" [attr.y2]="baselineY()" />
+
+        @if (chart.chartType === 'bar') {
+          @for (bar of bars(); track $index) {
+            <g class="mark" tabindex="0">
+              <rect
+                [attr.x]="bar.x"
+                [attr.y]="bar.y"
+                [attr.width]="bar.width"
+                [attr.height]="bar.height"
+                [attr.rx]="bar.rx"
+                [attr.fill]="'var(--series-' + (bar.seriesIndex + 1) + ')'"
+              >
+                <title>{{ bar.seriesName }} — {{ bar.category }}: {{ bar.value }}{{ chart.unit ?? '' }}</title>
+              </rect>
+              @if (canDirectLabel()) {
+                <text class="value-label" [attr.x]="bar.x + bar.width / 2" [attr.y]="bar.y - 1.2">
+                  {{ bar.value }}
+                </text>
+              }
+            </g>
+          }
+        } @else {
+          @for (line of lines(); track $index) {
+            <g class="mark">
+              <path
+                class="line-path"
+                [attr.d]="line.d"
+                fill="none"
+                [attr.stroke]="'var(--series-' + (line.seriesIndex + 1) + ')'"
+              />
+              @for (point of line.points; track $index) {
+                <g tabindex="0">
+                  <circle
+                    [attr.cx]="point.x"
+                    [attr.cy]="point.y"
+                    r="1.3"
+                    [attr.fill]="'var(--series-' + (line.seriesIndex + 1) + ')'"
+                  >
+                    <title>{{ line.seriesName }} — {{ point.category }}: {{ point.value }}{{ chart.unit ?? '' }}</title>
+                  </circle>
+                  @if (canDirectLabel()) {
+                    <text class="value-label" [attr.x]="point.x" [attr.y]="point.y - 2.2">{{ point.value }}</text>
+                  }
+                </g>
+              }
+            </g>
+          }
+        }
+
+        @for (category of categories(); track $index; let i = $index) {
+          <text class="tick-label" [attr.x]="categoryTickX()[i]" [attr.y]="55">{{ category }}</text>
+        }
+      </svg>
+    }
+  } @else {
+    <p class="invalid">This chart's data is invalid and can't be shown.</p>
+  }
+</div>
