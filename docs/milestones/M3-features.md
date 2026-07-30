@@ -169,7 +169,7 @@ moves the M1/M2 conversation/approval surfaces into the ops layer (`Ctrl+.`).
   §1/§2.1/§2.2/§7/§8. Read: docs/12 §1–§2, §7–§8; skill `angular-shell`. Deps: F3a.3 (WS
   client). Accessibility checks per DoD.
 
-- [ ] **F3b.2 — Card grammar v1 + reveal animation + web-sourced-image source chip (web)** · *Sonnet ok*
+- [x] **F3b.2 — Card grammar v1 + reveal animation + web-sourced-image source chip (web)** · *Sonnet ok*
   Registered HUD card types (docs/12 §2.3): value readout, place, entity/person, media/menu
   grid, **headlines/digest**, now-playing (data only; live in M5), approval (reuse the F2.5
   tray as a card), status/queued, error. (timer/reminder + list + sources/gallery cards land
