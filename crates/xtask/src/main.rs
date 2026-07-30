@@ -16,22 +16,26 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-/// Golden-trace runner: verifies M1 exit evidence via orchestrator + queue tests
-/// (docs/08 §1, docs/07 §2). Scenarios 1-3 (simple question, complex question,
-/// quota-exhausted degraded mode) are executed via `cargo test` on the application
-/// layer, which form the executable specification. A build failure here means a
-/// trace scenario failed.
+/// Golden-trace runner: verifies the milestone exit evidence via `cargo test`
+/// (docs/08 §1, docs/07 §2). The tests ARE the executable trace specification;
+/// this command is the one repeatable entry point a gate runs.
+///
+/// Traces 1–6 (M1/M2) are pure application-layer suites with fake adapters.
+/// Trace 7 and the M3a acceptance scenarios (F3a.8) need the compose test env —
+/// **live Postgres** (`DATABASE_URL`), plus `node` and `git` for the real coding
+/// worker — matching docs/07 §2 ("against the compose test env").
 fn golden() -> anyhow::Result<()> {
-    println!("Running golden traces 1–6...");
+    println!("Running golden traces 1–7 + M3a acceptance scenarios...");
     println!("  Trace 1: simple question streams within budget");
     println!("  Trace 2: complex question (placeholder for M1)");
     println!("  Trace 3: quota-exhausted → degraded mode → recovery");
     println!("  Trace 4: R0/R1 auto tool → observe → replan (F2.2)");
     println!("  Trace 5: R2 approval → grant → execute (+ deny/edit/reject) (F2.3/F2.6)");
     println!("  Trace 6: malicious fetched page → policy denies exfiltration (F2.11)");
+    println!("  Trace 7: coding task → patch artifact in a disposable worktree (F3a.6/F3a.8)");
 
-    // Each suite is executed as `cargo test`; the tests ARE the executable
-    // trace specification. A failure here means a trace scenario regressed.
+    // Each suite is executed as `cargo test`; a failure here means a trace
+    // scenario regressed.
     for (suite, label) in [
         ("orchestrator_tests", "orchestrator golden traces"),
         ("policy_tests", "policy / auto-tool golden traces"),
@@ -47,12 +51,92 @@ fn golden() -> anyhow::Result<()> {
         }
     }
 
-    println!("✓ Golden traces 1–6 passed");
+    // Trace 7 — the whole file is the scenario (happy path + hostile worker).
+    run_scenario(
+        &["test", "-p", "jarvisd", "--test", "golden7_coding_patch"],
+        None,
+        2,
+        "golden 7: coding task → patch artifact, no direct deployment",
+    )?;
+
+    // M3a acceptance scenarios (F3a.8): each named test is the repeatable
+    // demonstration of one docs/08 §1 M3 exit-evidence item.
+    println!("Running M3a acceptance scenarios (docs/08 §1 exit evidence)...");
+    for (args, filter, label) in [
+        (
+            ["test", "-p", "jarvisd", "--test", "artifacts_api"],
+            "artifact_reopens_through_a_fresh_app_instance",
+            "acceptance #1: create/reopen an artifact after restart (F3a.3)",
+        ),
+        (
+            ["test", "-p", "jarvisd", "--test", "display_api"],
+            "open_places_canvas_on_the_requested_monitor",
+            "acceptance #2: place a canvas on the selected monitor (F3a.4)",
+        ),
+        (
+            ["test", "-p", "jarvis-adapters", "--lib", "browser"],
+            "browser::tests::every_action_records_append_only_audit",
+            "acceptance #3: audited browser flow (F3a.5)",
+        ),
+        (
+            ["test", "-p", "jarvisd", "--test", "media_api"],
+            "pause_from_the_media_bar_pauses_the_active_player",
+            "acceptance #4: pause what is playing from the media bar (F3a.7)",
+        ),
+    ] {
+        run_scenario(&args, Some(filter), 1, label)?;
+    }
+
+    println!("✓ Golden traces 1–7 + M3a acceptance scenarios passed");
     println!("  - Orchestrator: simple/complex question, degraded mode recovery");
     println!("  - Policy: R0/R1 auto tool path, result sanitization, denial");
     println!("  - Approval: R2 approve/deny/edit, grant mint/validate, adversarial text");
     println!("  - Queue: priority, eviction, capacity management");
     println!("  - Adversarial: malicious fetched page cannot invoke a tool outside policy");
+    println!("  - Coding: real worker + disposable worktree → immutable patch artifact;");
+    println!("    source repo untouched, and a worker cannot declare a deployment");
+    println!("  - M3a acceptance: artifact reopen, canvas placement, browser audit, media pause");
+    Ok(())
+}
+
+/// Run one scenario and require that it actually ran `expected` tests.
+///
+/// `cargo test <filter>` exits 0 when the filter matches nothing, so a renamed
+/// test would silently turn a gate scenario into a no-op. Parsing the count is
+/// what makes this evidence rather than decoration.
+fn run_scenario(
+    args: &[&str],
+    filter: Option<&str>,
+    expected: usize,
+    label: &str,
+) -> anyhow::Result<()> {
+    let mut command = Command::new("cargo");
+    command.args(args);
+    if let Some(filter) = filter {
+        command.args(["--", "--exact", filter, "--nocapture"]);
+    } else {
+        command.args(["--", "--nocapture"]);
+    }
+    let output = command.output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success() {
+        print!("{stdout}");
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        anyhow::bail!("{label} failed");
+    }
+    let passed: usize = stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("test result: ok. "))
+        .filter_map(|rest| rest.split(' ').next())
+        .filter_map(|n| n.parse::<usize>().ok())
+        .sum();
+    if passed != expected {
+        print!("{stdout}");
+        anyhow::bail!(
+            "{label}: expected {expected} test(s) to run, {passed} did — scenario missing or renamed"
+        );
+    }
+    println!("  ✓ {label}");
     Ok(())
 }
 

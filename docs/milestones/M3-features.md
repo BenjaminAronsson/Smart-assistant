@@ -139,7 +139,7 @@ evidence, and timer firing.
 
 ### Phase C — M3a exit-evidence demonstrator
 
-- [ ] **F3a.8 — Golden 7 + M3a acceptance scenarios (golden)** · *strong model (harness may be Sonnet)*
+- [x] **F3a.8 — Golden 7 + M3a acceptance scenarios (golden)** · *strong model (harness may be Sonnet)*
   Fill golden slot 7 (docs/07 §2): a coding task creates a **patch artifact in a disposable
   worktree; no direct deployment** (drives F3a.6). Add repeatable acceptance scenarios for
   the other exit evidence: artifact create/reopen-after-restart (F3a.3), place-canvas-on-
@@ -431,3 +431,20 @@ promotion pattern.)
     cap-naming `exact_effect` for the R2 card needs tool-aware effect rendering in
     `jarvis-application`; **Spotify Web API, the `now-playing` query (FR-32) and voice
     transport remain M5** per the milestone's own scope control.
+
+- **D-M3a-5 (F3a.8): golden 7 scripts the coding step and CI substitutes the last OS hop
+  for exit evidence #2/#3/#4.** Golden 7 runs the **real** worker, a **real** disposable
+  `git worktree`, live Postgres and the real CAS, but the coding step itself is a scripted
+  command (`JARVIS_CODING_CMD`) instead of a model — the trace must be deterministic and
+  quota-free (CLAUDE.md: fixture-driven tests over live-provider calls). Likewise the three
+  acceptance scenarios stop at the seam below the OS boundary: CI has no Hyprland, no
+  Playwright browser binaries and no D-Bus session bus, so the compositor/browser/MPRIS hop
+  is faked while everything the milestone claims (policy, audit-before-effect, sanitization,
+  fail-closed) is exercised for real. `docs/milestones/M3a-acceptance.md` §3 documents the
+  manual real-hardware verification for each. Owner: confirm at the M3a `/gate`.
+- **D-M3a-6 (F3a.8): `cargo xtask golden` now requires the compose test env.** Traces 1–6
+  were pure application-layer suites needing nothing; trace 7 and the acceptance scenarios
+  need live Postgres (`DATABASE_URL`) plus `node` and `git`. This matches docs/07 §2 ("run
+  by `cargo xtask golden` against the compose test env") and the CI `integration` job, which
+  already brings up compose and installs node. A scenario whose filter matches nothing is
+  now a **failure**, so a renamed test cannot silently turn gate evidence into a no-op.
