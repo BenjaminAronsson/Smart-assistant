@@ -16,7 +16,7 @@ use jarvis_infra::events::PgEventLog;
 use jarvis_infra::messages::PgMessageStore;
 use jarvis_infra::runs::PgRunStore;
 use jarvis_infra::sessions::PgSessionStore;
-use jarvisd::api::{AppState, RunWiring, router_with};
+use jarvisd::api::{AppState, RunWiring, Wiring, router_with};
 use jarvisd::auth::AuthState;
 use jarvisd::runs::{PassthroughAssembler, RunApi, RunEngine, SystemClock};
 use jarvisd::ws::{WsHub, WsState};
@@ -97,11 +97,10 @@ async fn start(pool: PgPool, model: FakeModel) -> Harness {
 
     let app = router_with(
         AppState::new().with_auth(auth),
-        None,
-        Some(RunWiring { runs: run_api, ws }),
-        None,
-        None,
-        None,
+        Wiring {
+            runs: Some(RunWiring { runs: run_api, ws }),
+            ..Wiring::default()
+        },
     );
 
     // Pair for a live token.

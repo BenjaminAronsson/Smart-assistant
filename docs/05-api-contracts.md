@@ -214,3 +214,7 @@ and grows additively. HTTP mapping via RFC 9457 problem details.
 | `artifact.too_large` | Exceeds max_artifact_bytes | 413 |
 | `artifact.integrity_failed` | Stored blob failed content-address verification on read (CAS, F3a.2) | 500 |
 | `degraded.queued` | Accepted but queued awaiting provider recovery | 202 |
+| `media.nothing_playing` | No media player is running (FR-22) | 409 |
+| `media.target_ambiguous` | Two or more players active and none named; the server never guesses (ADR-016) | 409 |
+| `media.player_gone` | Named player left the bus between snapshot and command; retryable | 409 |
+| `media.control_unsupported` | Player reports it cannot perform this control | 409 |

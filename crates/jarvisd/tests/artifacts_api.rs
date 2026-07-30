@@ -22,7 +22,7 @@ use jarvis_domain::identity::Device;
 use jarvis_domain::ids::{ArtifactId, RunId};
 use jarvis_domain::location::Sensitivity;
 use jarvis_infra::artifact_cas::FileBlobStore;
-use jarvisd::api::{AppState, router_with};
+use jarvisd::api::{AppState, Wiring, router_with};
 use jarvisd::artifacts::ArtifactApi;
 use jarvisd::auth::AuthState;
 use std::time::SystemTime;
@@ -146,11 +146,10 @@ async fn app(store: Arc<FakeArtifactStore>, blobs: Arc<FileBlobStore>) -> (Route
     let code = auth.current_pairing_code().unwrap();
     let app = router_with(
         AppState::new().with_auth(auth),
-        None,
-        None,
-        Some(ArtifactApi::new(store, blobs)),
-        None,
-        None,
+        Wiring {
+            artifacts: Some(ArtifactApi::new(store, blobs)),
+            ..Wiring::default()
+        },
     );
     let response = app
         .clone()

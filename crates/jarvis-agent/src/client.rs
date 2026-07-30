@@ -141,7 +141,10 @@ mod tests {
         let directive = decode_directive(&frame).unwrap().unwrap();
         let DisplayDirective::PlaceSurface {
             app_id, monitor, ..
-        } = directive;
+        } = directive
+        else {
+            panic!("expected a place_surface directive, got {directive:?}");
+        };
         assert_eq!(app_id, "jarvis.artifact-canvas");
         assert_eq!(monitor, "DP-1");
     }

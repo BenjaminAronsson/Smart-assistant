@@ -66,10 +66,14 @@ wyoming_tts = "tcp://127.0.0.1:10200"
 audio = { sample_rate = 16000, channels = 1, format = "s16le" }
 
 [integrations.media]
-enabled = false                          # flip at M3 (MPRIS) / M5 (Spotify)
-media_window_app_id = "jarvis-media"
-default_display = "secondary"
-max_volume_pct = 70                      # above this => R2 approval
+enabled = false                          # MPRIS transport control (M3, F3a.7); Spotify at M5
+max_volume_pct = 70                      # at/below => R1 auto; above => R2 media.volume_boost approval
+# The media window's app-id is the fixed `jarvis.media` (Surface::MediaWindow) —
+# the agent accepts only the `jarvis.` namespace, so it is not configurable — and
+# its monitor comes from the ordinary display profile:
+#   [display.profile] media_window = "HDMI-A-1"
+# With no media_window assignment, `media.open_url` (cast-a-link) is not
+# registered at all rather than casting onto an arbitrary screen.
 
 [integrations.spotify]
 enabled = false

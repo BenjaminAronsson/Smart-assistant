@@ -31,6 +31,8 @@ pub enum SurfaceDto {
     ArtifactCanvas,
     AmbientStatus,
     Diagnostics,
+    /// The credential-free media window (FR-22, ADR-012 cast-a-link).
+    MediaWindow,
 }
 
 /// A directive the server sends to the agent on the `display` channel. The
@@ -50,6 +52,21 @@ pub enum DisplayDirective {
         app_id: String,
         monitor: String,
     },
+    /// Open `url` in the **dedicated media window** on `monitor` (FR-22, ADR-012
+    /// cast-a-link): launch it if it is not running, reuse it if it is, then
+    /// place it. The window has its own app-id (`jarvis.media`), its own profile
+    /// directory, and **no credentials** — it renders third-party web video and
+    /// is deliberately isolated from both the shell and the browser worker's
+    /// profiles (docs/02 §11a).
+    ///
+    /// This is the one directive that causes the agent to **launch a process**,
+    /// so the constraints are part of the contract, not an implementation
+    /// detail: `url` must be `https`, and the agent independently re-validates
+    /// it and launches only a fixed, allowlisted browser command with the URL as
+    /// a single argv element — never through a shell (docs/02 §8: "it is not a
+    /// shell").
+    #[serde(rename = "display.open_media_url")]
+    OpenMediaUrl { url: String, monitor: String },
 }
 
 /// `POST /api/v1/artifacts/{id}/open` (FR-09/10): request that an artifact be

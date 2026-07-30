@@ -10,7 +10,7 @@ use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::conversations::Session;
 use jarvis_domain::identity::Device;
 use jarvis_domain::ids::SessionId;
-use jarvisd::api::{AppState, router_with};
+use jarvisd::api::{AppState, Wiring, router_with};
 use jarvisd::auth::AuthState;
 use jarvisd::sessions::SessionApi;
 use std::sync::{Arc, Mutex};
@@ -111,11 +111,10 @@ async fn app_with_token() -> (Router, Arc<FakeSessionStore>, String) {
     let store = Arc::new(FakeSessionStore::default());
     let app = router_with(
         AppState::new().with_auth(auth),
-        Some(SessionApi::new(store.clone())),
-        None,
-        None,
-        None,
-        None,
+        Wiring {
+            sessions: Some(SessionApi::new(store.clone())),
+            ..Wiring::default()
+        },
     );
     // Pair through the real endpoint to get a live token.
     let response = app

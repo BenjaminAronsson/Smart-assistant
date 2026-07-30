@@ -37,6 +37,13 @@ tl = "0.7.8"
 # workspace's existing rustls+ring TLS stack (already in the lock via otel/tonic)
 # — no aws-lc-rs/OpenSSL-licensed crate enters the tree, keeping cargo-deny green.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
+# MPRIS media control over the D-Bus **session** bus (F3a.7, ADR-012, docs/02
+# §11a). `default-features = false` + `tokio` drops zbus's default async-io
+# executor stack (async-io/async-lock/blocking thread pool) and reuses the
+# runtime jarvisd already has — a smaller resident footprint on the 8 GB target
+# (docs/09 §5) and one executor instead of two. `blocking-api` stays off: this
+# adapter is async-only.
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
 # Async unit tests (`#[tokio::test]`) for the tool executors; the current-thread

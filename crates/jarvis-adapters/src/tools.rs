@@ -24,6 +24,7 @@
 pub mod example_light;
 pub mod example_message;
 pub mod fs_read;
+pub mod media_playback;
 pub mod timeout;
 
 use jarvis_domain::tools::{CanonicalValue, ToolError};

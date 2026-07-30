@@ -68,7 +68,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     // placements are audited through the fallible audit log before dispatch.
     let display = jarvisd::display::DisplayApi::new(
         artifact_store,
-        display_profile,
+        display_profile.clone(),
         Arc::new(jarvis_infra::audit_sink::PgAuditLog::new(pool.clone())),
         hub.clone(),
     );
@@ -114,6 +114,40 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             web.max_fetch_bytes,
         )?;
     }
+    // Local media control (F3a.7, FR-22, ADR-012): registered ONLY when
+    // `[integrations.media].enabled` is set AND a session bus is reachable — the
+    // same opt-in stance as the web tools. Absent ⇒ no media tools, no media
+    // routes, no D-Bus subscription (nothing resident, docs/09 §5).
+    let max_volume = config.integrations.media.max_volume()?;
+    let media_controller: Option<Arc<jarvis_adapters::media_mpris::MprisController>> = if config
+        .integrations
+        .media
+        .enabled
+    {
+        match jarvis_adapters::media_mpris::MprisController::connect().await {
+            Ok(controller) => Some(Arc::new(controller)),
+            Err(e) => {
+                tracing::warn!(error = %e, "[integrations.media].enabled but no session bus; media control off");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(controller) = &media_controller {
+        // Cast-a-link needs a monitor to cast onto: registered only when the
+        // display profile actually assigns one to the media window.
+        let cast = display_profile
+            .monitor_for(jarvis_domain::display::Surface::MediaWindow)
+            .is_some()
+            .then(|| jarvisd::tools::CastWiring {
+                profile: display_profile.clone(),
+                sink: hub.clone(),
+                audit: Arc::new(jarvis_infra::audit_sink::PgAuditLog::new(pool.clone())),
+            });
+        jarvisd::tools::register_media_tools(&mut registry, controller.clone(), max_volume, cast)?;
+    }
+
     let tool_plane = jarvisd::runs::ToolPlane {
         registry: Arc::new(registry),
         audit: Arc::new(jarvis_infra::audit_sink::PgAuditSink::new(pool.clone())),
@@ -167,17 +201,51 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         poll_provider_health(polling_engine, polling_shutdown).await;
     });
 
+    // The media surface + its event-driven state watcher (F3a.7). The watcher is
+    // a tracked task bound to `serve_shutdown` (invariant 4); it reacts to D-Bus
+    // signals and never polls.
+    let media_api = media_controller.as_ref().map(|controller| {
+        let sink = Arc::new(jarvisd::media::MediaBroadcaster::new(
+            hub.clone(),
+            max_volume,
+        ));
+        let watcher_controller = controller.clone();
+        let watcher_shutdown = serve_shutdown.clone();
+        tokio::spawn(async move {
+            match watcher_controller.changes().await {
+                Ok(changes) => {
+                    jarvis_adapters::media_mpris::watch_media_state(
+                        watcher_controller.as_ref(),
+                        changes,
+                        sink.as_ref(),
+                        watcher_shutdown,
+                    )
+                    .await;
+                }
+                Err(e) => tracing::warn!(error = %e, "media change subscription failed"),
+            }
+        });
+        jarvisd::media::MediaApi::new(
+            controller.clone(),
+            Arc::new(jarvis_infra::audit_sink::PgAuditLog::new(pool.clone())),
+            max_volume,
+        )
+    });
+
     let state = jarvisd::api::AppState::with_database(pool, auth);
     let app = jarvisd::api::router_with(
         state,
-        Some(sessions),
-        Some(RunWiring {
-            runs: run_api,
-            ws: ws_state,
-        }),
-        Some(artifacts),
-        Some(display),
-        config.server.web_assets.clone(),
+        jarvisd::api::Wiring {
+            sessions: Some(sessions),
+            runs: Some(RunWiring {
+                runs: run_api,
+                ws: ws_state,
+            }),
+            artifacts: Some(artifacts),
+            display: Some(display),
+            media: media_api,
+            web_assets: config.server.web_assets.clone(),
+        },
     )
     .layer(
         TraceLayer::new_for_http().make_span_with(|req: &axum::http::Request<_>| {

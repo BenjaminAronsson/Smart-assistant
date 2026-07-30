@@ -64,6 +64,15 @@ pub fn export() -> Value {
     generator.subschema_for::<crate::display::DisplayDirective>();
     generator.subschema_for::<crate::display::OpenArtifactRequest>();
     generator.subschema_for::<crate::display::OpenArtifactResponse>();
+    // Media surface (F3a.7, FR-22). `MediaStateDto` rides inside the transient
+    // `media.state` event, but the bar also reads it once over REST on connect
+    // (transient events are never replayed), and the command request/response
+    // are referenced by no event — each must be its own root or it ships absent
+    // from the wire schema.
+    generator.subschema_for::<crate::media::MediaStateDto>();
+    generator.subschema_for::<crate::media::MediaStateResponse>();
+    generator.subschema_for::<crate::media::MediaCommandRequest>();
+    generator.subschema_for::<crate::media::MediaCommandResponse>();
 
     let definitions: Value =
         serde_json::to_value(generator.definitions()).expect("schemas are valid JSON");

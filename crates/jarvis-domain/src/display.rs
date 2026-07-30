@@ -31,6 +31,13 @@ pub enum Surface {
     AmbientStatus,
     /// Diagnostics / health.
     Diagnostics,
+    /// The dedicated **media window** (FR-22, ADR-012 cast-a-link): a separate
+    /// browser window with its own app-id, its own profile directory, and **no
+    /// credentials**, used to open web video. It is a surface like any other so
+    /// the display profile can pin it to a monitor — but unlike the others it
+    /// renders a *third-party page*, never Jarvis's own UI, which is exactly why
+    /// it is credential-free and isolated from the browser-worker profiles.
+    MediaWindow,
 }
 
 impl Surface {
@@ -46,18 +53,20 @@ impl Surface {
             Surface::ArtifactCanvas => "jarvis.artifact-canvas",
             Surface::AmbientStatus => "jarvis.ambient-status",
             Surface::Diagnostics => "jarvis.diagnostics",
+            Surface::MediaWindow => "jarvis.media",
         }
     }
 
     /// Every surface, for iteration in profiles/tests. Kept in sync with the enum
     /// by the exhaustive `app_id` match above (a new variant fails that match).
-    pub const ALL: [Surface; 6] = [
+    pub const ALL: [Surface; 7] = [
         Surface::Conversation,
         Surface::RunTimeline,
         Surface::ApprovalTray,
         Surface::ArtifactCanvas,
         Surface::AmbientStatus,
         Surface::Diagnostics,
+        Surface::MediaWindow,
     ];
 }
 
@@ -179,6 +188,13 @@ mod tests {
         );
         // Stable naming contract (a rename here breaks the shell launcher).
         assert_eq!(Surface::ArtifactCanvas.app_id(), "jarvis.artifact-canvas");
+        // `jarvis.media` is additionally hard-coded in `jarvis-agent` (which
+        // cannot depend on this crate — arch-test), both as the launch app-id
+        // and as the placement target. Changing it here without changing the
+        // agent would cast into a window the agent never places, so the literal
+        // is pinned on both sides; the agent's copy is pinned by
+        // `handler::tests::casts_an_https_url_into_the_media_window_and_places_it`.
+        assert_eq!(Surface::MediaWindow.app_id(), "jarvis.media");
     }
 
     #[test]

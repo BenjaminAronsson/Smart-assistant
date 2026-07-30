@@ -346,6 +346,27 @@
             "monitor"
           ],
           "type": "object"
+        },
+        {
+          "description": "Open `url` in the **dedicated media window** on `monitor` (FR-22, ADR-012\ncast-a-link): launch it if it is not running, reuse it if it is, then\nplace it. The window has its own app-id (`jarvis.media`), its own profile\ndirectory, and **no credentials** — it renders third-party web video and\nis deliberately isolated from both the shell and the browser worker's\nprofiles (docs/02 §11a).\n\nThis is the one directive that causes the agent to **launch a process**,\nso the constraints are part of the contract, not an implementation\ndetail: `url` must be `https`, and the agent independently re-validates\nit and launches only a fixed, allowlisted browser command with the URL as\na single argv element — never through a shell (docs/02 §8: \"it is not a\nshell\").",
+          "properties": {
+            "monitor": {
+              "type": "string"
+            },
+            "type": {
+              "const": "display.open_media_url",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "url",
+            "monitor"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -560,6 +581,26 @@
           "const": "artifact.integrity_failed",
           "description": "A stored artifact blob failed content-address verification on read —\non-disk corruption or tampering (F3a.2 CAS verify-on-read). 500; the\nbytes are never returned (fail closed).",
           "type": "string"
+        },
+        {
+          "const": "media.nothing_playing",
+          "description": "No media player is running, so an untargeted transport command has\nnothing to act on (F3a.7, FR-22). 409. Distinct from\n`media.target_ambiguous`: the client shows an empty state rather than\nasking which player.",
+          "type": "string"
+        },
+        {
+          "const": "media.target_ambiguous",
+          "description": "Two or more players are active and the request named none, so the server\nrefuses to guess (ADR-016 — the choice is asked, never inferred). 409.\nThe client's cue to ask which player and retry with `player` set.",
+          "type": "string"
+        },
+        {
+          "const": "media.player_gone",
+          "description": "The named player left the bus between the snapshot and the command. 409.\nA normal race, and safely retryable after a state refresh — which is why\nit is not `resource.not_found` (that means \"no such id, ever\").",
+          "type": "string"
+        },
+        {
+          "const": "media.control_unsupported",
+          "description": "The player is present but reports it cannot perform this control\n(`CanGoNext = false`). 409 — the request was well-formed, so this is not\n`validation.failed`; retrying the same call will not help, but a\ndifferent control on the same player may.",
+          "type": "string"
         }
       ]
     },
@@ -643,6 +684,167 @@
         "status",
         "version",
         "adapters"
+      ],
+      "type": "object"
+    },
+    "MediaCommandRequest": {
+      "description": "`POST /api/v1/media/command` — the owner-driven transport control behind the\nmedia bar (exit evidence #4).\n\n`command` is one of the closed transport verbs (`play`, `pause`,\n`play_pause`, `stop`, `next`, `previous`, `seek`, `set_volume`); unknown\nverbs are a 400, never forwarded. Omitting `player` targets the unambiguous\nactive player and fails cleanly (409) when the choice is ambiguous — the\nserver never picks one.",
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "offsetSecs": {
+          "description": "Required by `seek`; ignored otherwise. Negative rewinds.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "player": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "volumePct": {
+          "description": "Required by `set_volume`. **Must not exceed the configured cap** — the\nmedia bar cannot raise volume above it at all; going higher is the R2\napproved tool path, deliberately not reachable from a UI button\n(docs/02 §11a).",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
+    "MediaCommandResponse": {
+      "description": "Response to `POST …/media/command`: the effect that was audited and applied,\nplus the state immediately afterwards so the bar re-renders without waiting\nfor the event.",
+      "properties": {
+        "command": {
+          "description": "The verb that was applied (echo of the request's `command`).",
+          "type": "string"
+        },
+        "player": {
+          "description": "The player it was applied to.",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/MediaStateDto"
+        }
+      },
+      "required": [
+        "command",
+        "player",
+        "state"
+      ],
+      "type": "object"
+    },
+    "MediaPlayerDto": {
+      "description": "One player's state on the media bar.",
+      "properties": {
+        "canGoNext": {
+          "type": "boolean"
+        },
+        "canGoPrevious": {
+          "type": "boolean"
+        },
+        "canPause": {
+          "type": "boolean"
+        },
+        "canPlay": {
+          "description": "What the player says it supports — the bar disables the rest rather than\noffering a control that will silently do nothing.",
+          "type": "boolean"
+        },
+        "canSeek": {
+          "type": "boolean"
+        },
+        "identity": {
+          "description": "Human-readable player name (\"Spotify\"), sanitized player-published text.",
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/definitions/TrackMetadataDto"
+        },
+        "player": {
+          "description": "The MPRIS bus name (`org.mpris.MediaPlayer2.spotify`) — the handle a\ncommand targets. Validated as a bus name server-side on the way back in.",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/PlaybackStatusDto"
+        },
+        "volumePct": {
+          "description": "Current volume in whole percent, when the player exposes one.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "player",
+        "identity",
+        "status",
+        "metadata",
+        "canPlay",
+        "canPause",
+        "canGoNext",
+        "canGoPrevious",
+        "canSeek"
+      ],
+      "type": "object"
+    },
+    "MediaStateDto": {
+      "description": "Payload of the transient `media.state` event and of `GET …/media/state`.",
+      "properties": {
+        "activePlayer": {
+          "description": "The player an untargeted command applies to, when exactly one is\nunambiguous. `null` with a non-empty `players` means the choice is\ngenuinely ambiguous (two players playing) — the bar shows both and the\nvoice path asks (ADR-016), it never guesses.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "maxVolumePct": {
+          "description": "The configured volume cap in percent. The bar clamps its own slider to\nthis; the server enforces it regardless (hearing protection, docs/02\n§11a).",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "players": {
+          "description": "Players currently on the session bus, in a stable order. Empty means\nnothing is running — the bar hides itself rather than showing an empty\nshell.",
+          "items": {
+            "$ref": "#/definitions/MediaPlayerDto"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "players",
+        "maxVolumePct"
+      ],
+      "type": "object"
+    },
+    "MediaStateResponse": {
+      "description": "`GET /api/v1/media/state`. Present because `media.state` is transient and\ntherefore never replayed on resync (docs/05 §3): a client fetches the current\nvalue once on connect and follows events afterwards.",
+      "properties": {
+        "available": {
+          "description": "False when media control is not configured or no session bus is present.\nThe bar renders nothing at all rather than dead buttons.",
+          "type": "boolean"
+        },
+        "state": {
+          "$ref": "#/definitions/MediaStateDto"
+        }
+      },
+      "required": [
+        "state",
+        "available"
       ],
       "type": "object"
     },
@@ -760,6 +962,15 @@
         "scopes"
       ],
       "type": "object"
+    },
+    "PlaybackStatusDto": {
+      "description": "Wire mirror of `jarvis_domain::media::PlaybackStatus`.",
+      "enum": [
+        "playing",
+        "paused",
+        "stopped"
+      ],
+      "type": "string"
     },
     "ProblemDetails": {
       "description": "RFC 9457 problem details body plus the stable machine `code` (docs/05 §2).\nThe gateway maps every boundary-crossing error through one `IntoProblem`\nimpl — no inline problem bodies.",
@@ -1121,15 +1332,24 @@
     },
     "SurfaceDto": {
       "description": "A logical UI surface (docs/02 §8). Wire mirror of\n`jarvis_domain::display::Surface`; jarvisd maps between them.",
-      "enum": [
-        "conversation",
-        "run_timeline",
-        "approval_tray",
-        "artifact_canvas",
-        "ambient_status",
-        "diagnostics"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "conversation",
+            "run_timeline",
+            "approval_tray",
+            "artifact_canvas",
+            "ambient_status",
+            "diagnostics"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "media_window",
+          "description": "The credential-free media window (FR-22, ADR-012 cast-a-link).",
+          "type": "string"
+        }
+      ]
     },
     "TimelineItem": {
       "description": "One persisted entry in a session's history.",
@@ -1192,6 +1412,45 @@
       ],
       "type": "object"
     },
+    "TrackMetadataDto": {
+      "description": "Track metadata as published by the player — **untrusted display data**\n(docs/06 §2 Z4). Absent fields are omitted rather than blank so the card can\nrender \"unknown\" instead of an empty line.",
+      "properties": {
+        "album": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "artUrl": {
+          "description": "`https`-only album art (the domain drops every other scheme). The client\nmay render it directly; a player cannot use this field to make the shell\nfetch a local file or an internal address.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "artist": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lengthSecs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "TransientEvent": {
       "description": "Disposable, never-replayed events (docs/05 §3 \"not persisted\"). A durable\nsnapshot (`DomainEvent`) always follows the work these describe. Dotted tags\nand strict (no-catch-all) decoding for the same reasons as [`DomainEvent`].",
       "oneOf": [
@@ -1213,6 +1472,23 @@
             "type",
             "runId",
             "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Current local playback state, feeding the media bar (FR-22, docs/02\n§11a — \"a `media.state` transient WS event\").\n\nTransient is the correct classification, not a shortcut: this is a\n*current-value readout* of whatever is playing right now, not a fact\nabout the run timeline. A client that missed one is not missing history\n— it holds a stale value that the next change corrects, and a client\nthat just connected reads `GET /api/v1/media/state` instead of replaying.\nIt is also not run-scoped: media state exists with no run in flight,\nwhich is why this variant carries no `RunId`.",
+          "properties": {
+            "state": {
+              "$ref": "#/definitions/MediaStateDto"
+            },
+            "type": {
+              "const": "media.state",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "state"
           ],
           "type": "object"
         }

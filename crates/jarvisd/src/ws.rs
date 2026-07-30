@@ -162,6 +162,28 @@ impl WsHub {
         self.tx.send(Arc::new(envelope)).is_ok()
     }
 
+    /// Broadcast the transient `media.state` event (F3a.7, FR-22). Like a text
+    /// delta it rides at the current high-water `seq` and never advances the
+    /// resync cursor: it is a current-value readout, not timeline history, and a
+    /// client that missed one recovers by reading `GET /api/v1/media/state`
+    /// rather than by replay (docs/05 §3).
+    pub fn broadcast_media_state(&self, state: jarvis_contracts::media::MediaStateDto) {
+        let event = TransientEvent::MediaState { state };
+        let (event_type, payload) =
+            split_tagged(serde_json::to_value(&event).expect("transient event serializes"));
+        let envelope = EventEnvelope {
+            v: CONTRACT_VERSION,
+            seq: self.high_water.load(Ordering::SeqCst),
+            channel: Channel::Session,
+            event_type,
+            occurred_at: now_rfc3339(),
+            trace_id: None,
+            resource_version: None,
+            payload,
+        };
+        let _ = self.tx.send(Arc::new(envelope));
+    }
+
     /// Broadcast a transient text delta at the current high-water `seq` (it does
     /// not advance the resync cursor; a lost delta is re-derived, docs/05 §3).
     fn broadcast_delta(&self, run_id: &RunId, text: &str) {
@@ -207,6 +229,33 @@ impl DisplayDirectiveSink for WsHub {
     }
 }
 
+/// Cast-a-link dispatch (F3a.7, ADR-012): the media window's URL rides the same
+/// display channel as a placement. The URL was validated (`https`, bounded, no
+/// control characters) by the tool before it got here, and the agent validates
+/// it again before launching anything.
+#[async_trait]
+impl jarvis_application::ports::MediaWindowSink for WsHub {
+    async fn open_url(&self, url: &str, monitor: &jarvis_domain::display::MonitorId) -> bool {
+        let directive = DisplayDirective::OpenMediaUrl {
+            url: url.to_owned(),
+            monitor: monitor.as_str().to_owned(),
+        };
+        let (event_type, payload) =
+            split_tagged(serde_json::to_value(&directive).expect("directive serializes"));
+        let envelope = EventEnvelope {
+            v: CONTRACT_VERSION,
+            seq: self.high_water.load(Ordering::SeqCst),
+            channel: Channel::Display,
+            event_type,
+            occurred_at: now_rfc3339(),
+            trace_id: None,
+            resource_version: None,
+            payload,
+        };
+        self.tx.send(Arc::new(envelope)).is_ok()
+    }
+}
+
 /// Map the domain surface to its wire mirror. Exhaustive on purpose: a new
 /// `Surface` variant forces a wire mapping decision here (no `_` arm).
 fn surface_dto(surface: Surface) -> SurfaceDto {
@@ -217,6 +266,7 @@ fn surface_dto(surface: Surface) -> SurfaceDto {
         Surface::ArtifactCanvas => SurfaceDto::ArtifactCanvas,
         Surface::AmbientStatus => SurfaceDto::AmbientStatus,
         Surface::Diagnostics => SurfaceDto::Diagnostics,
+        Surface::MediaWindow => SurfaceDto::MediaWindow,
     }
 }
 

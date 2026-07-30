@@ -3,12 +3,17 @@
 //! trait, so the directive-handling logic is unit-tested with a fake and the real
 //! Hyprland socket I/O stays a thin, replaceable adapter.
 //!
-//! The agent exposes a **narrow, closed** command set. In this slice that is
-//! list-monitors + place-a-window-on-a-monitor (exit evidence #2). App-launch in
-//! app-mode with an allowlist is part of the eventual set (docs/02 §8) but lands
-//! with its own directive — the canvas window is launched by the shell until
-//! then. **It is not a shell**: there is no "run arbitrary command" method here,
-//! by construction, and adding one would be a reviewed contract change.
+//! The agent exposes a **narrow, closed** command set: list-monitors,
+//! place-a-window-on-a-monitor (exit evidence #2), and — since F3a.7 — launch
+//! the **media window** on an `https` URL (ADR-012 cast-a-link, exit evidence
+//! #4's sibling capability). The canvas window is still launched by the shell.
+//!
+//! **It is not a shell**: there is no "run arbitrary command" method here, by
+//! construction. The one method that starts a process
+//! ([`Compositor::open_media_window`]) chooses its program from a fixed
+//! allowlist, passes only compile-time-constant flags plus the URL as a single
+//! argv element, and never goes through a shell. Adding a method that takes a
+//! caller-supplied program would be a reviewed contract change.
 
 use serde::Deserialize;
 
@@ -42,6 +47,24 @@ pub trait Compositor {
     /// already validated that `monitor` exists and that `app_id` is a jarvis
     /// surface; this issues the compositor dispatch.
     async fn place_window(&self, app_id: &str, monitor: &str) -> Result<(), CompositorError>;
+
+    /// Launch the **media window** on `url` (FR-22, ADR-012 cast-a-link).
+    ///
+    /// This is the only method in the agent that starts a process, and it is
+    /// deliberately shaped so that it *cannot* become "run a command":
+    ///
+    /// * the program is chosen from a fixed allowlist of browser binaries — the
+    ///   caller never supplies it;
+    /// * every flag is a compile-time constant (`--app=`, the fixed app-id, the
+    ///   dedicated credential-free profile directory);
+    /// * `url` is passed as a **single argv element**, never through a shell, so
+    ///   no metacharacter in it can become a second command;
+    /// * the caller has already enforced `https` and rejected control characters.
+    ///
+    /// Launching is idempotent from the caller's point of view: relaunching with
+    /// the same profile reuses the existing window (the browser routes the URL to
+    /// the running instance for that user-data-dir).
+    async fn open_media_window(&self, url: &str) -> Result<(), CompositorError>;
 }
 
 // --- real Hyprland client ------------------------------------------------
@@ -106,12 +129,52 @@ impl HyprctlClient {
             .map_err(|e| CompositorError::ipc(format!("read: {e}")))?;
         Ok(reply)
     }
+
+    /// Poll `j/clients` until a window with `app_id` is mapped, or the deadline
+    /// passes. Hyprland reports the app-mode app-id as the window `class`.
+    ///
+    /// A poll rather than an event subscription because the agent's Hyprland
+    /// client is deliberately request/response only (one short-lived socket per
+    /// command); subscribing to the event socket for this one case would be a
+    /// larger surface than the problem warrants.
+    async fn await_window(&self, app_id: &str) -> Result<(), CompositorError> {
+        let deadline = std::time::Instant::now() + WINDOW_MAP_TIMEOUT;
+        loop {
+            if let Ok(reply) = self.request("j/clients").await
+                && let Ok(clients) = serde_json::from_str::<Vec<HyprClient>>(&reply)
+                && clients.iter().any(|c| c.class == app_id)
+            {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(CompositorError::ipc(format!(
+                    "the {app_id} window did not appear within {WINDOW_MAP_TIMEOUT:?}"
+                )));
+            }
+            tokio::time::sleep(WINDOW_MAP_POLL).await;
+        }
+    }
 }
 
 #[derive(Deserialize)]
 struct HyprMonitor {
     name: String,
 }
+
+/// A mapped window as reported by `j/clients`. Only the class is read — the
+/// agent never inspects window titles (they carry page content).
+#[derive(Deserialize)]
+struct HyprClient {
+    class: String,
+}
+
+/// How long to wait for the media window to map before giving up. A browser
+/// cold start on a loaded ultrabook can take a while; failing closed here is
+/// better than moving the wrong window.
+const WINDOW_MAP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Gap between `j/clients` polls while waiting for the window.
+const WINDOW_MAP_POLL: std::time::Duration = std::time::Duration::from_millis(150);
 
 impl Compositor for HyprctlClient {
     async fn list_monitors(&self) -> Result<Vec<Monitor>, CompositorError> {
@@ -140,6 +203,105 @@ impl Compositor for HyprctlClient {
             .await?;
         Ok(())
     }
+
+    async fn open_media_window(&self, url: &str) -> Result<(), CompositorError> {
+        let profile_dir = media_profile_dir().ok_or_else(|| {
+            CompositorError::ipc(
+                "no user state directory (XDG_STATE_HOME/HOME unset) for the media \
+                 window profile"
+                    .to_owned(),
+            )
+        })?;
+        let program = media_browser().ok_or_else(|| {
+            CompositorError::ipc(
+                "no allowlisted browser found for the media window (chromium, \
+                 google-chrome-stable, google-chrome, brave)"
+                    .to_owned(),
+            )
+        })?;
+
+        // Spawned directly — NOT through the compositor's `dispatch exec`, which
+        // would hand a string to a shell. `Command` execs the program with an
+        // argv array, so the URL cannot become a second command however it is
+        // spelled.
+        let mut command = tokio::process::Command::new(program);
+        command
+            .arg(format!("--app={url}"))
+            .arg(format!("--class={}", MEDIA_APP_ID))
+            .arg(format!("--user-data-dir={}", profile_dir.display()))
+            // The media window renders third-party video and must never carry
+            // the owner's browsing identity: its own profile dir is empty and
+            // separate from both the shell and the browser worker (docs/02 §11a
+            // "own app-id, own profile, no credentials").
+            .arg("--no-first-run")
+            .arg("--no-default-browser-check")
+            // Incognito is what makes "credential-free" a *property* rather than
+            // an initial condition. The profile directory persists (so the
+            // window keeps its size and position), but nothing a cast page sets
+            // — cookies, localStorage, a sign-in — survives to the next cast.
+            // Without this, one manual sign-in in that window would leave every
+            // subsequent model-proposed URL loading against real credentials,
+            // which is precisely the isolation ADR-012 relies on.
+            .arg("--incognito")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        // Detached: the media window outlives this request by design. `spawn`
+        // (not `status`) so a long-lived browser never blocks the client loop.
+        let mut child = command
+            .spawn()
+            .map_err(|e| CompositorError::ipc(format!("launching the media window: {e}")))?;
+        // Wait for the window to actually appear before returning, because the
+        // caller places it next and `place_window` works by focusing the app-id
+        // and moving the *active* window. A browser takes hundreds of ms to map
+        // its window; returning immediately would make `focuswindow` match
+        // nothing and `movewindow` relocate whatever the user currently has
+        // focused — a deterministic wrong-window move, not a rare race.
+        self.await_window(MEDIA_APP_ID).await?;
+        // Do not reap: dropping the handle without waiting leaves a zombie until
+        // the agent exits. Detach the wait onto the runtime instead — bounded
+        // work (one browser process), and it keeps the process table clean.
+        tokio::spawn(async move {
+            let _ = child.wait().await;
+        });
+        Ok(())
+    }
+}
+
+/// The app-id the media window is launched with — the same id the display
+/// profile places (`Surface::MediaWindow::app_id`). A constant here rather than
+/// a parameter: the agent launches exactly this window and nothing else.
+const MEDIA_APP_ID: &str = "jarvis.media";
+
+/// Browser binaries the media window may be launched with, in preference order.
+/// A **fixed allowlist**: the caller cannot supply a program, so this directive
+/// can never become an arbitrary-execution primitive.
+const MEDIA_BROWSERS: [&str; 4] = ["chromium", "google-chrome-stable", "google-chrome", "brave"];
+
+/// First allowlisted browser present on `PATH`.
+fn media_browser() -> Option<&'static str> {
+    MEDIA_BROWSERS.into_iter().find(|program| {
+        std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+            .unwrap_or(false)
+    })
+}
+
+/// The media window's dedicated, credential-free profile directory. Under the
+/// user's state dir so it survives restarts (the window keeps its size/position)
+/// but is separate from every other browser profile on the machine.
+///
+/// `None` when neither `XDG_STATE_HOME` nor `HOME` is set: falling back to a
+/// world-writable `/tmp` path would put a browser profile somewhere another
+/// local user can pre-create or symlink. No state dir ⇒ no cast (fail closed).
+fn media_profile_dir() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/state"))
+        })?;
+    Some(base.join("jarvis/media-profile"))
 }
 
 // --- fake for tests ------------------------------------------------------
@@ -150,6 +312,7 @@ impl Compositor for HyprctlClient {
 pub struct FakeCompositor {
     pub monitors: Vec<Monitor>,
     pub placements: std::sync::Mutex<Vec<(String, String)>>,
+    pub opened: std::sync::Mutex<Vec<String>>,
 }
 
 #[cfg(test)]
@@ -163,6 +326,7 @@ impl FakeCompositor {
                 })
                 .collect(),
             placements: std::sync::Mutex::new(Vec::new()),
+            opened: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -177,6 +341,10 @@ impl Compositor for FakeCompositor {
             .lock()
             .unwrap()
             .push((app_id.to_owned(), monitor.to_owned()));
+        Ok(())
+    }
+    async fn open_media_window(&self, url: &str) -> Result<(), CompositorError> {
+        self.opened.lock().unwrap().push(url.to_owned());
         Ok(())
     }
 }

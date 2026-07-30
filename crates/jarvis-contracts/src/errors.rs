@@ -50,6 +50,28 @@ pub enum ErrorCode {
     ArtifactIntegrityFailed,
     #[serde(rename = "degraded.queued")]
     DegradedQueued,
+    /// No media player is running, so an untargeted transport command has
+    /// nothing to act on (F3a.7, FR-22). 409. Distinct from
+    /// `media.target_ambiguous`: the client shows an empty state rather than
+    /// asking which player.
+    #[serde(rename = "media.nothing_playing")]
+    MediaNothingPlaying,
+    /// Two or more players are active and the request named none, so the server
+    /// refuses to guess (ADR-016 — the choice is asked, never inferred). 409.
+    /// The client's cue to ask which player and retry with `player` set.
+    #[serde(rename = "media.target_ambiguous")]
+    MediaTargetAmbiguous,
+    /// The named player left the bus between the snapshot and the command. 409.
+    /// A normal race, and safely retryable after a state refresh — which is why
+    /// it is not `resource.not_found` (that means "no such id, ever").
+    #[serde(rename = "media.player_gone")]
+    MediaPlayerGone,
+    /// The player is present but reports it cannot perform this control
+    /// (`CanGoNext = false`). 409 — the request was well-formed, so this is not
+    /// `validation.failed`; retrying the same call will not help, but a
+    /// different control on the same player may.
+    #[serde(rename = "media.control_unsupported")]
+    MediaControlUnsupported,
 }
 
 /// RFC 9457 problem details body plus the stable machine `code` (docs/05 §2).
