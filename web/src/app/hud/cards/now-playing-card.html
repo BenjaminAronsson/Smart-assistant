@@ -1,0 +1,17 @@
+<section class="now-playing-card" aria-label="Now playing">
+  @if (card().artUrl; as art) {
+    <!-- The player's own art, not third-party web content — no source chip
+         is owed (docs/12 §2.3), matching the media bar's treatment. -->
+    <img class="now-playing-art" [src]="art" alt="" referrerpolicy="no-referrer" />
+  }
+  <div class="now-playing-text">
+    <p class="now-playing-title">{{ card().title ?? 'Unknown track' }}</p>
+    @if (card().artist) {
+      <p class="now-playing-artist">{{ card().artist }}</p>
+    }
+    @if (card().album) {
+      <p class="now-playing-album">{{ card().album }}</p>
+    }
+    <p class="now-playing-source">{{ card().sourceApp }}</p>
+  </div>
+</section>

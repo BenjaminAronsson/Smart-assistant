@@ -1,0 +1,58 @@
+/* A card photo + its mandatory source chip (docs/12 §2.3). Sized by
+ * aspect-ratio, never a fixed pixel box (docs/12 §7). */
+
+.sourced-image {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6vmin;
+}
+
+.image-frame {
+  position: relative;
+  display: block;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border-radius: 1vmin;
+  background: var(--glass-bg);
+
+  /* The signature one-shot light-sweep (docs/12 §2.3) — never loops. Duration
+   * and stagger both read `--motion`/`--card-index`, set on the ancestor
+   * `.hud-card` host (hud-card.scss) and inherited down through the DOM
+   * regardless of Angular's per-component style encapsulation — custom
+   * property inheritance is a plain CSS mechanism, not scoped by `_ngcontent`
+   * attributes. Reduced motion (`--motion: 0`) collapses this to ~1ms with no
+   * stagger, same as the card's own wipe-in. */
+  &::after {
+    content: '';
+    position: absolute;
+    inset-block: 0;
+    inline-size: 40%;
+    background: linear-gradient(
+      100deg,
+      transparent 0%,
+      rgb(255 255 255 / 0.55) 50%,
+      transparent 100%
+    );
+    transform: translateX(-150%);
+    animation: image-sweep calc(619ms * var(--motion, 1) + 1ms) ease-out both;
+    animation-delay: var(--card-delay, 0ms);
+  }
+}
+
+img {
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+figcaption {
+  display: flex;
+}
+
+@keyframes image-sweep {
+  to {
+    transform: translateX(250%);
+  }
+}

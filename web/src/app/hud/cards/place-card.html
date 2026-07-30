@@ -1,0 +1,20 @@
+<section class="place-card" [attr.aria-label]="card().name">
+  @if (card().photo; as photo) {
+    <app-sourced-image [image]="photo" />
+  }
+  <h3 class="place-name">{{ card().name }}</h3>
+  <ul class="place-pills">
+    @if (card().rating) {
+      <li class="pill pill-rating">★ {{ card().rating }}</li>
+    }
+    @if (card().distance) {
+      <li class="pill pill-distance">{{ card().distance }}</li>
+    }
+    @if (card().priceLevel) {
+      <li class="pill pill-price">{{ card().priceLevel }}</li>
+    }
+  </ul>
+  @if (card().pick) {
+    <span class="pick-badge">Top pick</span>
+  }
+</section>

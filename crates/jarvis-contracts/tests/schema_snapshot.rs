@@ -38,6 +38,7 @@ const REQUIRED_DEFINITIONS: &[&str] = &[
     "MediaStateResponse",
     "MediaCommandRequest",
     "MediaCommandResponse",
+    "HudCardDto",
 ];
 
 fn snapshot_path() -> std::path::PathBuf {

@@ -73,6 +73,11 @@ pub fn export() -> Value {
     generator.subschema_for::<crate::media::MediaStateResponse>();
     generator.subschema_for::<crate::media::MediaCommandRequest>();
     generator.subschema_for::<crate::media::MediaCommandResponse>();
+    // HUD card grammar v1 (F3b.2, docs/12 §2.3). No producer wires this onto
+    // the wire yet (F3b.6 is the first), so `HudCardDto` rides no event — it
+    // must be its own root or it ships absent from the schema, same reasoning
+    // as `ApprovalDecisionDto` above.
+    generator.subschema_for::<crate::cards::HudCardDto>();
 
     let definitions: Value =
         serde_json::to_value(generator.definitions()).expect("schemas are valid JSON");

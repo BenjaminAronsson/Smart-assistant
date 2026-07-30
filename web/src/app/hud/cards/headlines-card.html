@@ -1,0 +1,20 @@
+<section class="headlines-card" [attr.aria-label]="card().title">
+  <h3 class="headlines-title">{{ card().title }}</h3>
+  <ol class="headline-items">
+    @for (item of card().items; track item.sourceUrl) {
+      <li class="headline-item">
+        @if (item.thumbnail; as thumb) {
+          <app-sourced-image class="headline-thumb" [image]="thumb" />
+        }
+        <div class="headline-body">
+          <p class="headline-item-title">{{ item.title }}</p>
+          <p class="headline-summary">{{ item.summary }}</p>
+          <div class="headline-meta">
+            <span class="headline-time">{{ item.relativeTime }}</span>
+            <app-source-chip [domain]="item.sourceDomain" [href]="item.sourceUrl" />
+          </div>
+        </div>
+      </li>
+    }
+  </ol>
+</section>

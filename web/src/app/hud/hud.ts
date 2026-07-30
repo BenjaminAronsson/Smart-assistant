@@ -7,6 +7,8 @@ import {
   computed,
   inject,
 } from '@angular/core';
+import { hudCardId } from './cards/card-id';
+import { HudCard } from './cards/hud-card';
 import { HudStateService } from './hud-state.service';
 import { PresenceOrb } from './presence-orb';
 
@@ -16,14 +18,14 @@ import { PresenceOrb } from './presence-orb';
  * transcript here; the operator console (Run Spine, timeline, approval detail,
  * diagnostics) is one keystroke away in the ops layer, which the shell owns.
  *
- * F3b.1 ships the scaffold: the canvas is empty until the card grammar lands in
- * F3b.2 and artifact renderers in F3b.3, and the shelf row is F3b.4's panel
- * lifecycle. What is real here is the state language, the caption, the ops
- * toggle, and the motion/power policy.
+ * F3b.1 shipped the scaffold; F3b.2 fills the canvas with the registered card
+ * grammar (`HudStateService.cards`) and its reveal animation. There is still
+ * no server-side producer pushing cards onto the wire (F3b.6 is the first) —
+ * the shelf row and panel lifecycle (shelve/restore/dismiss/TTL) are F3b.4.
  */
 @Component({
   selector: 'app-hud',
-  imports: [PresenceOrb],
+  imports: [PresenceOrb, HudCard],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './hud.html',
   styleUrl: './hud.scss',
@@ -38,7 +40,11 @@ export class Hud implements OnInit, OnDestroy {
     this.hud.setReducedMotion(event.matches);
 
   /** The canvas is announced as empty rather than silently blank (docs/12 §8). */
-  protected readonly canvasEmpty = computed(() => true);
+  protected readonly canvasEmpty = computed(() => this.hud.cards().length === 0);
+
+  /** Stable `@for` key — every card type keys off its own `id` except the
+   * wire-reused approval card, which keys off `approvalId` (`card-id.ts`). */
+  protected readonly cardKey = hudCardId;
 
   ngOnInit(): void {
     const view = this.document.defaultView;

@@ -1,0 +1,14 @@
+<section class="value-readout" [attr.aria-label]="card().label">
+  <p class="readout-label">{{ card().label }}</p>
+  <p class="readout-hero">{{ card().value }}</p>
+  @if (card().miniStats?.length) {
+    <dl class="mini-stats">
+      @for (stat of card().miniStats; track stat.label; let i = $index) {
+        <div class="mini-stat" [style.--stat-index]="i">
+          <dt>{{ stat.label }}</dt>
+          <dd>{{ stat.value }}</dd>
+        </div>
+      }
+    </dl>
+  }
+</section>

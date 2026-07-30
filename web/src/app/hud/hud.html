@@ -29,6 +29,10 @@
   <div class="canvas" aria-label="Results" role="region">
     @if (canvasEmpty()) {
       <p class="canvas-empty">Nothing on the canvas yet.</p>
+    } @else {
+      @for (card of hud.cards(); track cardKey(card); let i = $index) {
+        <app-hud-card [card]="card" [index]="i" [reducedMotion]="hud.reducedMotion()" />
+      }
     }
   </div>
 </section>

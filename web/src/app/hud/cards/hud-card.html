@@ -1,0 +1,27 @@
+@if (asValueReadout(); as c) {
+  <app-value-readout-card [card]="c" />
+} @else if (asPlace(); as c) {
+  <app-place-card [card]="c" />
+} @else if (asEntity(); as c) {
+  <app-entity-card [card]="c" />
+} @else if (asMediaGrid(); as c) {
+  <app-media-grid-card [card]="c" />
+} @else if (asHeadlines(); as c) {
+  <app-headlines-card [card]="c" />
+} @else if (asNowPlaying(); as c) {
+  <app-now-playing-card [card]="c" />
+} @else if (asApproval(); as c) {
+  <app-approval-card
+    [card]="c.card"
+    [pending]="approvalPending()"
+    (decide)="approvalDecide.emit($event)"
+  />
+} @else if (asStatus(); as c) {
+  <app-status-card [card]="c" />
+} @else if (asError(); as c) {
+  <app-error-card [message]="c.message" />
+} @else {
+  <!-- Unregistered discriminant: degrade to the error card, never raw
+       content (docs/12 §2.3/§9). -->
+  <app-error-card message="This result can't be shown." />
+}

@@ -1,0 +1,12 @@
+:host {
+  display: block;
+  border: 1px solid var(--c-error);
+  border-radius: 1vmin;
+  padding: 1vmin 1.5vmin;
+}
+
+.error-message {
+  margin: 0;
+  font-size: clamp(12px, 1.7vmin, 15px);
+  color: var(--c-error);
+}

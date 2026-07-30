@@ -276,6 +276,103 @@ export type ErrorCode =
  */
 export type ServiceStatus = "ok" | "degraded";
 /**
+ * Registered HUD card types (docs/12 §2.3). The `type` discriminator is
+ * dotted-namespaced (`card.value_readout`, …), matching the envelope/event
+ * convention. **Strict, no catch-all** — every card is authored by jarvisd
+ * itself (there is no third-party card producer), the same reasoning as
+ * [`crate::events::DomainEvent`]. The client-side defense for a genuinely
+ * unrecognized discriminant (a future contract version, a malformed payload)
+ * is the Angular `hud-card` switch component degrading to the error card —
+ * belt-and-suspenders, not a substitute for this union staying the single
+ * source of truth for what "registered" means.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "HudCardDto".
+ */
+export type HudCardDto =
+  | {
+      id: string;
+      label: string;
+      miniStats?: MiniStatDto[];
+      type: "card.value_readout";
+      /**
+       * The hero value as display text (e.g. "72°F") — the client applies
+       * tabular-nums and the count-up animation, it does not compute the
+       * value.
+       */
+      value: string;
+      [k: string]: unknown;
+    }
+  | {
+      distance?: string | null;
+      id: string;
+      name: string;
+      photo?: SourcedImageDto | null;
+      /**
+       * Marks the top recommendation among a set of place cards — rendered
+       * with a hue ring (docs/12 §2.3), never a colour picked ad hoc.
+       */
+      pick?: boolean;
+      priceLevel?: string | null;
+      rating?: string | null;
+      type: "card.place";
+      [k: string]: unknown;
+    }
+  | {
+      /**
+       * 0-100 confidence in the entity resolution.
+       */
+      confidencePct?: number | null;
+      facts?: string[];
+      id: string;
+      name: string;
+      photo?: SourcedImageDto | null;
+      type: "card.entity";
+      [k: string]: unknown;
+    }
+  | {
+      id: string;
+      items: MediaGridItemDto[];
+      title: string;
+      type: "card.media_grid";
+      [k: string]: unknown;
+    }
+  | {
+      id: string;
+      items: HeadlineItemDto[];
+      title: string;
+      type: "card.headlines";
+      [k: string]: unknown;
+    }
+  | {
+      album?: string | null;
+      artUrl?: string | null;
+      artist?: string | null;
+      id: string;
+      sourceApp: string;
+      title?: string | null;
+      type: "card.now_playing";
+      [k: string]: unknown;
+    }
+  | {
+      card: ApprovalCardDto;
+      type: "card.approval";
+      [k: string]: unknown;
+    }
+  | {
+      id: string;
+      message: string;
+      queued?: boolean;
+      type: "card.status";
+      [k: string]: unknown;
+    }
+  | {
+      id: string;
+      message: string;
+      type: "card.error";
+      [k: string]: unknown;
+    };
+/**
  * Wire mirror of `jarvis_domain::media::PlaybackStatus`.
  *
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
@@ -548,6 +645,64 @@ export interface EventEnvelope {
   [k: string]: unknown;
 }
 /**
+ * One item of a headlines/digest card (docs/12 §2.3: "3-5 short items, each a
+ * one-line title + one-line summary + relative time + source link"). The item
+ * carries its own source link independent of `thumbnail`'s attribution,
+ * because a digest's items may each come from a different page.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "HeadlineItemDto".
+ */
+export interface HeadlineItemDto {
+  /**
+   * Pre-formatted relative time (e.g. "2h ago"), computed once server-side
+   * — the client renders it as-is rather than ticking a live clock against
+   * a fact that is not actually live.
+   */
+  relativeTime: string;
+  sourceDomain: string;
+  sourceUrl: string;
+  summary: string;
+  /**
+   * Thumbnail is optional (docs/12 §2.3: "no photos required, thumbnail
+   * optional"); when present it still carries its own attribution.
+   */
+  thumbnail?: SourcedImageDto | null;
+  title: string;
+  [k: string]: unknown;
+}
+/**
+ * A card image sourced from the web (docs/12 §2.3, FR-25/ADR-014 — person,
+ * place, weather, menu photos absent a dedicated integration). `url` is the
+ * image itself; `source_url`/`source_domain` are the page it was found on and
+ * its chip label (e.g. "wikipedia.org"), computed once server-side so the
+ * client never parses an untrusted URL to render trusted-looking text. `alt`
+ * is required alt text (docs/12 §8 accessibility) — there is no constructor
+ * path that produces an image without it.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "SourcedImageDto".
+ */
+export interface SourcedImageDto {
+  /**
+   * Required alt text — never empty.
+   */
+  alt: string;
+  /**
+   * Display domain for the chip, e.g. "wikipedia.org ↗".
+   */
+  sourceDomain: string;
+  /**
+   * The page the image was found on — the source-chip's link target.
+   */
+  sourceUrl: string;
+  /**
+   * The `https` image URL.
+   */
+  url: string;
+  [k: string]: unknown;
+}
+/**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "HealthResponse".
  */
@@ -568,6 +723,33 @@ export interface HealthResponse {
    * jarvisd semver, for support/diagnostics.
    */
   version: string;
+  [k: string]: unknown;
+}
+/**
+ * One labeled value in a value-readout card's mini-stats row (docs/12 §2.3).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MiniStatDto".
+ */
+export interface MiniStatDto {
+  label: string;
+  /**
+   * Display text, e.g. "68%" — rendered tabular-nums client-side, not
+   * computed there, so a mixed-format value never breaks alignment.
+   */
+  value: string;
+  [k: string]: unknown;
+}
+/**
+ * One tile of a media/menu grid card (docs/12 §2.3: "photo + name + price").
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MediaGridItemDto".
+ */
+export interface MediaGridItemDto {
+  name: string;
+  photo?: SourcedImageDto | null;
+  price?: string | null;
   [k: string]: unknown;
 }
 /**

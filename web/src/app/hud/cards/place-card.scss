@@ -1,0 +1,46 @@
+/* Place card (docs/12 §2.3). `.pick` is a host class (bound in place-card.ts)
+ * so the hue ring can be applied to the whole card without a wrapper element. */
+
+:host {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8vmin;
+}
+
+:host.pick {
+  outline: 2px solid var(--c-pick);
+  outline-offset: 0.3vmin;
+  border-radius: 1vmin;
+}
+
+.place-name {
+  margin: 0;
+  font-size: clamp(14px, 2vmin, 18px);
+  color: var(--ink);
+}
+
+.place-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8vmin;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pill {
+  padding: 0.2vmin 1vmin;
+  border-radius: 999px;
+  font-size: clamp(11px, 1.5vmin, 13px);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-dim);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+}
+
+.pick-badge {
+  align-self: flex-start;
+  font-size: clamp(10px, 1.4vmin, 12px);
+  font-weight: 600;
+  color: var(--c-pick);
+}

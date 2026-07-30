@@ -1,0 +1,16 @@
+<section class="entity-card" [attr.aria-label]="card().name">
+  @if (card().photo; as photo) {
+    <app-sourced-image [image]="photo" />
+  }
+  <h3 class="entity-name">{{ card().name }}</h3>
+  @if (card().confidencePct !== undefined && card().confidencePct !== null) {
+    <p class="confidence">{{ card().confidencePct }}% confident</p>
+  }
+  @if (card().facts?.length) {
+    <ul class="facts">
+      @for (fact of card().facts; track fact) {
+        <li>{{ fact }}</li>
+      }
+    </ul>
+  }
+</section>

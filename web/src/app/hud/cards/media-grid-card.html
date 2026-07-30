@@ -1,0 +1,16 @@
+<section class="media-grid-card" [attr.aria-label]="card().title">
+  <h3 class="grid-title">{{ card().title }}</h3>
+  <ul class="grid-items">
+    @for (item of card().items; track item.name) {
+      <li class="grid-item">
+        @if (item.photo; as photo) {
+          <app-sourced-image [image]="photo" />
+        }
+        <span class="item-name">{{ item.name }}</span>
+        @if (item.price) {
+          <span class="item-price">{{ item.price }}</span>
+        }
+      </li>
+    }
+  </ul>
+</section>
