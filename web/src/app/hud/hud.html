@@ -1,0 +1,34 @@
+<section class="hud" aria-label="Jarvis HUD">
+  <header class="presence">
+    <app-presence-orb
+      [state]="hud.presence()"
+      [ambient]="hud.ambientMotion()"
+      (activate)="openOps()"
+    />
+
+    <div class="caption-chip">
+      <!-- The voice made visible (docs/12 §2.2): one utterance at a time,
+           revealed per sentence, announced politely. -->
+      <p class="caption" aria-live="polite">
+        @for (sentence of hud.captionSentences(); track $index) {
+          <span class="sentence">{{ sentence }}</span>
+        } @empty {
+          <span class="sentence caption-idle">Ask me something.</span>
+        }
+      </p>
+      <p class="status">{{ hud.presenceLabel() }}</p>
+    </div>
+
+    <button type="button" class="ops-toggle" (click)="openOps()">
+      Operator layer <kbd>Ctrl</kbd><kbd>.</kbd>
+    </button>
+  </header>
+
+  <!-- Materialization canvas: registered card types only (F3b.2), never
+       model-authored layout or HTML. -->
+  <div class="canvas" aria-label="Results" role="region">
+    @if (canvasEmpty()) {
+      <p class="canvas-empty">Nothing on the canvas yet.</p>
+    }
+  </div>
+</section>

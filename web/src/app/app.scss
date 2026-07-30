@@ -1,8 +1,35 @@
+/* Shell root. The HUD owns its own full-viewport layout (docs/12 §2/§7), so the
+ * shell adds no margin around it; the ops layer keeps the plainer operator
+ * styling the M0/M1 surfaces already had. */
+
 .shell {
   font-family: system-ui, sans-serif;
-  margin: 2rem;
 
   .status {
-    color: #666;
+    color: var(--ink-dim);
+  }
+}
+
+.ops-layer {
+  margin: 2rem;
+}
+
+.ops-bar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+
+  h1 {
+    font-size: clamp(18px, 2.4vmin, 24px);
+  }
+
+  kbd {
+    font: inherit;
+    padding: 0 0.4ch;
+    border: 1px solid currentcolor;
+    border-radius: 3px;
+    margin-inline-start: 0.3ch;
   }
 }

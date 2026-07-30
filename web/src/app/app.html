@@ -1,57 +1,74 @@
 <main class="shell">
-  <!-- Router outlet for conversation view (F1.8) -->
-  <router-outlet></router-outlet>
+  <!-- Front face: the HUD (docs/12 §1). No chat transcript here. -->
+  @if (!hud.opsOpen()) {
+    <app-hud />
+  }
 
-  <!-- Shell UI (sessions list, pairing) -->
-  <div class="shell-ui">
-    <h1>{{ title() }}</h1>
+  <!-- Ops layer (Ctrl+. or the orb): the M0/M1 operator surfaces, reused as-is —
+       health, pairing, sessions, and the routed conversation/timeline/approval
+       views. Not rebuilt, just moved behind a keystroke. -->
+  @if (hud.opsOpen()) {
+    <div class="ops-layer" role="region" aria-label="Operator layer">
+      <div class="ops-bar">
+        <h1>{{ title() }} · operator layer</h1>
+        <button type="button" (click)="hud.setOpsOpen(false)">
+          Back to HUD <kbd>Esc</kbd>
+        </button>
+      </div>
 
-    @if (error(); as message) {
-      <p class="error" role="alert">{{ message }}</p>
-    }
+      <!-- Router outlet for conversation view (F1.8) -->
+      <router-outlet></router-outlet>
 
-    @if (health(); as h) {
-      <section aria-label="daemon health">
-        <p class="status" role="status">
-          daemon: {{ h.status }} (v{{ h.version }})
-          @for (adapter of h.adapters | keyvalue; track adapter.key) {
-            <span class="adapter">· {{ adapter.key }}: {{ adapter.value.state }}</span>
-          }
-        </p>
-        @if (!paired() && h.pairingCode) {
-          <button type="button" (click)="pair()">Pair this device ({{ h.pairingCode }})</button>
+      <!-- Shell UI (sessions list, pairing) -->
+      <div class="shell-ui">
+        @if (error(); as message) {
+          <p class="error" role="alert">{{ message }}</p>
         }
-      </section>
-    } @else {
-      <p class="status" role="status">daemon: unreachable</p>
-    }
 
-    @if (paired()) {
-      <section aria-label="sessions">
-        <h2>Sessions</h2>
-        <form (submit)="$event.preventDefault(); createSession()">
-          <label>
-            Title
-            <input type="text" [value]="newSessionTitle()" (input)="onTitleInput($event)" />
-          </label>
-          <button type="submit">Create session</button>
-          <button type="button" (click)="refresh()">Refresh</button>
-        </form>
-        <ul>
-          @for (session of sessions(); track session.id) {
-            <li>
-              <a [routerLink]="['/sessions', session.id]" class="session-link">
-                <code>{{ session.id }}</code> — {{ session.title ?? '(untitled)' }}
-              </a>
-              · {{ session.status }} · {{ session.createdAt }}
-            </li>
-          } @empty {
-            <li>No sessions yet.</li>
-          }
-        </ul>
-      </section>
-    }
-  </div>
+        @if (health(); as h) {
+          <section aria-label="daemon health">
+            <p class="status" role="status">
+              daemon: {{ h.status }} (v{{ h.version }})
+              @for (adapter of h.adapters | keyvalue; track adapter.key) {
+                <span class="adapter">· {{ adapter.key }}: {{ adapter.value.state }}</span>
+              }
+            </p>
+            @if (!paired() && h.pairingCode) {
+              <button type="button" (click)="pair()">Pair this device ({{ h.pairingCode }})</button>
+            }
+          </section>
+        } @else {
+          <p class="status" role="status">daemon: unreachable</p>
+        }
+
+        @if (paired()) {
+          <section aria-label="sessions">
+            <h2>Sessions</h2>
+            <form (submit)="$event.preventDefault(); createSession()">
+              <label>
+                Title
+                <input type="text" [value]="newSessionTitle()" (input)="onTitleInput($event)" />
+              </label>
+              <button type="submit">Create session</button>
+              <button type="button" (click)="refresh()">Refresh</button>
+            </form>
+            <ul>
+              @for (session of sessions(); track session.id) {
+                <li>
+                  <a [routerLink]="['/sessions', session.id]" class="session-link">
+                    <code>{{ session.id }}</code> — {{ session.title ?? '(untitled)' }}
+                  </a>
+                  · {{ session.status }} · {{ session.createdAt }}
+                </li>
+              } @empty {
+                <li>No sessions yet.</li>
+              }
+            </ul>
+          </section>
+        }
+      </div>
+    </div>
+  }
 
   <!-- Media bar (FR-22): ambient, absent when nothing is playing. -->
   @if (media.available() && media.state(); as mediaState) {

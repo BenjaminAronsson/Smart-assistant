@@ -159,7 +159,7 @@ moves the M1/M2 conversation/approval surfaces into the ops layer (`Ctrl+.`).
 
 ### Phase D — HUD face (docs/12; renders M3a's artifacts/media/cards)
 
-- [ ] **F3b.1 — HUD face scaffold: presence orb + caption + materialization canvas + ops-layer toggle + glass token system (web)** · *Sonnet ok*
+- [x] **F3b.1 — HUD face scaffold: presence orb + caption + materialization canvas + ops-layer toggle + glass token system (web)** · *Sonnet ok*
   Replace the M1 conversation front face with the docs/12 HUD face: presence orb (state
   color **and** motion — accessibility), spoken caption (`aria-live`, per-sentence reveal
   until voice lands in M5), empty materialization canvas, `Ctrl+.`/orb toggle to the **ops

@@ -1,0 +1,104 @@
+/* HUD face layout (docs/12 §2/§7). No fixed pixels in layout: everything is
+ * vmin/clamp/auto-fit so the same rules hold from 390×844 to 3840×2160. */
+
+.hud {
+  min-block-size: 100dvh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 2vmin;
+  padding: 3vmin clamp(1rem, 4vmin, 4rem);
+}
+
+.presence {
+  display: flex;
+  align-items: center;
+  gap: 2vmin;
+  flex-wrap: wrap;
+}
+
+/* Over an unpredictable background, text sits on glass — never raw (docs/12 §5). */
+.caption-chip {
+  flex: 1 1 min(100%, 30rem);
+  min-inline-size: 0;
+  padding: 1.4vmin 2vmin;
+  border-radius: 1.4vmin;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(var(--glass-blur));
+}
+
+.caption {
+  margin: 0;
+  font-size: var(--caption-size);
+  line-height: 1.35;
+  color: var(--ink);
+}
+
+.sentence {
+  display: inline;
+  animation: blur-in 320ms ease-out both;
+}
+
+.sentence + .sentence {
+  margin-inline-start: 0.4ch;
+}
+
+.caption-idle {
+  color: var(--ink-dim);
+}
+
+.status {
+  margin: 0.6vmin 0 0;
+  font-size: clamp(11px, 1.5vmin, 14px);
+  color: var(--ink-dim);
+  text-transform: lowercase;
+}
+
+.ops-toggle {
+  margin-inline-start: auto;
+  padding: 0.9vmin 1.6vmin;
+  border-radius: 1vmin;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  color: var(--ink-dim);
+  font: inherit;
+  font-size: clamp(11px, 1.5vmin, 14px);
+  cursor: pointer;
+
+  kbd {
+    font: inherit;
+    padding: 0 0.4ch;
+    border: 1px solid currentcolor;
+    border-radius: 0.4vmin;
+    margin-inline-start: 0.3ch;
+  }
+}
+
+.canvas {
+  inline-size: var(--canvas-width);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+  gap: 2vmin;
+  align-content: start;
+}
+
+.canvas-empty {
+  color: var(--ink-dim);
+  font-size: clamp(12px, 1.8vmin, 16px);
+}
+
+@keyframes blur-in {
+  from {
+    filter: blur(6px);
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* Event animations reduce to ~1ms under reduced motion (docs/12 §6). */
+@media (prefers-reduced-motion: reduce) {
+  .sentence {
+    animation-duration: 1ms;
+  }
+}
