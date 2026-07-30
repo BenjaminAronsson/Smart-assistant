@@ -224,7 +224,7 @@ moves the M1/M2 conversation/approval surfaces into the ops layer (`Ctrl+.`).
   F3a.5, F3b.2, F3b.3, F2.10. rust-reviewer + security-auditor (paraphrase-not-scrape,
   per-item attribution) mandatory.
 
-- [ ] **F3b.7 — Timers / alarms / reminders (FR-33, ADR-023) (domain + application + infra + adapters + web)** · *strong model*
+- [x] **F3b.7 — Timers / alarms / reminders (FR-33, ADR-023) (domain + application + infra + adapters + web)** · *strong model*
   A dedicated lightweight **timers module**, entirely in the **deterministic grammar (zero
   LLM, offline, degraded-mode-safe)**: set/query/cancel named timers, alarms, one-shot
   reminders. Postgres-persisted (migration `0011_timers_init.sql`; restart-safe). Firing =
