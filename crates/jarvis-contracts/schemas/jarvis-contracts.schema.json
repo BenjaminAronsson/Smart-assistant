@@ -656,6 +656,46 @@
       ],
       "type": "object"
     },
+    "HeadlineItemDto": {
+      "description": "One item of a headlines/digest card (docs/12 §2.3: \"3-5 short items, each a\none-line title + one-line summary + relative time + source link\"). The item\ncarries its own source link independent of `thumbnail`'s attribution,\nbecause a digest's items may each come from a different page.",
+      "properties": {
+        "relativeTime": {
+          "description": "Pre-formatted relative time (e.g. \"2h ago\"), computed once server-side\n— the client renders it as-is rather than ticking a live clock against\na fact that is not actually live.",
+          "type": "string"
+        },
+        "sourceDomain": {
+          "type": "string"
+        },
+        "sourceUrl": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "thumbnail": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SourcedImageDto"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Thumbnail is optional (docs/12 §2.3: \"no photos required, thumbnail\noptional\"); when present it still carries its own attribution."
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "summary",
+        "relativeTime",
+        "sourceUrl",
+        "sourceDomain"
+      ],
+      "type": "object"
+    },
     "HealthResponse": {
       "properties": {
         "adapters": {
@@ -686,6 +726,308 @@
         "adapters"
       ],
       "type": "object"
+    },
+    "HudCardDto": {
+      "description": "Registered HUD card types (docs/12 §2.3). The `type` discriminator is\ndotted-namespaced (`card.value_readout`, …), matching the envelope/event\nconvention. **Strict, no catch-all** — every card is authored by jarvisd\nitself (there is no third-party card producer), the same reasoning as\n[`crate::events::DomainEvent`]. The client-side defense for a genuinely\nunrecognized discriminant (a future contract version, a malformed payload)\nis the Angular `hud-card` switch component degrading to the error card —\nbelt-and-suspenders, not a substitute for this union staying the single\nsource of truth for what \"registered\" means.",
+      "oneOf": [
+        {
+          "description": "Hero number with optional staggered mini-stats (docs/12 §2.3): weather,\na single metric, a quick count.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "miniStats": {
+              "items": {
+                "$ref": "#/definitions/MiniStatDto"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "card.value_readout",
+              "type": "string"
+            },
+            "value": {
+              "description": "The hero value as display text (e.g. \"72°F\") — the client applies\ntabular-nums and the count-up animation, it does not compute the\nvalue.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "label",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A place result (docs/12 §2.3): photo, rating/distance/price pills, and\nthe `pick` variant (hue ring) marking a top recommendation.",
+          "properties": {
+            "distance": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "photo": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SourcedImageDto"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "pick": {
+              "default": false,
+              "description": "Marks the top recommendation among a set of place cards — rendered\nwith a hue ring (docs/12 §2.3), never a colour picked ad hoc.",
+              "type": "boolean"
+            },
+            "priceLevel": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "rating": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "card.place",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An entity/person result (docs/12 §2.3): photo, confidence, facts.",
+          "properties": {
+            "confidencePct": {
+              "description": "0-100 confidence in the entity resolution.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "facts": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "photo": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SourcedImageDto"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "const": "card.entity",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Media/menu grid (docs/12 §2.3: \"photo + name + price\").",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "items": {
+              "items": {
+                "$ref": "#/definitions/MediaGridItemDto"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "const": "card.media_grid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "title",
+            "items"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Headlines/digest (docs/12 §2.3: several current items, not one fact —\ndistinct from a single entity/value-readout card for that reason).",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "items": {
+              "items": {
+                "$ref": "#/definitions/HeadlineItemDto"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "const": "card.headlines",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "title",
+            "items"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "\"What's playing\" as a first-class query (docs/12 §2.3, FR-32/ADR-022):\n**data only** — this variant answers a query, it does not add playback\ncontrols. Live control stays on the media bar (`crate::media`); a\ncontrol surface on this card is M5 (FR-32). Album art here is the\nplayer's own content, not third-party web content, so it is a plain\n(already `https`-validated) URL rather than a [`SourcedImageDto`] — no\nsource chip is owed for a player showing its own art, matching the\nmedia bar's existing treatment.",
+          "properties": {
+            "album": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "artUrl": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "artist": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "sourceApp": {
+              "type": "string"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "card.now_playing",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "sourceApp"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The approval surface, wire-reused verbatim (docs/06 §3) — never\nre-modeled as a distinct card shape, so there is exactly one type that\ncarries `exactEffect`/`proposedArguments` on the wire.",
+          "properties": {
+            "card": {
+              "$ref": "#/definitions/ApprovalCardDto"
+            },
+            "type": {
+              "const": "card.approval",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "card"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A transient status readout (docs/12 §2.3), e.g. a run parked in\ndegraded-mode queueing (FR-12).",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "queued": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "const": "card.status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "message"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The fallback face for a failure — and the client's own degrade target\nfor an unrecognized discriminant (docs/12 §9).",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "type": {
+              "const": "card.error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "message"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "MediaCommandRequest": {
       "description": "`POST /api/v1/media/command` — the owner-driven transport control behind the\nmedia bar (exit evidence #4).\n\n`command` is one of the closed transport verbs (`play`, `pause`,\n`play_pause`, `stop`, `next`, `previous`, `seek`, `set_volume`); unknown\nverbs are a 400, never forwarded. Omitting `player` targets the unambiguous\nactive player and fails cleanly (409) when the choice is ambiguous — the\nserver never picks one.",
@@ -740,6 +1082,34 @@
         "command",
         "player",
         "state"
+      ],
+      "type": "object"
+    },
+    "MediaGridItemDto": {
+      "description": "One tile of a media/menu grid card (docs/12 §2.3: \"photo + name + price\").",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "photo": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SourcedImageDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "price": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
       ],
       "type": "object"
     },
@@ -886,6 +1256,23 @@
         "system"
       ],
       "type": "string"
+    },
+    "MiniStatDto": {
+      "description": "One labeled value in a value-readout card's mini-stats row (docs/12 §2.3).",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "value": {
+          "description": "Display text, e.g. \"68%\" — rendered tabular-nums client-side, not\ncomputed there, so a mixed-format value never breaks alignment.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "value"
+      ],
+      "type": "object"
     },
     "OpenArtifactRequest": {
       "description": "`POST /api/v1/artifacts/{id}/open` (FR-09/10): request that an artifact be\nrendered on a selected display. `display` names a monitor connector; when\nomitted, the server falls back to the display profile's `ArtifactCanvas`\nassignment and fails closed (409) if neither resolves a monitor.",
@@ -1314,6 +1701,34 @@
         "archived"
       ],
       "type": "string"
+    },
+    "SourcedImageDto": {
+      "description": "A card image sourced from the web (docs/12 §2.3, FR-25/ADR-014 — person,\nplace, weather, menu photos absent a dedicated integration). `url` is the\nimage itself; `source_url`/`source_domain` are the page it was found on and\nits chip label (e.g. \"wikipedia.org\"), computed once server-side so the\nclient never parses an untrusted URL to render trusted-looking text. `alt`\nis required alt text (docs/12 §8 accessibility) — there is no constructor\npath that produces an image without it.",
+      "properties": {
+        "alt": {
+          "description": "Required alt text — never empty.",
+          "type": "string"
+        },
+        "sourceDomain": {
+          "description": "Display domain for the chip, e.g. \"wikipedia.org ↗\".",
+          "type": "string"
+        },
+        "sourceUrl": {
+          "description": "The page the image was found on — the source-chip's link target.",
+          "type": "string"
+        },
+        "url": {
+          "description": "The `https` image URL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "sourceUrl",
+        "sourceDomain",
+        "alt"
+      ],
+      "type": "object"
     },
     "SubmitMessageRequest": {
       "description": "Body of `POST /sessions/{id}/messages` (docs/05 §1). The idempotency key\nrides the `Idempotency-Key` header (docs/05 §2), not the body.",

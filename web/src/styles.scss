@@ -17,6 +17,14 @@
   --c-error: #b3271b;
   --c-degraded: #6b7078;
 
+  /* Materialization-canvas hues (docs/12 §2.3, F3b.2). Aliases of the presence
+   * hues above, not new hand-tuned colours: the reveal's corner brackets reuse
+   * the "tool running" hue, and the place card's `pick` ring reuses "done" —
+   * a card finishing materialization and a recommendation landing are both a
+   * positive/complete signal. */
+  --c-card-accent: var(--c-tool);
+  --c-pick: var(--c-done);
+
   /* Glass system — "no background" column of docs/12 §5. F3b.4 flips these to
    * the wallpaper column when a background is active. */
   --glass-alpha: 0.55;
@@ -33,8 +41,25 @@
   --caption-size: clamp(16px, 2.6vmin, 25px);
   --orb-size: clamp(46px, 7vmin, 64px);
   --canvas-width: min(96vw, 920px);
+  --card-hero-size: clamp(40px, 8vmin, 64px);
+
+  /* Motion scale (docs/12 §6): 1 = full event-animation duration, 0 collapses
+   * every event animation (card reveal, brackets, image sweep) to ~1ms and
+   * its stagger delay to 0 — "nothing loops after arrival" plus "reduce to
+   * ~1ms" both read from this one token, inherited through the DOM regardless
+   * of Angular's per-component style encapsulation. `HudStateService`'s
+   * `reducedMotion` signal additionally forces this via a class (see
+   * hud-card.scss) so behaviour is deterministic in tests, not only reactive
+   * to the OS media query below. */
+  --motion: 1;
 
   color-scheme: light;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion: 0;
+  }
 }
 
 * {

@@ -1,5 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
+import { hudCardId } from './cards/card-id';
 import { HudStateService } from './hud-state.service';
 
 describe('HudStateService', () => {
@@ -64,5 +65,24 @@ describe('HudStateService', () => {
     expect(hud.opsOpen()).toBe(true);
     hud.setOpsOpen(false);
     expect(hud.opsOpen()).toBe(false);
+  });
+
+  it('starts with an empty canvas', () => {
+    expect(hud.cards()).toEqual([]);
+  });
+
+  it('setCards replaces the canvas outright', () => {
+    hud.setCards([{ type: 'card.status', id: 'a', message: 'Working', queued: false }]);
+    expect(hud.cards().length).toBe(1);
+    hud.setCards([{ type: 'card.status', id: 'b', message: 'Working again', queued: false }]);
+    expect(hud.cards()).toEqual([
+      { type: 'card.status', id: 'b', message: 'Working again', queued: false },
+    ]);
+  });
+
+  it('appendCards extends the canvas without dropping what was there (FR-24 continuation)', () => {
+    hud.setCards([{ type: 'card.status', id: 'a', message: 'First', queued: false }]);
+    hud.appendCards([{ type: 'card.status', id: 'b', message: 'Second', queued: false }]);
+    expect(hud.cards().map(hudCardId)).toEqual(['a', 'b']);
   });
 });

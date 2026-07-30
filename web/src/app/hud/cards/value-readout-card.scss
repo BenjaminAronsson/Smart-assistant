@@ -1,0 +1,61 @@
+/* Value-readout card (docs/12 §2.3): a hero number plus staggered mini-stats.
+ * No fixed pixels — type scales via clamp()/vmin (docs/12 §7). */
+
+.value-readout {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6vmin;
+}
+
+.readout-label {
+  margin: 0;
+  font-size: clamp(11px, 1.6vmin, 14px);
+  color: var(--ink-dim);
+}
+
+.readout-hero {
+  margin: 0;
+  font-size: var(--card-hero-size);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--ink);
+  /* "Count-up" landing (docs/12 §2.3): `value` is opaque pre-formatted display
+   * text (e.g. "72°F"), not a numeric domain type this component tumbles
+   * digit-by-digit — it settles in with a ≤700ms blur/scale animation instead,
+   * the same reveal language as the caption's blur-in (hud.scss). */
+  animation: hero-settle calc(699ms * var(--motion, 1) + 1ms) ease-out both;
+  animation-delay: var(--card-delay, 0ms);
+}
+
+.mini-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5vmin;
+  margin: 0.4vmin 0 0;
+}
+
+.mini-stat {
+  margin: 0;
+  animation: hero-settle calc(319ms * var(--motion, 1) + 1ms) ease-out both;
+  animation-delay: calc(var(--card-delay, 0ms) + var(--stat-index, 0) * 90ms);
+
+  dt {
+    font-size: clamp(10px, 1.4vmin, 12px);
+    color: var(--ink-dim);
+  }
+
+  dd {
+    margin: 0;
+    font-size: clamp(13px, 2vmin, 16px);
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+  }
+}
+
+@keyframes hero-settle {
+  from {
+    opacity: 0;
+    filter: blur(4px);
+    transform: translateY(4px);
+  }
+}

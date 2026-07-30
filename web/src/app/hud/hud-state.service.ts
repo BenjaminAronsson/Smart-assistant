@@ -1,4 +1,5 @@
 import { Injectable, computed, signal } from '@angular/core';
+import type { HudCardDto } from '../../generated/api-types';
 
 /**
  * Presence states (docs/12 §2.1). Exhaustive on purpose — a new state needs a
@@ -71,12 +72,21 @@ export class HudStateService {
   /** Set by the low-power profile (docs/12 §6). No browser API reports the OS
    * battery-saver reliably, so it is pushed in rather than sniffed. */
   private readonly batterySaverSignal = signal(false);
+  /**
+   * The materialization canvas's cards (docs/12 §2.3, F3b.2). No producer
+   * wires this from the wire yet — F3b.2 ships the grammar and renderers with
+   * no server-side event (see `jarvis_contracts::cards`'s doc comment); the
+   * first producer is F3b.6. Panel lifecycle (shelve/restore/dismiss/TTL) is
+   * F3b.4 — this service only holds the current list.
+   */
+  private readonly cardsSignal = signal<HudCardDto[]>([]);
 
   private revealTimer: ReturnType<typeof setInterval> | null = null;
 
   readonly presence = this.presenceSignal.asReadonly();
   readonly caption = this.captionSignal.asReadonly();
   readonly opsOpen = this.opsOpenSignal.asReadonly();
+  readonly cards = this.cardsSignal.asReadonly();
 
   /** The hue token the orb (and only the orb) paints itself with. */
   readonly hue = computed(() => PRESENCE_HUE[this.presenceSignal()]);
@@ -149,6 +159,17 @@ export class HudStateService {
 
   setBatterySaver(saving: boolean): void {
     this.batterySaverSignal.set(saving);
+  }
+
+  /** Replace the canvas outright — a new topic shelves the old set (F3b.4). */
+  setCards(cards: HudCardDto[]): void {
+    this.cardsSignal.set(cards);
+  }
+
+  /** Extend the live canvas — a continuation appends, it never shelves (FR-24,
+   * docs/12 §2.5; the continuation-vs-new-topic router lands in F3b.6). */
+  appendCards(cards: HudCardDto[]): void {
+    this.cardsSignal.update((existing) => [...existing, ...cards]);
   }
 
   /** Stop the reveal timer — called on teardown so no timer outlives the view. */

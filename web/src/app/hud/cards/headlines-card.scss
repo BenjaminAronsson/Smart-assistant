@@ -1,0 +1,66 @@
+/* Headlines/digest card (docs/12 §2.3): several items, not one fact —
+ * thumbnails are optional per item. */
+
+.headlines-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8vmin;
+}
+
+.headlines-title {
+  margin: 0;
+  font-size: clamp(14px, 2vmin, 18px);
+  color: var(--ink);
+}
+
+.headline-items {
+  display: flex;
+  flex-direction: column;
+  gap: 1.2vmin;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.headline-item {
+  display: flex;
+  gap: 1vmin;
+  align-items: flex-start;
+}
+
+.headline-thumb {
+  flex: none;
+  inline-size: clamp(3rem, 10vmin, 5rem);
+}
+
+.headline-body {
+  min-inline-size: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3vmin;
+}
+
+.headline-item-title {
+  margin: 0;
+  font-size: clamp(12px, 1.7vmin, 15px);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.headline-summary {
+  margin: 0;
+  font-size: clamp(11px, 1.5vmin, 13px);
+  color: var(--ink-dim);
+}
+
+.headline-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.8vmin;
+  flex-wrap: wrap;
+}
+
+.headline-time {
+  font-size: clamp(10px, 1.3vmin, 12px);
+  color: var(--ink-dim);
+}

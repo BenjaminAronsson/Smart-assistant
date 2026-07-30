@@ -1,0 +1,21 @@
+/* Source-link chip (docs/12 §2.3). Resolution-independent: clamp()/vmin only. */
+
+.source-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3ch;
+  padding: 0.3vmin 1vmin;
+  border-radius: 999px;
+  font-size: clamp(10px, 1.4vmin, 12px);
+  line-height: 1.4;
+  color: var(--ink-dim);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  text-decoration: none;
+  white-space: nowrap;
+
+  &:hover,
+  &:focus-visible {
+    color: var(--ink);
+  }
+}

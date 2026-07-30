@@ -9,6 +9,7 @@
 pub mod approvals;
 pub mod artifacts;
 pub mod auth;
+pub mod cards;
 pub mod content;
 pub mod display;
 pub mod envelope;

@@ -1,0 +1,43 @@
+/* Now-playing card (docs/12 §2.3, FR-32/ADR-022): data only, no controls. */
+
+.now-playing-card {
+  display: flex;
+  gap: 1.2vmin;
+  align-items: center;
+}
+
+.now-playing-art {
+  inline-size: clamp(2.5rem, 8vmin, 4rem);
+  block-size: clamp(2.5rem, 8vmin, 4rem);
+  object-fit: cover;
+  border-radius: 0.8vmin;
+  flex: none;
+}
+
+.now-playing-text {
+  min-inline-size: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2vmin;
+}
+
+.now-playing-title {
+  margin: 0;
+  font-size: clamp(13px, 1.8vmin, 16px);
+  color: var(--ink);
+}
+
+.now-playing-artist,
+.now-playing-album {
+  margin: 0;
+  font-size: clamp(11px, 1.5vmin, 13px);
+  color: var(--ink-dim);
+}
+
+.now-playing-source {
+  margin: 0.2vmin 0 0;
+  font-size: clamp(10px, 1.3vmin, 12px);
+  color: var(--ink-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}

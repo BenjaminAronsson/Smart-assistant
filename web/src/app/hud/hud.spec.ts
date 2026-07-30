@@ -46,4 +46,16 @@ describe('Hud', () => {
   it('says the canvas is empty rather than rendering a silent blank', () => {
     expect(el.querySelector('.canvas-empty')?.textContent).toContain('Nothing on the canvas');
   });
+
+  it('renders a hud-card per entry once the canvas has cards (F3b.2)', () => {
+    hud.setCards([
+      { type: 'card.status', id: 'card-1', message: 'One', queued: false },
+      { type: 'card.status', id: 'card-2', message: 'Two', queued: false },
+    ]);
+    fixture.detectChanges();
+    expect(el.querySelector('.canvas-empty')).toBeNull();
+    const cards = el.querySelectorAll('app-hud-card');
+    expect(cards.length).toBe(2);
+    expect(cards[0].getAttribute('data-card-type')).toBe('card.status');
+  });
 });

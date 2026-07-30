@@ -1,0 +1,15 @@
+:host {
+  display: block;
+}
+
+.status-message {
+  margin: 0;
+  font-size: clamp(12px, 1.7vmin, 15px);
+  color: var(--ink-dim);
+}
+
+.queued-badge {
+  font-weight: 600;
+  color: var(--ink);
+  margin-inline-end: 0.6ch;
+}

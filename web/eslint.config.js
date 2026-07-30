@@ -45,5 +45,28 @@ module.exports = defineConfig([
       angular.configs.templateAccessibility,
     ],
     rules: {},
-  }
+  },
+  {
+    // docs/12 §2.3/§9, invariant 1: no model-authored HTML on the HUD face.
+    // Card content renders through Angular interpolation only — enforced here
+    // (checked by `npm run lint`, part of the DoD) so the property stays
+    // greppable rather than resting on review discipline alone.
+    files: ["src/app/hud/**/*.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "MemberExpression[property.name='innerHTML']",
+          message:
+            "No innerHTML on the HUD face (docs/12 §9, invariant 1) — card content renders via Angular interpolation only.",
+        },
+        {
+          selector:
+            "MemberExpression[property.name=/^bypassSecurityTrust/]",
+          message:
+            "No DomSanitizer.bypassSecurityTrust* on the HUD face (docs/12 §9, invariant 1) — card content renders via Angular interpolation only.",
+        },
+      ],
+    },
+  },
 ]);

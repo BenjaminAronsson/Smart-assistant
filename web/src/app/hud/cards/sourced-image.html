@@ -1,0 +1,10 @@
+<figure class="sourced-image">
+  <span class="image-frame">
+    <!-- Never Jarvis's own content: player/web-sourced text renders as plain
+         attributes only (alt, src) — no innerHTML anywhere on this surface. -->
+    <img [src]="image().url" [alt]="image().alt" referrerpolicy="no-referrer" />
+  </span>
+  <figcaption>
+    <app-source-chip [domain]="image().sourceDomain" [href]="image().sourceUrl" />
+  </figcaption>
+</figure>

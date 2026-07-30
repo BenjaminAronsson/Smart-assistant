@@ -1,0 +1,40 @@
+/* Media/menu grid card (docs/12 §2.3). Tiles auto-fit, never a fixed column
+ * count (docs/12 §7). */
+
+.media-grid-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8vmin;
+}
+
+.grid-title {
+  margin: 0;
+  font-size: clamp(14px, 2vmin, 18px);
+  color: var(--ink);
+}
+
+.grid-items {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 7rem), 1fr));
+  gap: 1.2vmin;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.grid-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4vmin;
+}
+
+.item-name {
+  font-size: clamp(12px, 1.6vmin, 14px);
+  color: var(--ink);
+}
+
+.item-price {
+  font-size: clamp(11px, 1.5vmin, 13px);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-dim);
+}

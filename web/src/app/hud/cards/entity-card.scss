@@ -1,0 +1,27 @@
+/* Entity/person card (docs/12 §2.3). */
+
+.entity-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6vmin;
+}
+
+.entity-name {
+  margin: 0;
+  font-size: clamp(14px, 2vmin, 18px);
+  color: var(--ink);
+}
+
+.confidence {
+  margin: 0;
+  font-size: clamp(11px, 1.5vmin, 13px);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-dim);
+}
+
+.facts {
+  margin: 0;
+  padding-inline-start: 1.4em;
+  font-size: clamp(12px, 1.7vmin, 15px);
+  color: var(--ink);
+}

@@ -1,0 +1,86 @@
+/* The signature reveal (docs/12 §2.3): 620ms clip-path wipe left→right with a
+ * 6px rise, ~120ms stagger per card, corner brackets locking on at +420ms.
+ * Nothing loops after arrival. Reduced motion collapses duration to ~1ms and
+ * stagger to 0 via the inherited `--motion` token (styles.scss) — set here,
+ * not read from a media query directly, so `HudStateService.reducedMotion()`
+ * (already deterministic in tests) is the single source of truth. */
+
+:host {
+  --card-delay: calc(var(--card-index, 0) * 120ms * var(--motion, 1));
+
+  position: relative;
+  display: block;
+  padding: clamp(0.75rem, 2vmin, 1.25rem);
+  border-radius: 1.2vmin;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(var(--glass-blur));
+
+  animation: card-wipe-in calc(619ms * var(--motion, 1) + 1ms) ease-out both;
+  animation-delay: var(--card-delay);
+}
+
+:host.reduced-motion {
+  --motion: 0;
+}
+
+:host::before,
+:host::after {
+  content: '';
+  position: absolute;
+  inline-size: clamp(10px, 2vmin, 16px);
+  block-size: clamp(10px, 2vmin, 16px);
+  border-color: var(--c-card-accent);
+  border-style: solid;
+  opacity: 0;
+  animation: card-bracket-in calc(119ms * var(--motion, 1) + 1ms) ease-out both;
+  animation-delay: calc(var(--card-delay) + 420ms * var(--motion, 1));
+}
+
+:host::before {
+  inset-block-start: 0.4vmin;
+  inset-inline-start: 0.4vmin;
+  border-width: 2px 0 0 2px;
+}
+
+:host::after {
+  inset-block-end: 0.4vmin;
+  inset-inline-end: 0.4vmin;
+  border-width: 0 2px 2px 0;
+}
+
+/* Dismissal (docs/12 §2.3): a lifecycle trigger lands with F3b.4's panel
+ * shelve/dismiss work, which toggles this class — the animation itself ships
+ * now so both land together instead of being redesigned twice. */
+:host.dismissing {
+  animation: card-dismiss calc(259ms * var(--motion, 1) + 1ms) ease-in both;
+}
+
+@keyframes card-wipe-in {
+  from {
+    clip-path: inset(0 100% 0 0);
+    transform: translateY(6px);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+    transform: translateY(0);
+  }
+}
+
+@keyframes card-bracket-in {
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes card-dismiss {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+}
