@@ -5,6 +5,7 @@
 pub mod artifact;
 pub mod audit;
 pub mod conversations;
+pub mod deepdive;
 pub mod display;
 pub mod grants;
 pub mod identity;
