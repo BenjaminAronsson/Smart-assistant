@@ -14,6 +14,7 @@ import type {
   SessionDto,
   DomainEvent,
   EventEnvelope,
+  HudCanvasDto,
   TimelineItem,
   MessageDto,
   ProviderState,
@@ -24,6 +25,7 @@ import type {
 } from '../generated/api-types';
 import { ApiService } from './api.service';
 import { ApprovalTray } from './approval-tray';
+import { HudStateService } from './hud/hud-state.service';
 
 /** Cap on the live streaming preview buffer (NIT 4). The durable message that
  * arrives on completion is authoritative, so trimming the transient preview to
@@ -46,6 +48,9 @@ const MAX_STREAMING_CHARS = 100_000;
 export class Conversation implements OnInit, OnDestroy {
   private readonly api = inject(ApiService);
   private readonly route = inject(ActivatedRoute);
+  /** The materialization canvas (docs/12 §2.3). The deep-dive router's
+   * `hud.canvas` instruction is applied to it below (F3b.6). */
+  private readonly hud = inject(HudStateService);
 
   protected readonly session = signal<SessionDto | null>(null);
   protected readonly timeline = signal<TimelineItem[]>([]);
@@ -183,6 +188,18 @@ export class Conversation implements OnInit, OnDestroy {
         const next = prev + delta;
         return next.length > MAX_STREAMING_CHARS ? next.slice(-MAX_STREAMING_CHARS) : next;
       });
+      return;
+    }
+
+    // Transient canvas instruction (F3b.6, FR-27/ADR-017): the server decided
+    // continuation-vs-new-topic and says what this turn does to the canvas.
+    // The decision is never re-derived here — there is one classifier, and it
+    // is the one the human can correct by voice ("new topic").
+    if (env.type === 'hud.canvas') {
+      const canvas = (env.payload as { canvas?: HudCanvasDto }).canvas;
+      if (canvas) {
+        this.hud.routeTurn(canvas.action, canvas.label, canvas.cards ?? []);
+      }
       return;
     }
 

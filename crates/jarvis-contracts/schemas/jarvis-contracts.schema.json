@@ -269,6 +269,21 @@
       ],
       "type": "object"
     },
+    "CanvasActionDto": {
+      "description": "What this turn does to the materialization canvas (FR-24/FR-27, docs/12\n§2.5/§4) — the wire mirror of `jarvis_application::deepdive::CanvasAction`.\n\nExhaustive and deliberately two-valued: a third answer would change the\npanel lifecycle, which is a spec decision. Note what it cannot express —\nanything about approvals. Pending approval cards are exempt from shelving\n(docs/12 §4, F3b.4), and no value here can retract one.",
+      "oneOf": [
+        {
+          "const": "extend",
+          "description": "A continuation: append these cards, leave the prior ones in place.",
+          "type": "string"
+        },
+        {
+          "const": "shelve",
+          "description": "A genuine topic change: shelve the current panels under `label` first.",
+          "type": "string"
+        }
+      ]
+    },
     "Channel": {
       "description": "One WebSocket replaces v1's three hubs; `channel` discriminates (docs/05 §1).",
       "enum": [
@@ -395,6 +410,66 @@
         "external"
       ],
       "type": "string"
+    },
+    "DeepDiveFindingsRequest": {
+      "description": "`POST /api/v1/sessions/{id}/deepdive/findings` — what this turn learned.\n\n`facts` are **paraphrases Jarvis composed**, not fetched page text: the\ndomain refuses anything over\n`jarvis_domain::deepdive::MAX_PARAPHRASE_CHARS` rather than truncating it,\nbecause a truncated scrape is still a scrape (ADR-017). Everything in this\nrequest is filed through the thread's guarded recorders; a rejected entry is\nreported in [`DeepDiveFindingsResponse::refused`] and simply does not exist\nin the thread.",
+      "properties": {
+        "facts": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "images": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ImageFindingDto"
+          },
+          "type": "array"
+        },
+        "sources": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/SourceFindingDto"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "DeepDiveFindingsResponse": {
+      "description": "What was actually filed. Counts, plus a plain-text reason per rejected\nentry so a caller learns *that* a scrape or an unattributable URL was\nrefused rather than discovering it missing later.",
+      "properties": {
+        "facts": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "images": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "refused": {
+          "description": "One line per refused entry. Empty when everything was filed.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sources": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "facts",
+        "sources",
+        "images"
+      ],
+      "type": "object"
     },
     "DisplayDirective": {
       "description": "A directive the server sends to the agent on the `display` channel. The\n`type` discriminator is dotted-namespaced (`display.place_surface`), matching\nthe envelope convention; the agent routes on it.",
@@ -719,6 +794,11 @@
           "const": "list.unrecognized_command",
           "description": "The utterance is not unambiguously a list command, so the deterministic\ngrammar refused rather than guessing which list the owner meant\n(F3b.8, ADR-024/ADR-016). 422: the body was valid, the *content* was not\nresolvable here — the caller falls back to the normal run path.",
           "type": "string"
+        },
+        {
+          "const": "deepdive.nothing_to_promote",
+          "description": "The deep-dive thread has accumulated nothing worth keeping, so there is\nno Research Notes document to write (F3b.6, FR-27/ADR-017). 409: the\nrequest was well-formed and retrying it unchanged will not help — the\nthread has to consult something first. Promoting a bare heading would\nmint a versioned artifact that says nothing.",
+          "type": "string"
         }
       ]
     },
@@ -842,6 +922,58 @@
         "status",
         "version",
         "adapters"
+      ],
+      "type": "object"
+    },
+    "HudCanvasDto": {
+      "description": "One canvas instruction (F3b.6). The payload of the transient `hud.canvas`\nevent.\n\n`cards` is the **live card set for this canvas**, not a delta: the same card\nid re-sent is the same card refreshed, so a client that applies it\nupsert-by-id converges on the current state no matter how many events it\nmissed. That is what makes a transient classification safe here.",
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/CanvasActionDto"
+        },
+        "cards": {
+          "items": {
+            "$ref": "#/definitions/HudCardDto"
+          },
+          "type": "array"
+        },
+        "handoff": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SourceHandoffDto"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present when the human asked to read one of the cited sources."
+        },
+        "label": {
+          "description": "The shelf chip label to file the *displaced* panels under when `action`\nis `shelve` (docs/12 §4: \"Ramen places · Restore · ×\"). Plain text.",
+          "type": "string"
+        },
+        "offer": {
+          "description": "The spoken offer to keep this thread as a Research Notes document\n(docs/12 §2.5: Jarvis's normal voice, one line, never a dialog box).\nPresent only on the turn that crosses `[ui] deepdive_promote_after`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UlidString"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The conversation this turn belongs to. Absent for a canvas update that\nis not part of a deep-dive thread at all — a list card produced by the\ndeterministic list grammar (FR-34), which has no session."
+        }
+      },
+      "required": [
+        "action",
+        "label"
       ],
       "type": "object"
     },
@@ -1288,6 +1420,27 @@
           "type": "object"
         }
       ]
+    },
+    "ImageFindingDto": {
+      "description": "One image a turn referenced, with **its own** page (ADR-017: provenance\ndiffers per image, so one shared attribution is not acceptable).",
+      "properties": {
+        "alt": {
+          "type": "string"
+        },
+        "sourceUrl": {
+          "description": "The page this image was found on — never a neighbour's.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "alt",
+        "url",
+        "sourceUrl"
+      ],
+      "type": "object"
     },
     "ListCommandRequest": {
       "description": "`POST /api/v1/lists/command` — run the **deterministic grammar** over one\nutterance (ADR-024). Zero model calls: an utterance the grammar does not\nunambiguously recognize is a `list.unrecognized_command` 422, never a guess.\n422 rather than 400 because the body was perfectly valid — it is the\n*content* that did not resolve here, and the caller's answer is to fall back\nto the normal run path rather than to fix its request.",
@@ -1969,6 +2122,34 @@
       ],
       "type": "object"
     },
+    "PromoteNotesResponse": {
+      "description": "`POST /api/v1/sessions/{id}/deepdive/promote` — the human accepted the\noffer; the thread is now a versioned markdown artifact (FR-08).\n\nRe-promoting the same thread appends a version to the same document rather\nthan minting a rival one, the same shape as\n[`crate::lists::PromoteListResponse`].",
+      "properties": {
+        "artifactId": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "firstPromotion": {
+          "description": "True when this promotion created the document rather than versioning it.",
+          "type": "boolean"
+        },
+        "sha256": {
+          "description": "Content address of the document, lowercase hex.",
+          "type": "string"
+        },
+        "version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "artifactId",
+        "version",
+        "sha256",
+        "firstPromotion"
+      ],
+      "type": "object"
+    },
     "ProviderDto": {
       "properties": {
         "id": {
@@ -2271,6 +2452,40 @@
         "archived"
       ],
       "type": "string"
+    },
+    "SourceFindingDto": {
+      "description": "One page a turn consulted, as filed to `POST\n/api/v1/sessions/{id}/deepdive/findings`.\n\nBoth fields are untrusted (Z4 — they come from a fetched page). The URL is\nre-validated by `ResearchThread::record_source`, which refuses anything that\nis not an attributable `http(s)` URL, and the title is capped and escaped\nwherever it is rendered.",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "url"
+      ],
+      "type": "object"
+    },
+    "SourceHandoffDto": {
+      "description": "\"Open that / let me read it\" resolved to a page the thread already cited\n(ADR-017 §3).\n\nA **citation, not a command**: `url` and `domain` are already on the sources\ncard, `domain` is computed host-side from the parsed host\n(`jarvis_domain::deepdive::display_domain`) so a spoofing URL cannot present\nitself as a trusted site, and there is no tool id here for a client to\nsubmit anywhere.",
+      "properties": {
+        "domain": {
+          "description": "Display domain for what Jarvis says while handing off, e.g.\n\"en.wikipedia.org\".",
+          "type": "string"
+        },
+        "url": {
+          "description": "The page to open; always `http(s)`, validated when it was recorded.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "domain"
+      ],
+      "type": "object"
     },
     "SourceItemDto": {
       "description": "One page consulted during a deep dive, as the sources card lists it\n(docs/12 §2.3: \"title + domain + link each\"; FR-27/ADR-017).\n\n`domain` is the chip label and is computed **server-side** from the parsed\nhost (`jarvis_domain::deepdive::display_domain`), never by the client from\n`url` — a `https://wikipedia.org@evil.example/` link must not be able to\npresent itself as `wikipedia.org`. Like [`SourcedImageDto`], every field is\nrequired: there is no way to list a reference without saying where it goes.",
@@ -2644,6 +2859,23 @@
           "required": [
             "type",
             "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One canvas instruction for the HUD (F3b.6, FR-27/FR-24, ADR-017): what\nthis turn does to the materialization canvas, and the cards that belong\non it. The **first producer** of [`crate::cards::HudCardDto`] on the wire.\n\nTransient, for the same reason as `media.state` and for one more:\n\n* The canvas is a *current-value* surface, not history. Panels shelve,\n  are dismissible, and expire silently on a TTL (docs/12 §4), so a\n  client that missed an instruction is not missing a fact about the past\n  — and the payload carries the live card set rather than a delta, so\n  the next instruction re-converges it. The durable record of a thread\n  is the Research Notes artifact (FR-08), which has its own read surface.\n* A `DomainEvent` is published from the outbox in the same transaction\n  as the domain change it describes (invariant #6). A deep-dive turn\n  commits no row, so there is no transaction to ride and nothing\n  honest to replay from.\n\nNot run-scoped: a canvas update can come from a list command with no run\nand no session at all, which is why the session id lives (optional)\ninside the payload rather than beside it.",
+          "properties": {
+            "canvas": {
+              "$ref": "#/definitions/HudCanvasDto"
+            },
+            "type": {
+              "const": "hud.canvas",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "canvas"
           ],
           "type": "object"
         }

@@ -11,6 +11,7 @@ pub mod artifacts;
 pub mod auth;
 pub mod cards;
 pub mod content;
+pub mod deepdive;
 pub mod display;
 pub mod envelope;
 pub mod errors;

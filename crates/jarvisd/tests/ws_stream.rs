@@ -79,6 +79,9 @@ async fn start(pool: PgPool, model: FakeModel) -> Harness {
         events.clone(),
         engine,
         approval_gate,
+        // This test is the streaming + resync path; the deep-dive router is
+        // exercised through the run surface in `runs_api.rs`.
+        None,
     );
     let ws = WsState {
         hub,

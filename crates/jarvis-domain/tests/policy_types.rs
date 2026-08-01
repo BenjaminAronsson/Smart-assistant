@@ -145,6 +145,18 @@ fn tool_id_accepts_dotted_names_rejects_junk() {
 }
 
 #[test]
+fn the_browser_navigate_constant_is_exactly_what_parsing_the_literal_yields() {
+    // The deep-dive source handoff (FR-27, ADR-017 §3) builds its proposal from
+    // this constructor instead of re-parsing a literal, so the agreement is
+    // asserted here rather than by an `.expect()` in the application crate.
+    assert_eq!(
+        ToolId::browser_navigate(),
+        "browser.navigate".parse().unwrap()
+    );
+    assert_eq!(ToolId::browser_navigate().as_str(), "browser.navigate");
+}
+
+#[test]
 fn tool_version_parses_and_displays() {
     let v: ToolVersion = "1.4.2".parse().unwrap();
     assert_eq!(v, ToolVersion::new(1, 4, 2));

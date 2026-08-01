@@ -385,6 +385,12 @@ pub struct RunApi {
     /// resolves a pending approval through it. The orchestrator side that *parks*
     /// an approval here is wired in F2.6 (no tool is proposed until then).
     approval_gate: Arc<crate::approvals::JarvisApprovalGate>,
+    /// The deep-dive router (F3b.6, FR-27/ADR-017). Every submitted message is
+    /// a turn on the session's thread, so the continuation-vs-new-topic signal
+    /// is computed here rather than in a second call the client has to make
+    /// (docs/12 §2.5: "every follow-up is a normal run on the Run Spine").
+    /// `None` leaves the run path exactly as it was — no canvas events at all.
+    deepdive: Option<crate::deepdive::DeepDiveApi>,
 }
 
 impl RunApi {
@@ -395,6 +401,7 @@ impl RunApi {
         events: Arc<dyn EventReader>,
         engine: Arc<RunEngine>,
         approval_gate: Arc<crate::approvals::JarvisApprovalGate>,
+        deepdive: Option<crate::deepdive::DeepDiveApi>,
     ) -> Self {
         Self {
             sessions,
@@ -403,6 +410,7 @@ impl RunApi {
             events,
             engine,
             approval_gate,
+            deepdive,
         }
     }
 }
@@ -451,6 +459,14 @@ pub async fn submit_message(
         .append(&user_message)
         .await
         .map_err(repository_problem)?;
+
+    // Route the deep-dive turn (F3b.6, FR-27/ADR-017) before the run starts, so
+    // the canvas instruction reaches the HUD with the turn it belongs to rather
+    // than after the answer has begun streaming into it. Pure classification
+    // plus a broadcast: it cannot fail and cannot delay the run.
+    if let Some(deepdive) = &api.deepdive {
+        deepdive.observe_turn(&session_id, &text).await;
+    }
 
     let run = Run::new(
         fresh_id::<RunId>(),

@@ -77,6 +77,19 @@ export type ArtifactSensitivityDto = "normal" | "sensitive";
  */
 export type ArtifactSourceKindDto = "message" | "run" | "web";
 /**
+ * What this turn does to the materialization canvas (FR-24/FR-27, docs/12
+ * §2.5/§4) — the wire mirror of `jarvis_application::deepdive::CanvasAction`.
+ *
+ * Exhaustive and deliberately two-valued: a third answer would change the
+ * panel lifecycle, which is a spec decision. Note what it cannot express —
+ * anything about approvals. Pending approval cards are exempt from shelving
+ * (docs/12 §4, F3b.4), and no value here can retract one.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "CanvasActionDto".
+ */
+export type CanvasActionDto = "extend" | "shelve";
+/**
  * One WebSocket replaces v1's three hubs; `channel` discriminates (docs/05 §1).
  *
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
@@ -296,7 +309,8 @@ export type ErrorCode =
   | "timer.invalid_transition"
   | "timer.stale"
   | "list.full"
-  | "list.unrecognized_command";
+  | "list.unrecognized_command"
+  | "deepdive.nothing_to_promote";
 /**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "ServiceStatus".
@@ -503,6 +517,11 @@ export type TransientEvent =
       state: MediaStateDto;
       type: "media.state";
       [k: string]: unknown;
+    }
+  | {
+      canvas: HudCanvasDto;
+      type: "hud.canvas";
+      [k: string]: unknown;
     };
 
 /**
@@ -707,6 +726,77 @@ export interface CreateTimerRequest {
   [k: string]: unknown;
 }
 /**
+ * `POST /api/v1/sessions/{id}/deepdive/findings` — what this turn learned.
+ *
+ * `facts` are **paraphrases Jarvis composed**, not fetched page text: the
+ * domain refuses anything over
+ * `jarvis_domain::deepdive::MAX_PARAPHRASE_CHARS` rather than truncating it,
+ * because a truncated scrape is still a scrape (ADR-017). Everything in this
+ * request is filed through the thread's guarded recorders; a rejected entry is
+ * reported in [`DeepDiveFindingsResponse::refused`] and simply does not exist
+ * in the thread.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "DeepDiveFindingsRequest".
+ */
+export interface DeepDiveFindingsRequest {
+  facts?: string[];
+  images?: ImageFindingDto[];
+  sources?: SourceFindingDto[];
+  [k: string]: unknown;
+}
+/**
+ * One image a turn referenced, with **its own** page (ADR-017: provenance
+ * differs per image, so one shared attribution is not acceptable).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ImageFindingDto".
+ */
+export interface ImageFindingDto {
+  alt: string;
+  /**
+   * The page this image was found on — never a neighbour's.
+   */
+  sourceUrl: string;
+  url: string;
+  [k: string]: unknown;
+}
+/**
+ * One page a turn consulted, as filed to `POST
+ * /api/v1/sessions/{id}/deepdive/findings`.
+ *
+ * Both fields are untrusted (Z4 — they come from a fetched page). The URL is
+ * re-validated by `ResearchThread::record_source`, which refuses anything that
+ * is not an attributable `http(s)` URL, and the title is capped and escaped
+ * wherever it is rendered.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "SourceFindingDto".
+ */
+export interface SourceFindingDto {
+  title: string;
+  url: string;
+  [k: string]: unknown;
+}
+/**
+ * What was actually filed. Counts, plus a plain-text reason per rejected
+ * entry so a caller learns *that* a scrape or an unattributable URL was
+ * refused rather than discovering it missing later.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "DeepDiveFindingsResponse".
+ */
+export interface DeepDiveFindingsResponse {
+  facts: number;
+  images: number;
+  /**
+   * One line per refused entry. Empty when everything was filed.
+   */
+  refused?: string[];
+  sources: number;
+  [k: string]: unknown;
+}
+/**
  * Terminal outcome of a run (docs/02 §4). `detail` is a short human sentence,
  * never raw provider/driver text (docs/06 §5).
  *
@@ -907,6 +997,44 @@ export interface HealthResponse {
   [k: string]: unknown;
 }
 /**
+ * One canvas instruction (F3b.6). The payload of the transient `hud.canvas`
+ * event.
+ *
+ * `cards` is the **live card set for this canvas**, not a delta: the same card
+ * id re-sent is the same card refreshed, so a client that applies it
+ * upsert-by-id converges on the current state no matter how many events it
+ * missed. That is what makes a transient classification safe here.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "HudCanvasDto".
+ */
+export interface HudCanvasDto {
+  action: CanvasActionDto;
+  cards?: HudCardDto[];
+  /**
+   * Present when the human asked to read one of the cited sources.
+   */
+  handoff?: SourceHandoffDto | null;
+  /**
+   * The shelf chip label to file the *displaced* panels under when `action`
+   * is `shelve` (docs/12 §4: "Ramen places · Restore · ×"). Plain text.
+   */
+  label: string;
+  /**
+   * The spoken offer to keep this thread as a Research Notes document
+   * (docs/12 §2.5: Jarvis's normal voice, one line, never a dialog box).
+   * Present only on the turn that crosses `[ui] deepdive_promote_after`.
+   */
+  offer?: string | null;
+  /**
+   * The conversation this turn belongs to. Absent for a canvas update that
+   * is not part of a deep-dive thread at all — a list card produced by the
+   * deterministic list grammar (FR-34), which has no session.
+   */
+  sessionId?: UlidString | null;
+  [k: string]: unknown;
+}
+/**
  * One labeled value in a value-readout card's mini-stats row (docs/12 §2.3).
  *
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
@@ -1019,6 +1147,31 @@ export interface ListItemDto {
    * Sanitized human text. Rendered as text.
    */
   text: string;
+  [k: string]: unknown;
+}
+/**
+ * "Open that / let me read it" resolved to a page the thread already cited
+ * (ADR-017 §3).
+ *
+ * A **citation, not a command**: `url` and `domain` are already on the sources
+ * card, `domain` is computed host-side from the parsed host
+ * (`jarvis_domain::deepdive::display_domain`) so a spoofing URL cannot present
+ * itself as a trusted site, and there is no tool id here for a client to
+ * submit anywhere.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "SourceHandoffDto".
+ */
+export interface SourceHandoffDto {
+  /**
+   * Display domain for what Jarvis says while handing off, e.g.
+   * "en.wikipedia.org".
+   */
+  domain: string;
+  /**
+   * The page to open; always `http(s)`, validated when it was recorded.
+   */
+  url: string;
   [k: string]: unknown;
 }
 /**
@@ -1368,6 +1521,30 @@ export interface PromoteListResponse {
   /**
    * Content address of the document, lowercase hex — the same value the
    * artifact blob endpoint serves under.
+   */
+  sha256: string;
+  version: number;
+  [k: string]: unknown;
+}
+/**
+ * `POST /api/v1/sessions/{id}/deepdive/promote` — the human accepted the
+ * offer; the thread is now a versioned markdown artifact (FR-08).
+ *
+ * Re-promoting the same thread appends a version to the same document rather
+ * than minting a rival one, the same shape as
+ * [`crate::lists::PromoteListResponse`].
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "PromoteNotesResponse".
+ */
+export interface PromoteNotesResponse {
+  artifactId: UlidString;
+  /**
+   * True when this promotion created the document rather than versioning it.
+   */
+  firstPromotion: boolean;
+  /**
+   * Content address of the document, lowercase hex.
    */
   sha256: string;
   version: number;

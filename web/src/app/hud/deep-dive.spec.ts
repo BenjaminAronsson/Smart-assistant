@@ -88,6 +88,17 @@ describe('Deep-dive canvas continuity (FR-27, ADR-017, docs/12 §2.5)', () => {
     expect(ids(hud.cards())).toEqual(['ramen-1']);
   });
 
+  it('a re-published card refreshes in place instead of appearing twice', () => {
+    // The server publishes the live card set for a canvas, not a delta (F3b.6),
+    // and the ids are stable — a thread's bibliography and a list card keep
+    // theirs as they grow. So the same id arriving again is the same card.
+    hud.setCards([card('ramen-1')]);
+    hud.routeTurn('extend', 'Ramen places', [sources('refs')]);
+    hud.routeTurn('extend', 'Ramen places', [sources('refs')]);
+
+    expect(ids(hud.cards())).toEqual(['ramen-1', 'refs']);
+  });
+
   it('a pending approval survives a continuation', () => {
     hud.setCards([approval('01BX5ZZKBKACTAV9WEVGEMMVS1'), card('ramen-1')]);
 

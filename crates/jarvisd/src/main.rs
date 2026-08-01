@@ -173,6 +173,28 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         Some(tool_plane),
     );
 
+    // Deep-dive threads (F3b.6, FR-27, ADR-017). Deliberately NOT gated on any
+    // external capability and not optional: the continuation-vs-new-topic
+    // decision is a pure classifier over the owner's own utterance, so a thread
+    // keeps working offline, in degraded mode, and with the model quota gone —
+    // the same stance as timers and lists. `[ui] deepdive_promote_after`
+    // (default 3) is the promotion threshold; zero disables the *offer* only,
+    // which is the documented way to turn that half off.
+    //
+    // Promotion reuses the artifact ports above, so a Research Notes document is
+    // an ordinary versioned artifact with no second code path — the same reuse
+    // as a promoted list.
+    let deepdive = jarvisd::deepdive::DeepDiveApi::new(
+        Arc::new(jarvis_application::deepdive::DeepDiveService::new(
+            blob_store.clone(),
+            artifact_store.clone(),
+            config.ui.deepdive_promote_after,
+            "user:owner",
+            Arc::new(SystemClock),
+        )),
+        hub.clone(),
+    );
+
     let run_api = RunApi::new(
         session_store,
         message_store.clone(),
@@ -180,6 +202,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         event_log.clone(),
         engine.clone(),
         approval_gate,
+        Some(deepdive.clone()),
     );
     let ws_state = WsState {
         hub: hub.clone(),
@@ -294,14 +317,17 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     // model quota exhausted. Promotion reuses the artifact ports above, so a
     // promoted list is an ordinary versioned artifact with no second code path.
     let list_api = if config.lists.enabled {
-        Some(jarvisd::lists::ListApi::new(Arc::new(
-            jarvis_application::lists::ListsService::new(
+        Some(jarvisd::lists::ListApi::new(
+            Arc::new(jarvis_application::lists::ListsService::new(
                 Arc::new(jarvis_infra::lists::PgListStore::new(pool.clone())),
                 blob_store,
                 artifact_store,
                 Arc::new(SystemClock),
-            ),
-        )))
+            )),
+            // The list card rides the same canvas event as the deep-dive cards
+            // (F3b.6) — one way onto the HUD, not a second one for lists.
+            Some(hub.clone()),
+        ))
     } else {
         None
     };
@@ -321,6 +347,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             maps,
             timers: timer_api,
             lists: list_api,
+            deepdive: Some(deepdive),
             web_assets: config.server.web_assets.clone(),
         },
     )

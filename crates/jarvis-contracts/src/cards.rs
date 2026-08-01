@@ -6,10 +6,17 @@
 //! client is allowed to interpolate as markup — every renderer treats every
 //! field as plain text (docs/12 §9 "card grammar only").
 //!
-//! F3b.2 ships the grammar and its Angular renderers with **no server-side
-//! producer** — no WS event carries a [`HudCardDto`] yet, the same
-//! no-producer-less-replayable-event precedent as `crate::artifacts` (see that
-//! module's doc comment). The first producer is the deep-dive work (F3b.6).
+//! F3b.2 shipped the grammar and its Angular renderers with **no server-side
+//! producer** — the same no-producer-less-replayable-event precedent as
+//! `crate::artifacts` (see that module's doc comment). That is no longer the
+//! case: F3b.6 wired the producer, and every card below reaches the client
+//! inside [`crate::deepdive::HudCanvasDto`], the payload of the transient
+//! `hud.canvas` event. Two of them are produced today —
+//! [`HudCardDto::Sources`]/[`HudCardDto::Gallery`] from a live deep-dive thread
+//! (`jarvisd::deepdive`), and [`HudCardDto::List`] from the deterministic list
+//! grammar (`jarvisd::lists`). The rest of the v1 set is still awaiting the
+//! feature that materializes it; a variant with no producer is a card type the
+//! HUD can render the day something builds one, not a contract defect.
 //! The v1 set is exactly the types F3b.2 owns per docs/milestones/M3-features.md:
 //! value readout, place, entity/person, media/menu grid, headlines/digest,
 //! now-playing (data only — live playback control stays on the media bar until

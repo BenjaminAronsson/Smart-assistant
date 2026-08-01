@@ -184,6 +184,29 @@ impl WsHub {
         let _ = self.tx.send(Arc::new(envelope));
     }
 
+    /// Broadcast a transient `hud.canvas` instruction (F3b.6, FR-27/ADR-017):
+    /// what this turn does to the materialization canvas, plus the cards that
+    /// belong on it. Like a text delta it rides at the current high-water `seq`
+    /// and never advances the resync cursor — see
+    /// [`jarvis_contracts::events::TransientEvent::HudCanvas`] for why a canvas
+    /// instruction cannot honestly be a replayable domain event.
+    pub fn broadcast_hud_canvas(&self, canvas: jarvis_contracts::deepdive::HudCanvasDto) {
+        let event = TransientEvent::HudCanvas { canvas };
+        let (event_type, payload) =
+            split_tagged(serde_json::to_value(&event).expect("transient event serializes"));
+        let envelope = EventEnvelope {
+            v: CONTRACT_VERSION,
+            seq: self.high_water.load(Ordering::SeqCst),
+            channel: Channel::Session,
+            event_type,
+            occurred_at: now_rfc3339(),
+            trace_id: None,
+            resource_version: None,
+            payload,
+        };
+        let _ = self.tx.send(Arc::new(envelope));
+    }
+
     /// Broadcast a transient text delta at the current high-water `seq` (it does
     /// not advance the resync cursor; a lost delta is re-derived, docs/05 §3).
     fn broadcast_delta(&self, run_id: &RunId, text: &str) {
@@ -206,6 +229,14 @@ impl WsHub {
             payload,
         };
         let _ = self.tx.send(Arc::new(envelope));
+    }
+}
+
+/// Deep-dive turns and list commands publish canvas instructions through this
+/// impl (F3b.6).
+impl crate::cards::CanvasSink for WsHub {
+    fn publish(&self, canvas: jarvis_contracts::deepdive::HudCanvasDto) {
+        self.broadcast_hud_canvas(canvas);
     }
 }
 
