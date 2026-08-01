@@ -4,9 +4,9 @@
 
 use jarvis_domain::deepdive::{
     GALLERY_IMAGE_CAP, MAX_IMAGE_ALT_CHARS, MAX_PARAPHRASE_CHARS, MAX_SOURCE_TITLE_CHARS,
-    MAX_THREAD_FACTS, MAX_THREAD_IMAGES, MAX_THREAD_SOURCES, MAX_TOPIC_CHARS, QueryRelation,
-    ResearchThread, ThreadError, classify_query, display_domain, is_source_handoff, is_web_url,
-    render_research_notes, select_source, should_offer_promotion,
+    MAX_THREAD_FACTS, MAX_THREAD_IMAGES, MAX_THREAD_SOURCES, MAX_TOPIC_CHARS, MAX_URL_CHARS,
+    QueryRelation, ResearchThread, ThreadError, classify_query, display_domain, is_source_handoff,
+    is_web_url, render_research_notes, select_source, should_offer_promotion,
 };
 
 const TOPIC: &str = "ramen places near Kreuzberg";
@@ -231,17 +231,17 @@ fn a_url_that_could_inject_document_structure_is_refused_by_the_recorders() {
         assert!(
             matches!(
                 thread.record_source("Fine title", hostile),
-                Err(ThreadError::Unattributable(_))
+                Err(ThreadError::Unattributable)
             ),
             "{hostile:?} must not be recordable as a source"
         );
         assert!(matches!(
             thread.record_image("alt", hostile, "https://example.org/page"),
-            Err(ThreadError::Unattributable(_))
+            Err(ThreadError::Unattributable)
         ));
         assert!(matches!(
             thread.record_image("alt", "https://cdn.example.org/a.jpg", hostile),
-            Err(ThreadError::Unattributable(_))
+            Err(ThreadError::Unattributable)
         ));
     }
     assert!(thread.sources().is_empty());
@@ -325,6 +325,122 @@ fn untrusted_labels_are_capped_to_a_label_length() {
         thread.images()[0].alt().chars().count(),
         MAX_IMAGE_ALT_CHARS
     );
+}
+
+#[test]
+fn a_url_longer_than_the_ceiling_is_refused_rather_than_truncated() {
+    // S1. The title and the alt text were bounded and the fact was bounded, but
+    // the URL — the one field with no natural length — was stored verbatim at
+    // any size. Reachable from an authenticated request body, held per thread,
+    // and cloned into every published canvas envelope: a denial-of-resources
+    // primitive (docs/06 §5), not a cosmetic gap.
+    let mut thread = ResearchThread::new("Ramen");
+    let long = format!("https://example.org/{}", "a".repeat(MAX_URL_CHARS));
+    assert!(long.len() > MAX_URL_CHARS);
+
+    // Refused, not shortened: a truncated URL is a *different* URL — it would
+    // still parse, still earn a chip, and point somewhere nobody chose.
+    assert_eq!(
+        thread.record_source("Fine title", &long),
+        Err(ThreadError::UrlTooLong)
+    );
+    assert_eq!(
+        thread.record_image("alt", &long, "https://example.org/page"),
+        Err(ThreadError::UrlTooLong)
+    );
+    // The provenance URL costs the thread just as much as the image URL does.
+    assert_eq!(
+        thread.record_image("alt", "https://cdn.example.org/a.jpg", &long),
+        Err(ThreadError::UrlTooLong)
+    );
+    assert!(thread.sources().is_empty());
+    assert!(thread.images().is_empty());
+
+    // And the bound belongs to the URL rule itself, so nothing downstream of a
+    // recorder can be handed one either.
+    assert!(!is_web_url(&long));
+    assert_eq!(display_domain(&long), None);
+
+    // Exactly at the ceiling is still a URL — the bound is generous on purpose.
+    let at_ceiling = format!(
+        "https://example.org/{}",
+        "a".repeat(MAX_URL_CHARS - "https://example.org/".len())
+    );
+    assert_eq!(at_ceiling.len(), MAX_URL_CHARS);
+    assert!(thread.record_source("Fine title", &at_ceiling).is_ok());
+    assert_eq!(thread.sources().len(), 1);
+}
+
+#[test]
+fn a_refusal_never_echoes_the_callers_own_input_back_at_it() {
+    // S4. `Unattributable` used to carry the offending URL, and these strings
+    // reach a problem body and a log line — so an arbitrary-length, unsanitized,
+    // attacker-chosen URL was being reflected straight back out. Same convention
+    // as `ListError`: "small and content-free".
+    let mut thread = ResearchThread::new("Ramen");
+    let hostile = "javascript:alert('marker-9f3a')";
+    let long = format!("https://example.org/{}", "marker9f3a".repeat(500));
+
+    for error in [
+        thread.record_source("t", hostile).unwrap_err(),
+        thread.record_source("t", &long).unwrap_err(),
+        thread
+            .record_image("a", hostile, "https://example.org/p")
+            .unwrap_err(),
+        thread
+            .record_fact("f".repeat(MAX_PARAPHRASE_CHARS + 1))
+            .unwrap_err(),
+        thread.record_fact("  ").unwrap_err(),
+    ] {
+        let rendered = error.to_string();
+        assert!(
+            !rendered.contains("marker-9f3a") && !rendered.contains("marker9f3a"),
+            "the refusal quoted its input back: {rendered}"
+        );
+        assert!(!rendered.contains("javascript:"), "{rendered}");
+        // A fixed reason, not a container for whatever arrived.
+        assert!(rendered.len() < 120, "{rendered}");
+    }
+}
+
+#[test]
+fn a_title_or_alt_text_cannot_carry_a_bidi_override_onto_a_card() {
+    // S2. A source title renders inline next to the honestly-computed domain
+    // chip — the one surface whose whole purpose is truthful attribution — and
+    // alt text is spoken by TTS. `U+202E` in a fetched page's title reverses
+    // what a human reads there. The repo already strips exactly these characters
+    // for list lines and folds them in `markdown::escape`; this closes the one
+    // display path that missed the treatment, and it does it in the *recorder*
+    // so no projection has to remember.
+    let mut thread = ResearchThread::new("Ramen \u{202e}gnimaerts\u{202c}");
+    assert!(!thread.topic().contains('\u{202e}'), "{}", thread.topic());
+
+    let hostile = "Wikipedia\u{202e}gpj.exe\u{202c} \u{200b}hidden\u{0007}\tand\nlines";
+    thread
+        .record_source(hostile, "https://example.org/a")
+        .unwrap();
+    thread
+        .record_image(
+            hostile,
+            "https://cdn.example.org/a.jpg",
+            "https://example.org/a",
+        )
+        .unwrap();
+
+    for label in [thread.sources()[0].title(), thread.images()[0].alt()] {
+        for forbidden in ['\u{202e}', '\u{202c}', '\u{200b}', '\u{0007}', '\n', '\t'] {
+            assert!(
+                !label.contains(forbidden),
+                "{forbidden:?} survived into {label:?}"
+            );
+        }
+        // Stripped, not emptied: the words a human needs are still there, and
+        // the label stays one line with no double spaces.
+        assert!(label.contains("Wikipedia"), "{label:?}");
+        assert!(label.contains("hidden"), "{label:?}");
+        assert!(!label.contains("  "), "{label:?}");
+        assert_eq!(label.trim(), label);
+    }
 }
 
 #[test]
@@ -459,7 +575,7 @@ fn a_source_without_an_honest_attribution_is_refused() {
     let mut thread = ResearchThread::new("Ramen");
     assert!(matches!(
         thread.record_source("Evil", "javascript:alert(1)"),
-        Err(ThreadError::Unattributable(_))
+        Err(ThreadError::Unattributable)
     ));
     assert!(thread.sources().is_empty());
     assert!(
@@ -483,11 +599,11 @@ fn an_image_cannot_be_recorded_without_its_own_source() {
     // would have to borrow another image's (ADR-017 forbids exactly that).
     assert!(matches!(
         thread.record_image("bowl", "https://cdn.example.org/a.jpg", ""),
-        Err(ThreadError::Unattributable(_))
+        Err(ThreadError::Unattributable)
     ));
     assert!(matches!(
         thread.record_image("bowl", "data:image/png;base64,AA", "https://example.org/p"),
-        Err(ThreadError::Unattributable(_))
+        Err(ThreadError::Unattributable)
     ));
     assert!(thread.images().is_empty());
 }

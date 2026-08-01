@@ -134,6 +134,12 @@ pub struct ImageFindingDto {
 /// request is filed through the thread's guarded recorders; a rejected entry is
 /// reported in [`DeepDiveFindingsResponse::refused`] and simply does not exist
 /// in the thread.
+///
+/// Each array carries **at most 64 entries** — a whole request over that is
+/// refused with `422 validation.failed` rather than partially filed, because the
+/// loop that consumes it holds a process-global lock and its length is how long
+/// every other conversation's turn waits. A turn files what it just consulted;
+/// 64 of each is far past anything real and well under the thread's own totals.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DeepDiveFindingsRequest {
@@ -148,6 +154,12 @@ pub struct DeepDiveFindingsRequest {
 /// What was actually filed. Counts, plus a plain-text reason per rejected
 /// entry so a caller learns *that* a scrape or an unattributable URL was
 /// refused rather than discovering it missing later.
+///
+/// The reasons are a **fixed vocabulary the server owns**: they never quote the
+/// offending fact, title or URL back at the caller. Reflecting an
+/// arbitrary-length, unsanitized, caller-chosen string into a response body is
+/// the mistake `ListError` documents avoiding, and a caller already knows what
+/// it sent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DeepDiveFindingsResponse {

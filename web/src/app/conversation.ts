@@ -197,7 +197,7 @@ export class Conversation implements OnInit, OnDestroy {
     // is the one the human can correct by voice ("new topic").
     if (env.type === 'hud.canvas') {
       const canvas = (env.payload as { canvas?: HudCanvasDto }).canvas;
-      if (canvas) {
+      if (canvas && this.canvasIsForThisView(canvas)) {
         this.hud.routeTurn(canvas.action, canvas.label, canvas.cards ?? []);
       }
       return;
@@ -235,6 +235,25 @@ export class Conversation implements OnInit, OnDestroy {
         this.removePendingApproval(event.approvalId);
         break;
     }
+  }
+
+  /**
+   * Whether a canvas instruction belongs to the conversation this view is
+   * showing (F3b.6).
+   *
+   * The WS fan-out is **global** — one broadcast reaches every authenticated
+   * device and every open conversation — so `sessionId` in the payload is the
+   * only thing scoping a canvas instruction to a conversation. Ignoring it let
+   * session B's sources and gallery cards render on session A's canvas, and a
+   * `shelve` from B shelve A's panels.
+   *
+   * A `null`/absent `sessionId` is *not* an unscoped leak: it is the documented
+   * "applies anywhere" case (a list card from the deterministic list grammar,
+   * FR-34, which has no session at all), so it must pass. Only a canvas that
+   * names a *different* conversation is dropped.
+   */
+  private canvasIsForThisView(canvas: HudCanvasDto): boolean {
+    return !canvas.sessionId || canvas.sessionId === this.sessionId;
   }
 
   /** A human decided an approval; block the card and POST the decision. The card

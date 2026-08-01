@@ -269,6 +269,9 @@ async fn app_with_token(
         1,
     )
     .expect("lazy pool");
+    let sessions = Arc::new(FakeSessionStore {
+        known: SESSION.parse().unwrap(),
+    });
     let deepdive = jarvisd::deepdive::DeepDiveApi::new(
         Arc::new(jarvis_application::deepdive::DeepDiveService::new(
             Arc::new(FakeBlobs),
@@ -277,12 +280,11 @@ async fn app_with_token(
             "user:owner",
             Arc::new(SystemClock),
         )),
+        sessions.clone(),
         hub.clone(),
     );
     let run_api = RunApi::new(
-        Arc::new(FakeSessionStore {
-            known: SESSION.parse().unwrap(),
-        }),
+        sessions,
         messages,
         run_store,
         Arc::new(EmptyEventReader),

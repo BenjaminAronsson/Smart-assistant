@@ -108,6 +108,24 @@ pub fn escape(raw: &str) -> String {
 /// `"`/`^`/`{`/`}` are the remaining unwise delimiters.
 const FORBIDDEN_IN_URL: &[char] = &['<', '>', '"', '`', '\\', '^', '{', '}', '|'];
 
+/// Longest URL this system will accept anywhere — as a link target, a
+/// navigation, a stored citation, or a chip.
+///
+/// 2048 is the conventional ceiling (the oldest widely-honoured browser limit),
+/// which is another way of saying that a longer "URL" is not one anybody is
+/// going to follow. The bound exists because a URL is the one untrusted field on
+/// these paths with no natural length: titles and alt text are display labels
+/// and are capped as such, a fact is capped at a paraphrase, but a URL was
+/// checked only for *shape*. Storing megabytes of well-formed `https://…` per
+/// citation is a denial-of-resources primitive (docs/06 §5) — the thread holds
+/// them, every publish clones them into a broadcast envelope, and a slow
+/// subscriber multiplies that.
+///
+/// A conforming URL is ASCII (RFC 3986), so characters and bytes are the same
+/// count here and the cheap byte check below is exact for everything
+/// [`is_web_url`] would otherwise accept.
+pub const MAX_URL_CHARS: usize = 2048;
+
 /// Whether a URL is a plain `http(s)` URL — the only kind this system will emit
 /// as a link target, navigate to, or badge with a domain. `javascript:`,
 /// `data:`, and `file:` never qualify.
@@ -116,9 +134,12 @@ const FORBIDDEN_IN_URL: &[char] = &['<', '>', '"', '`', '\\', '^', '{', '}', '|'
 /// [`crate::deepdive::display_domain`] both go through it, so a URL that may be
 /// shown as a chip is exactly a URL that may be emitted as a link.
 ///
-/// Two conditions, and the second matters as much as the first:
+/// Three conditions, and the second and third matter as much as the first:
 ///
-/// * the scheme is `http`/`https`, case-insensitively, and
+/// * the scheme is `http`/`https`, case-insensitively,
+/// * the whole thing is at most [`MAX_URL_CHARS`] long — the rule has to bound
+///   *size* as well as shape, or an unbounded string with a valid prefix is a
+///   valid URL, and
 /// * every character of the trimmed string is **ASCII-graphic** and not one of
 ///   [`FORBIDDEN_IN_URL`] — so no control characters, no whitespace, nothing
 ///   non-ASCII, and none of the delimiters RFC 3986 excludes from a URI anyway.
@@ -133,6 +154,12 @@ pub fn is_web_url(url: &str) -> bool {
     let trimmed = url.trim();
     let lower = trimmed.to_ascii_lowercase();
     if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return false;
+    }
+    // Byte length, checked before the per-character scan: everything this
+    // function accepts is ASCII, so bytes and characters agree, and rejecting on
+    // size first keeps a megabyte-long candidate from being walked at all.
+    if trimmed.len() > MAX_URL_CHARS {
         return false;
     }
     trimmed
@@ -281,6 +308,27 @@ mod tests {
                 "{hostile:?} must not become a link target"
             );
         }
+    }
+
+    #[test]
+    fn a_url_rule_that_bounds_shape_but_not_size_is_not_a_bound() {
+        // The character class alone accepts an arbitrarily long string with a
+        // valid prefix, and every caller of this rule then stores, clones and
+        // broadcasts it (docs/06 §5, denial of resources).
+        let at_ceiling = format!(
+            "https://a.example/{}",
+            "x".repeat(MAX_URL_CHARS - "https://a.example/".len())
+        );
+        assert_eq!(at_ceiling.len(), MAX_URL_CHARS);
+        assert!(is_web_url(&at_ceiling));
+        assert!(safe_link(&at_ceiling).is_some());
+
+        let over = format!("{at_ceiling}x");
+        assert!(!is_web_url(&over));
+        // The bound has one definition too: what cannot be a link cannot be a
+        // chip, and vice versa.
+        assert_eq!(safe_link(&over), None);
+        assert_eq!(crate::deepdive::display_domain(&over), None);
     }
 
     #[test]

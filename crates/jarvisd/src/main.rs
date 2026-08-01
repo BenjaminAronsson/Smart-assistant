@@ -192,6 +192,10 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             "user:owner",
             Arc::new(SystemClock),
         )),
+        // The same register the message path checks against: a deep-dive slot
+        // (and the artifact promoting one mints) is only ever allocated for a
+        // conversation that exists.
+        session_store.clone(),
         hub.clone(),
     );
 

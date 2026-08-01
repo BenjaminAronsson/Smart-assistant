@@ -48,6 +48,13 @@
 //! [`MAX_LIVE_THREADS`]-entry map, most-recently-used last, and the oldest is
 //! dropped when a new session arrives. Nothing here grows without a bound
 //! (docs/09 §5).
+//!
+//! That bound is *global*, and eviction drops a whole session's entry — which
+//! is why a slot is allocated only for a session the register actually knows
+//! ([`DeepDiveApi::live_session`]). Otherwise a handful of invented ULIDs would
+//! be enough to evict every real conversation's canvas state, and each request
+//! is bounded in what it may carry ([`MAX_FINDINGS_PER_REQUEST`]) because the
+//! loop that consumes it holds a process-global lock.
 
 use std::sync::Arc;
 
@@ -58,6 +65,7 @@ use axum::{Extension, Json};
 use jarvis_application::deepdive::{
     CanvasAction, DeepDiveError, DeepDiveService, ThreadState, TurnOutcome,
 };
+use jarvis_application::ports::{RepositoryError, SessionStore};
 use jarvis_contracts::cards::HudCardDto;
 use jarvis_contracts::deepdive::{
     CanvasActionDto, DeepDiveFindingsRequest, DeepDiveFindingsResponse, HudCanvasDto,
@@ -78,6 +86,22 @@ use crate::problem::problem;
 /// state and nothing durable.
 const MAX_LIVE_THREADS: usize = 8;
 
+/// Most entries one `findings` request may carry **per array**.
+///
+/// A turn files what it just consulted: a handful of paraphrases, the pages
+/// behind them, the images it showed. Sixty-four of each is far past anything a
+/// real turn produces and still well under the thread's own totals
+/// ([`jarvis_domain::deepdive::MAX_THREAD_FACTS`] and friends), so nothing
+/// legitimate is refused by it.
+///
+/// The reason it exists is the loop it bounds. `record_findings` holds a
+/// **process-global** mutex while it walks these arrays — the same mutex every
+/// session's `submit_message` needs — so their length is, directly, how long
+/// every other conversation waits. A 2 MB body of four-byte facts is half a
+/// million iterations under that lock. Checked *before* the lock is taken, which
+/// is the half that matters.
+const MAX_FINDINGS_PER_REQUEST: usize = 64;
+
 /// The sources card's title — "show me the references" (docs/12 §2.5).
 const SOURCES_TITLE: &str = "References";
 
@@ -93,6 +117,9 @@ pub struct DeepDiveApi {
 
 struct Inner {
     service: Arc<DeepDiveService>,
+    /// The session register, consulted before a request is allowed to allocate
+    /// a thread slot. See [`DeepDiveApi::live_session`].
+    sessions: Arc<dyn SessionStore>,
     /// Live threads, least-recently-touched first. A `Vec` rather than a map:
     /// it is capped at [`MAX_LIVE_THREADS`], so a linear scan is cheaper than a
     /// hash, and it carries the recency order the eviction needs for free.
@@ -101,13 +128,38 @@ struct Inner {
 }
 
 impl DeepDiveApi {
-    pub fn new(service: Arc<DeepDiveService>, canvas: Arc<dyn CanvasSink>) -> Self {
+    pub fn new(
+        service: Arc<DeepDiveService>,
+        sessions: Arc<dyn SessionStore>,
+        canvas: Arc<dyn CanvasSink>,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 service,
+                sessions,
                 threads: Mutex::new(Vec::new()),
                 canvas,
             }),
+        }
+    }
+
+    /// Refuse anything that is not a real conversation, before a slot is taken.
+    ///
+    /// [`MAX_LIVE_THREADS`] is a **global** bound, and eviction drops a whole
+    /// session's entry — so without this, eight requests carrying invented (but
+    /// well-formed) ULIDs evict every real conversation's canvas state, and
+    /// `promote` mints a durable artifact attributed to a session that never
+    /// existed. The message path already makes this check before it routes a
+    /// turn ([`crate::runs::submit_message`]); these two entry points were the
+    /// ones that did not.
+    ///
+    /// 404 with no distinction between "never existed" and "not readable": the
+    /// two REST surfaces that already answer for a session id say exactly this.
+    async fn live_session(&self, session_id: &SessionId) -> Result<(), Response> {
+        match self.inner.sessions.get(session_id).await {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err(no_such_session()),
+            Err(e) => Err(session_lookup_problem(e)),
         }
     }
 
@@ -191,6 +243,12 @@ impl Inner {
     /// Index of this session's thread, creating it (and evicting the
     /// least-recently-touched entry when full) and moving it to the
     /// most-recent end.
+    ///
+    /// Every caller has already established that the session is real — the
+    /// message path by its own lookup, the two REST handlers through
+    /// [`DeepDiveApi::live_session`]. This function is not the place to
+    /// re-decide that: it is synchronous, it runs under the lock, and the
+    /// register is I/O.
     fn slot_for(&self, threads: &mut Vec<(SessionId, ThreadState)>, session: &SessionId) -> usize {
         if let Some(position) = threads.iter().position(|(id, _)| id == session) {
             let entry = threads.remove(position);
@@ -247,6 +305,10 @@ fn canvas_action(action: CanvasAction) -> CanvasActionDto {
 /// way content enters a thread at all. A refused item — a "fact" too long to be
 /// a paraphrase, a URL with no honest attribution — is reported in `refused`
 /// and is simply not in the thread; one bad entry never costs the good ones.
+///
+/// Two things happen before the thread lock is taken, and the order is the
+/// point: the session has to exist, and the arrays have to be a plausible size.
+/// Everything after the lock runs while every other conversation's turn waits.
 #[tracing::instrument(skip_all, fields(session.id = tracing::field::Empty))]
 pub async fn record_findings(
     State(api): State<DeepDiveApi>,
@@ -256,6 +318,13 @@ pub async fn record_findings(
 ) -> Result<Json<DeepDiveFindingsResponse>, Response> {
     let session_id = parse_session_id(&session_id).ok_or_else(not_a_session_id)?;
     tracing::Span::current().record("session.id", tracing::field::display(&session_id));
+    if request.facts.len() > MAX_FINDINGS_PER_REQUEST
+        || request.sources.len() > MAX_FINDINGS_PER_REQUEST
+        || request.images.len() > MAX_FINDINGS_PER_REQUEST
+    {
+        return Err(too_many_findings());
+    }
+    api.live_session(&session_id).await?;
 
     let mut threads = api.inner.threads.lock().await;
     let index = api.inner.slot_for(&mut threads, &session_id);
@@ -270,7 +339,7 @@ pub async fn record_findings(
     for fact in &request.facts {
         match state.thread.record_fact(fact.clone()) {
             Ok(()) => response.facts += 1,
-            Err(e) => response.refused.push(e.to_string()),
+            Err(e) => response.refused.push(refusal_reason(&e).to_owned()),
         }
     }
     for source in &request.sources {
@@ -279,7 +348,7 @@ pub async fn record_findings(
             .record_source(source.title.clone(), source.url.clone())
         {
             Ok(()) => response.sources += 1,
-            Err(e) => response.refused.push(e.to_string()),
+            Err(e) => response.refused.push(refusal_reason(&e).to_owned()),
         }
     }
     for image in &request.images {
@@ -289,12 +358,12 @@ pub async fn record_findings(
             image.source_url.clone(),
         ) {
             Ok(()) => response.images += 1,
-            Err(e) => response.refused.push(e.to_string()),
+            Err(e) => response.refused.push(refusal_reason(&e).to_owned()),
         }
     }
     if !response.refused.is_empty() {
-        // Counts only: the reasons quote the caller's own input, which is
-        // untrusted text and does not belong in the log stream.
+        // Counts only. The reasons are ours and are safe to render, but a count
+        // is what a log line is for; the caller gets the detail in its response.
         tracing::info!(
             refused = response.refused.len(),
             "deep-dive findings refused"
@@ -335,6 +404,10 @@ pub async fn promote(
 ) -> Result<Json<PromoteNotesResponse>, Response> {
     let session_id = parse_session_id(&session_id).ok_or_else(not_a_session_id)?;
     tracing::Span::current().record("session.id", tracing::field::display(&session_id));
+    // Before any slot is allocated: an artifact minted against a session that
+    // does not exist is a durable, audited record of a conversation that never
+    // happened.
+    api.live_session(&session_id).await?;
 
     // The id to mint if this thread has never been promoted; a thread that has
     // keeps its own document and this is unused (the host owns randomness).
@@ -391,6 +464,61 @@ fn not_a_session_id() -> Response {
         "session id is not a ULID",
         None,
     )
+}
+
+fn no_such_session() -> Response {
+    problem(
+        StatusCode::NOT_FOUND,
+        ErrorCode::ResourceNotFound,
+        "no such session",
+        None,
+    )
+}
+
+/// The session register was unreadable. Storage details never cross the
+/// boundary — they carry driver internals (docs/05 §7).
+fn session_lookup_problem(error: RepositoryError) -> Response {
+    tracing::error!(error = %error, "deep-dive session lookup failed");
+    problem(
+        StatusCode::SERVICE_UNAVAILABLE,
+        ErrorCode::ProviderUnavailable,
+        "storage unavailable",
+        None,
+    )
+}
+
+/// 422 rather than 400: the body decoded and every field was well-typed, it was
+/// the *content* that was out of range — the same distinction `lists::command`
+/// draws.
+fn too_many_findings() -> Response {
+    problem(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        ErrorCode::ValidationFailed,
+        "a findings request carries at most 64 facts, 64 sources and 64 images",
+        None,
+    )
+}
+
+/// The stable, caller-independent reason one entry was refused.
+///
+/// Exhaustive with no `_` arm, and that is the guarantee rather than the
+/// convenience: these strings go into a response body, so a future
+/// [`ThreadError`] variant that carries the offending text has to be given a
+/// reason here before it can compile — it cannot arrive by defaulting into
+/// `to_string()` and start reflecting untrusted input back at the client.
+/// (`ThreadError`'s own `Display` is content-free today; this makes it not
+/// matter whether it stays that way.)
+fn refusal_reason(error: &jarvis_domain::deepdive::ThreadError) -> &'static str {
+    use jarvis_domain::deepdive::ThreadError;
+    match error {
+        ThreadError::NotAParaphrase => "a fact must be a paraphrase, not fetched page text",
+        ThreadError::Empty => "nothing to record",
+        ThreadError::FactsFull => "this thread already holds the most findings it can",
+        ThreadError::SourcesFull => "this thread already cites the most pages it can",
+        ThreadError::ImagesFull => "this thread already references the most images it can",
+        ThreadError::Unattributable => "not an attributable http(s) source",
+        ThreadError::UrlTooLong => "that URL is too long to record",
+    }
 }
 
 fn promotion_problem(error: DeepDiveError) -> Response {
@@ -569,6 +697,46 @@ mod tests {
         }
     }
 
+    /// A register that knows every session except the ones deliberately
+    /// invented by a test (`session(90..)` — see [`UNKNOWN_SESSION_MARK`]).
+    #[derive(Default)]
+    struct FakeSessions;
+
+    /// Sessions numbered from here up are *not* in the register, which is how a
+    /// test spells "a well-formed ULID nobody ever created".
+    const UNKNOWN_SESSION_MARK: u8 = 90;
+
+    #[async_trait::async_trait]
+    impl jarvis_application::ports::SessionStore for FakeSessions {
+        async fn create(
+            &self,
+            _session: &jarvis_domain::conversations::Session,
+            _idempotency_key: Option<&str>,
+            _audit: &AuditEvent,
+        ) -> Result<jarvis_application::ports::CreateOutcome, RepositoryError> {
+            unreachable!("the deep-dive surface never creates a session")
+        }
+        async fn get(
+            &self,
+            id: &SessionId,
+        ) -> Result<Option<jarvis_domain::conversations::Session>, RepositoryError> {
+            let invented = (UNKNOWN_SESSION_MARK..=99).any(|n| *id == session(n));
+            Ok((!invented).then(|| {
+                jarvis_domain::conversations::Session::new(
+                    id.clone(),
+                    Some("a conversation".to_owned()),
+                    UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+                )
+            }))
+        }
+        async fn list(
+            &self,
+            _limit: u32,
+        ) -> Result<Vec<jarvis_domain::conversations::Session>, RepositoryError> {
+            Ok(Vec::new())
+        }
+    }
+
     fn api(
         promote_after: u32,
     ) -> (
@@ -588,7 +756,7 @@ mod tests {
             Arc::new(FixedClock),
         ));
         (
-            DeepDiveApi::new(service, canvas.clone()),
+            DeepDiveApi::new(service, Arc::new(FakeSessions), canvas.clone()),
             canvas,
             blobs,
             artifacts,
@@ -856,6 +1024,260 @@ mod tests {
         assert_eq!(api.inner.threads.lock().await.len(), MAX_LIVE_THREADS);
         // Every turn still published — eviction costs canvas state, not events.
         assert_eq!(canvas.count(), MAX_LIVE_THREADS + 3);
+    }
+
+    // --- the two REST entry points -----------------------------------------
+
+    fn a_device() -> DeviceContext {
+        DeviceContext {
+            device_id: crate::auth::fresh_id(),
+            user_id: crate::auth::fresh_id(),
+            scopes: Vec::new(),
+        }
+    }
+
+    async fn post_findings(
+        api: &DeepDiveApi,
+        session: &SessionId,
+        request: DeepDiveFindingsRequest,
+    ) -> Result<DeepDiveFindingsResponse, StatusCode> {
+        record_findings(
+            State(api.clone()),
+            Path(session.to_string()),
+            Extension(a_device()),
+            Json(request),
+        )
+        .await
+        .map(|Json(body)| body)
+        .map_err(|response| response.status())
+    }
+
+    #[tokio::test]
+    async fn a_findings_request_is_bounded_before_the_global_lock_is_taken() {
+        // S3. The loop that consumes these arrays holds the process-global
+        // thread mutex — the same one every session's `submit_message` needs —
+        // so an unbounded array is an unbounded stall for every other
+        // conversation. A 2 MB body of four-byte facts is ~500k iterations.
+        let (api, canvas, _, _) = api(3);
+        let session = session(1);
+
+        let too_many = DeepDiveFindingsRequest {
+            facts: vec!["a fact".to_owned(); MAX_FINDINGS_PER_REQUEST + 1],
+            ..DeepDiveFindingsRequest::default()
+        };
+        assert_eq!(
+            post_findings(&api, &session, too_many).await.unwrap_err(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        // Refused whole: no slot was allocated, no canvas was published, and in
+        // particular the lock was never taken.
+        assert!(api.inner.threads.lock().await.is_empty());
+        assert_eq!(canvas.count(), 0);
+
+        // Each array is bounded on its own, not just their sum.
+        for request in [
+            DeepDiveFindingsRequest {
+                sources: vec![a_source("t", "https://example.org/a"); MAX_FINDINGS_PER_REQUEST + 1],
+                ..DeepDiveFindingsRequest::default()
+            },
+            DeepDiveFindingsRequest {
+                images: vec![
+                    jarvis_contracts::deepdive::ImageFindingDto {
+                        alt: "a".to_owned(),
+                        url: "https://cdn.example.org/a.jpg".to_owned(),
+                        source_url: "https://example.org/p".to_owned(),
+                    };
+                    MAX_FINDINGS_PER_REQUEST + 1
+                ],
+                ..DeepDiveFindingsRequest::default()
+            },
+        ] {
+            assert_eq!(
+                post_findings(&api, &session, request).await.unwrap_err(),
+                StatusCode::UNPROCESSABLE_ENTITY
+            );
+        }
+
+        // A request at the bound is a normal request — the cap is far past any
+        // real turn and refuses nothing legitimate.
+        let at_bound = DeepDiveFindingsRequest {
+            facts: (0..MAX_FINDINGS_PER_REQUEST)
+                .map(|i| format!("finding {i}"))
+                .collect(),
+            ..DeepDiveFindingsRequest::default()
+        };
+        let filed = post_findings(&api, &session, at_bound).await.unwrap();
+        assert_eq!(filed.facts as usize, MAX_FINDINGS_PER_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn refusals_are_a_fixed_vocabulary_and_never_quote_the_caller_back() {
+        // S4. `refused` used to carry `ThreadError::Unattributable(url)`
+        // stringified — arbitrary-length, unsanitized, attacker-chosen text
+        // reflected straight back into the response body.
+        let (api, _, _, _) = api(3);
+        let session = session(2);
+        let marker = "marker9f3a";
+        let request = DeepDiveFindingsRequest {
+            facts: vec![format!("{marker}{}", "x".repeat(1000))],
+            sources: vec![
+                a_source("t", &format!("javascript:alert('{marker}')")),
+                a_source("t", &format!("https://example.org/{}", marker.repeat(500))),
+            ],
+            images: vec![jarvis_contracts::deepdive::ImageFindingDto {
+                alt: "a".to_owned(),
+                url: format!("data:image/png;base64,{marker}"),
+                source_url: "https://example.org/p".to_owned(),
+            }],
+        };
+
+        let response = post_findings(&api, &session, request).await.unwrap();
+        assert_eq!(response.refused.len(), 4);
+        for reason in &response.refused {
+            assert!(
+                !reason.contains(marker),
+                "the response echoed input: {reason}"
+            );
+            assert!(!reason.contains("javascript:"), "{reason}");
+            assert!(!reason.contains("data:"), "{reason}");
+        }
+        // Bounded by construction: at most three arrays of
+        // `MAX_FINDINGS_PER_REQUEST`, each mapping to one short constant.
+        assert!(response.refused.len() <= 3 * MAX_FINDINGS_PER_REQUEST);
+        assert!(response.refused.iter().all(|r| r.len() < 120));
+    }
+
+    #[tokio::test]
+    async fn an_invented_session_id_gets_no_thread_slot_and_no_artifact() {
+        // S6. `MAX_LIVE_THREADS` is a *global* bound and eviction drops a whole
+        // session's entry, so eight well-formed but invented ULIDs used to be
+        // enough to evict every real conversation's canvas state — and `promote`
+        // would mint a durable, audited artifact against a session that never
+        // existed.
+        let (api, canvas, blobs, artifacts) = api(3);
+        let real = session(3);
+        let invented = session(UNKNOWN_SESSION_MARK);
+
+        // The real session works, so the guard is not simply refusing everything.
+        post_findings(
+            &api,
+            &real,
+            DeepDiveFindingsRequest {
+                facts: vec!["Kome opens at noon.".to_owned()],
+                ..DeepDiveFindingsRequest::default()
+            },
+        )
+        .await
+        .unwrap();
+        let live_before = api.inner.threads.lock().await.len();
+        assert_eq!(live_before, 1);
+
+        assert_eq!(
+            post_findings(&api, &invented, DeepDiveFindingsRequest::default())
+                .await
+                .unwrap_err(),
+            StatusCode::NOT_FOUND
+        );
+        let promotion = promote(
+            State(api.clone()),
+            Path(invented.to_string()),
+            Extension(a_device()),
+        )
+        .await;
+        assert_eq!(
+            promotion.err().map(|r| r.status()),
+            Some(StatusCode::NOT_FOUND)
+        );
+
+        // No slot was allocated, so the real conversation's thread is untouched,
+        // and nothing durable was written for a session that does not exist.
+        assert_eq!(api.inner.threads.lock().await.len(), live_before);
+        assert!(blobs.stored.lock().unwrap().is_empty());
+        assert!(artifacts.versions.lock().unwrap().is_empty());
+        assert!(artifacts.audits.lock().unwrap().is_empty());
+        // Exactly the one publish the real request made.
+        assert_eq!(canvas.count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_hostile_page_title_reaches_the_card_stripped() {
+        // S2, at the surface it matters on: the title renders inline beside the
+        // honestly-computed domain chip, and the alt text is spoken by TTS. The
+        // stripping is done in the recorder, so this holds for every projection
+        // rather than for the ones that remembered.
+        let (api, canvas, _, _) = api(3);
+        let session = session(4);
+        post_findings(
+            &api,
+            &session,
+            DeepDiveFindingsRequest {
+                sources: vec![a_source(
+                    "Wikipedia\u{202e}gpj.exe\u{202c}",
+                    "https://en.wikipedia.org/wiki/Ramen",
+                )],
+                images: vec![jarvis_contracts::deepdive::ImageFindingDto {
+                    alt: "a bowl\u{200b}\u{0007} of ramen".to_owned(),
+                    url: "https://cdn.example.org/one.jpg".to_owned(),
+                    source_url: "https://kome.example/menu".to_owned(),
+                }],
+                ..DeepDiveFindingsRequest::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let cards = canvas.last().cards;
+        let HudCardDto::Sources { items, .. } = &cards[0] else {
+            panic!("expected a sources card");
+        };
+        let HudCardDto::Gallery { images, .. } = &cards[1] else {
+            panic!("expected a gallery card");
+        };
+        for hostile in ['\u{202e}', '\u{202c}', '\u{200b}', '\u{0007}'] {
+            assert!(!items[0].title.contains(hostile), "{:?}", items[0].title);
+            assert!(!images[0].alt.contains(hostile), "{:?}", images[0].alt);
+        }
+        // Stripped, not dropped: the reference is still cited and still readable.
+        assert!(items[0].title.starts_with("Wikipedia"));
+        assert_eq!(items[0].domain, "en.wikipedia.org");
+        assert_eq!(images[0].alt, "a bowl of ramen");
+    }
+
+    #[tokio::test]
+    async fn an_over_long_url_is_refused_rather_than_stored() {
+        // S1. The URL was the one untrusted field with no bound: 50 sources plus
+        // 32 images x 2 URLs, each up to the body limit, per thread — and every
+        // publish clones the whole card set into the broadcast ring.
+        let (api, canvas, _, _) = api(3);
+        let session = session(5);
+        let long = format!(
+            "https://example.org/{}",
+            "a".repeat(jarvis_domain::deepdive::MAX_URL_CHARS)
+        );
+        let response = post_findings(
+            &api,
+            &session,
+            DeepDiveFindingsRequest {
+                sources: vec![
+                    a_source("Fine title", &long),
+                    a_source("Real", "https://guide.example/ramen"),
+                ],
+                ..DeepDiveFindingsRequest::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.sources, 1);
+        assert_eq!(response.refused.len(), 1);
+        // One bad entry never costs the good ones, and nothing over the ceiling
+        // reached the card the client renders and the ring broadcasts.
+        let cards = canvas.last().cards;
+        let HudCardDto::Sources { items, .. } = &cards[0] else {
+            panic!("expected a sources card");
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].url, "https://guide.example/ramen");
     }
 
     #[test]

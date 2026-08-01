@@ -412,7 +412,7 @@
       "type": "string"
     },
     "DeepDiveFindingsRequest": {
-      "description": "`POST /api/v1/sessions/{id}/deepdive/findings` — what this turn learned.\n\n`facts` are **paraphrases Jarvis composed**, not fetched page text: the\ndomain refuses anything over\n`jarvis_domain::deepdive::MAX_PARAPHRASE_CHARS` rather than truncating it,\nbecause a truncated scrape is still a scrape (ADR-017). Everything in this\nrequest is filed through the thread's guarded recorders; a rejected entry is\nreported in [`DeepDiveFindingsResponse::refused`] and simply does not exist\nin the thread.",
+      "description": "`POST /api/v1/sessions/{id}/deepdive/findings` — what this turn learned.\n\n`facts` are **paraphrases Jarvis composed**, not fetched page text: the\ndomain refuses anything over\n`jarvis_domain::deepdive::MAX_PARAPHRASE_CHARS` rather than truncating it,\nbecause a truncated scrape is still a scrape (ADR-017). Everything in this\nrequest is filed through the thread's guarded recorders; a rejected entry is\nreported in [`DeepDiveFindingsResponse::refused`] and simply does not exist\nin the thread.\n\nEach array carries **at most 64 entries** — a whole request over that is\nrefused with `422 validation.failed` rather than partially filed, because the\nloop that consumes it holds a process-global lock and its length is how long\nevery other conversation's turn waits. A turn files what it just consulted;\n64 of each is far past anything real and well under the thread's own totals.",
       "properties": {
         "facts": {
           "default": [],
@@ -439,7 +439,7 @@
       "type": "object"
     },
     "DeepDiveFindingsResponse": {
-      "description": "What was actually filed. Counts, plus a plain-text reason per rejected\nentry so a caller learns *that* a scrape or an unattributable URL was\nrefused rather than discovering it missing later.",
+      "description": "What was actually filed. Counts, plus a plain-text reason per rejected\nentry so a caller learns *that* a scrape or an unattributable URL was\nrefused rather than discovering it missing later.\n\nThe reasons are a **fixed vocabulary the server owns**: they never quote the\noffending fact, title or URL back at the caller. Reflecting an\narbitrary-length, unsanitized, caller-chosen string into a response body is\nthe mistake `ListError` documents avoiding, and a caller already knows what\nit sent.",
       "properties": {
         "facts": {
           "format": "uint32",

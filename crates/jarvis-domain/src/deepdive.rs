@@ -29,6 +29,11 @@
 //! No I/O, no clock, no allocation of authority: this module decides *shape*,
 //! never side effects.
 
+/// The shared untrusted-text validator (control, bidi and zero-width characters
+/// stripped). Titles and alt text are Z4 display text, so they get the same
+/// treatment here as a tool result and a list line — see [`sanitize_label`].
+use crate::tools::sanitize_result_content;
+
 /// How a new query relates to the live thread (ADR-017). Exhaustive: a third
 /// answer would change the canvas lifecycle, which is a spec decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -304,7 +309,10 @@ pub const GALLERY_IMAGE_CAP: usize = 8;
 /// is the same question whether a URL is about to become a link target, a
 /// navigation, or a chip: a URL that cannot be linked must not be badged either.
 /// Re-exported here so `deepdive::is_web_url` keeps its meaning at call sites.
-pub use crate::markdown::is_web_url;
+///
+/// [`MAX_URL_CHARS`] travels with it for the same reason: the size bound is part
+/// of that one rule, not a second opinion the recorders below hold privately.
+pub use crate::markdown::{MAX_URL_CHARS, is_web_url};
 
 /// The display domain for a source chip ("wikipedia.org ↗"), computed **once,
 /// host-side, from the parsed host** so the client never derives trusted-looking
@@ -407,16 +415,61 @@ pub const MAX_SOURCE_TITLE_CHARS: usize = 200;
 /// most.
 pub const MAX_IMAGE_ALT_CHARS: usize = 200;
 
-/// Keep at most `max` characters of an untrusted label.
+/// Whether a candidate URL is over [`MAX_URL_CHARS`].
 ///
-/// Truncation, not refusal: a title is decoration around a source that is
-/// otherwise worth citing, so an over-long one is shortened rather than costing
-/// the citation. (A *fact* is the opposite case — see [`ThreadError::NotAParaphrase`].)
-fn truncate_label(raw: &str, max: usize) -> String {
-    let trimmed = raw.trim();
-    match trimmed.char_indices().nth(max) {
-        Some((byte, _)) => trimmed[..byte].trim_end().to_owned(),
-        None => trimmed.to_owned(),
+/// Byte length, not character count: everything [`is_web_url`] accepts is ASCII,
+/// so for any URL that could ever be recorded the two agree, and for the rest
+/// the byte count is the conservative answer — a string too long in bytes is
+/// refused here rather than walked and refused a step later.
+fn too_long_for_a_url(url: &str) -> bool {
+    url.len() > MAX_URL_CHARS
+}
+
+/// Sanitize an untrusted display label and keep at most `max` characters of it.
+///
+/// Two jobs, both structural — done **here**, in the recorders, rather than left
+/// to each projection to remember:
+///
+/// * **Neutralised.** A title or an alt text comes from a fetched page (Z4) and
+///   is rendered inline next to the honestly-computed domain chip — the one
+///   surface whose entire purpose is truthful attribution — and alt text is read
+///   aloud by TTS. A right-to-left override (`U+202E`) in a page title is
+///   therefore a spoofing primitive against exactly that chip, and a zero-width
+///   joiner can splice or hide text a human is being asked to trust. Control,
+///   bidi and zero-width characters are stripped by the *shared* validator
+///   ([`sanitize_result_content`]) — the same one the tool-result path and the
+///   list lines use, so the three cannot drift into differently-safe — and runs
+///   of whitespace are collapsed, because these are single-line labels.
+/// * **Bounded.** Truncation, not refusal: a title is decoration around a source
+///   that is otherwise worth citing, so an over-long one is shortened rather
+///   than costing the citation. (A *fact* is the opposite case — see
+///   [`ThreadError::NotAParaphrase`] — and so is a URL, see
+///   [`ThreadError::UrlTooLong`]: neither survives truncation with its meaning
+///   intact.)
+fn sanitize_label(raw: &str, max: usize) -> String {
+    // The byte bound handed to the shared validator is deliberately generous —
+    // four bytes is the widest UTF-8 character, so it can never cut before the
+    // character cap below does, and the character cap stays the one rule that
+    // decides a label's length.
+    let cleaned = sanitize_result_content(raw, max.saturating_mul(4)).text;
+    let mut out = String::with_capacity(cleaned.len());
+    let mut pending_space = false;
+    for ch in cleaned.chars() {
+        if ch.is_whitespace() {
+            // Leading whitespace never opens a gap; interior runs collapse to
+            // one space; a trailing run is simply never emitted.
+            pending_space = !out.is_empty();
+            continue;
+        }
+        if pending_space {
+            out.push(' ');
+            pending_space = false;
+        }
+        out.push(ch);
+    }
+    match out.char_indices().nth(max) {
+        Some((byte, _)) => out[..byte].trim_end().to_owned(),
+        None => out,
     }
 }
 
@@ -444,8 +497,23 @@ pub enum ThreadError {
     ImagesFull,
     /// A source or image URL that is not a plain `http(s)` URL, or whose host
     /// cannot be turned into an honest attribution label.
-    #[error("not an attributable http(s) source: {0}")]
-    Unattributable(String),
+    ///
+    /// **Content-free**, like every other variant here and like
+    /// [`crate::lists::ListError`]: the offending URL is never carried in the
+    /// error. It used to be, and these strings reach a problem body and a log
+    /// line, so an unbounded, unsanitized, attacker-chosen URL was being
+    /// reflected straight back out (invariant 5). The caller already knows which
+    /// entry it sent; it does not need to be told its own input.
+    #[error("not an attributable http(s) source")]
+    Unattributable,
+    /// A URL longer than [`MAX_URL_CHARS`].
+    ///
+    /// Refusal, not truncation, and that is the whole point: a truncated URL is
+    /// a *different* URL. It would still parse, still get a chip, still be
+    /// stored — pointing somewhere nobody chose. So the citation is dropped
+    /// instead.
+    #[error("a source URL must be at most {MAX_URL_CHARS} characters")]
+    UrlTooLong,
 }
 
 /// One source consulted during a thread.
@@ -528,7 +596,7 @@ impl ResearchThread {
     /// capped at [`MAX_TOPIC_CHARS`] here.
     pub fn new(topic: impl Into<String>) -> ResearchThread {
         ResearchThread {
-            topic: truncate_label(&topic.into(), MAX_TOPIC_CHARS),
+            topic: sanitize_label(&topic.into(), MAX_TOPIC_CHARS),
             ..ResearchThread::default()
         }
     }
@@ -581,16 +649,24 @@ impl ResearchThread {
     }
 
     /// Record a consulted page. The URL must be `http(s)` with an attributable
-    /// host, so every entry in the bibliography can carry a real link. Repeats
-    /// of the same URL are ignored — a thread cites a page once.
+    /// host and at most [`MAX_URL_CHARS`] long, so every entry in the
+    /// bibliography can carry a real, bounded link. Repeats of the same URL are
+    /// ignored — a thread cites a page once.
     pub fn record_source(
         &mut self,
         title: impl Into<String>,
         url: impl Into<String>,
     ) -> Result<(), ThreadError> {
         let url = url.into().trim().to_owned();
+        // Size before shape, and before anything is kept: `is_web_url` applies
+        // the same bound, so this ordering only buys the caller an accurate
+        // reason — but it also means an over-long candidate is never walked
+        // character by character.
+        if too_long_for_a_url(&url) {
+            return Err(ThreadError::UrlTooLong);
+        }
         if display_domain(&url).is_none() {
-            return Err(ThreadError::Unattributable(url));
+            return Err(ThreadError::Unattributable);
         }
         if self.sources.iter().any(|s| s.url == url) {
             return Ok(());
@@ -599,7 +675,7 @@ impl ResearchThread {
             return Err(ThreadError::SourcesFull);
         }
         self.sources.push(SourceRef {
-            title: truncate_label(&title.into(), MAX_SOURCE_TITLE_CHARS),
+            title: sanitize_label(&title.into(), MAX_SOURCE_TITLE_CHARS),
             url,
         });
         Ok(())
@@ -617,9 +693,14 @@ impl ResearchThread {
     ) -> Result<(), ThreadError> {
         let url = url.into().trim().to_owned();
         let source_url = source_url.into().trim().to_owned();
+        // An image costs the thread *two* URLs, so both are bounded — the
+        // provenance link is stored and rendered exactly like the image link.
         for candidate in [&url, &source_url] {
+            if too_long_for_a_url(candidate) {
+                return Err(ThreadError::UrlTooLong);
+            }
             if display_domain(candidate).is_none() {
-                return Err(ThreadError::Unattributable(candidate.clone()));
+                return Err(ThreadError::Unattributable);
             }
         }
         if self.images.iter().any(|i| i.url == url) {
@@ -629,7 +710,7 @@ impl ResearchThread {
             return Err(ThreadError::ImagesFull);
         }
         self.images.push(ImageRef {
-            alt: truncate_label(&alt.into(), MAX_IMAGE_ALT_CHARS),
+            alt: sanitize_label(&alt.into(), MAX_IMAGE_ALT_CHARS),
             url,
             source_url,
         });
