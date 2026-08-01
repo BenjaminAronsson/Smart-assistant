@@ -245,13 +245,21 @@ async fn a_second_spelling_of_the_same_name_is_a_conflict_not_a_rival_list(pool:
         .expect_err("the key already exists");
     assert!(matches!(err, RepositoryError::Conflict(_)), "{err:?}");
 
-    // The grammar's normalized key finds the original from any spelling.
+    // The grammar's normalized key finds the original from any spelling — and
+    // the store derives that key itself, from the name it is handed, so no
+    // caller can look a list up by a key it normalized differently.
     for spelling in ["Shopping", "shopping list", "  SHOPPING  LIST "] {
-        let key = ListName::new(spelling).unwrap().key();
-        let found = store.find_by_key(&key).await.unwrap().expect(spelling);
+        let name = ListName::new(spelling).unwrap();
+        let found = store.find_by_key(&name).await.unwrap().expect(spelling);
         assert_eq!(found.id(), &list_id(SHOPPING));
     }
-    assert!(store.find_by_key("nonexistent").await.unwrap().is_none());
+    assert!(
+        store
+            .find_by_key(&ListName::new("nonexistent").unwrap())
+            .await
+            .unwrap()
+            .is_none()
+    );
     // The failed create left no audit row.
     assert_eq!(audit_types(&pool).await.len(), 1);
 }

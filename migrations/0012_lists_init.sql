@@ -61,8 +61,18 @@ CREATE INDEX lists_items_by_list_idx ON lists.items (list_id, added_at, id);
 -- depth, the same stance as the 0009/0010/0011 guards: a runaway grammar or a
 -- stuck client must not be able to turn a grocery list into an unbounded table,
 -- even if it finds a path that skips the aggregate.
+--
+-- The parent row is locked FIRST, and that is not incidental. Counting rows in a
+-- BEFORE INSERT trigger under READ COMMITTED is a read-then-write: two inserts
+-- into the same list can both see 499 and both pass, and the "bound" quietly
+-- stops being one. Taking `FOR UPDATE` on `lists.lists` serializes concurrent
+-- inserts *per list*, so the count is taken against a state no other inserter can
+-- be changing. Contention is per list and only between simultaneous appends to
+-- the same list, which for a single-owner device is the rarest case there is —
+-- a bound that holds only when nobody is racing is not a bound worth writing.
 CREATE FUNCTION lists.items_bound() RETURNS trigger AS $$
 BEGIN
+    PERFORM 1 FROM lists.lists WHERE id = NEW.list_id FOR UPDATE;
     IF (SELECT count(*) FROM lists.items WHERE list_id = NEW.list_id) >= 500 THEN
         RAISE EXCEPTION 'list % already holds the maximum of 500 items (ADR-024)', NEW.list_id;
     END IF;

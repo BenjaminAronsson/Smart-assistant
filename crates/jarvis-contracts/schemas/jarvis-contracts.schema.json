@@ -1290,7 +1290,7 @@
       ]
     },
     "ListCommandRequest": {
-      "description": "`POST /api/v1/lists/command` — run the **deterministic grammar** over one\nutterance (ADR-024). Zero model calls: an utterance the grammar does not\nunambiguously recognize is a `validation.failed` 400, never a guess.",
+      "description": "`POST /api/v1/lists/command` — run the **deterministic grammar** over one\nutterance (ADR-024). Zero model calls: an utterance the grammar does not\nunambiguously recognize is a `list.unrecognized_command` 422, never a guess.\n422 rather than 400 because the body was perfectly valid — it is the\n*content* that did not resolve here, and the caller's answer is to fall back\nto the normal run path rather than to fix its request.",
       "properties": {
         "utterance": {
           "description": "The utterance as spoken or typed, e.g. \"add milk to the shopping list\".",

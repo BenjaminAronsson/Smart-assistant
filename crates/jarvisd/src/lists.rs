@@ -87,12 +87,13 @@ pub async fn index(State(api): State<ListApi>) -> Result<Json<ListIndexResponse>
 }
 
 /// `GET /api/v1/lists/{id}` — one list with its items.
-#[tracing::instrument(skip_all, fields(list.id = %id))]
+#[tracing::instrument(skip_all, fields(list.id = tracing::field::Empty))]
 pub async fn get(
     State(api): State<ListApi>,
     Path(id): Path<String>,
 ) -> Result<Json<ListDto>, Response> {
     let id = parse_list_id(&id).map_err(fault_response)?;
+    record_list_id(&id);
     let list = api.service.get(&id).await.map_err(service_problem)?;
     Ok(Json(to_list_dto(&list)))
 }
@@ -112,16 +113,24 @@ pub async fn create(
     // The id is minted here (the host owns randomness; the domain only
     // validates) — ULID, so the index is naturally creation-ordered too.
     let id: ListId = crate::auth::fresh_id();
-    let list = api
+    let ensured = api
         .service
         .ensure_list(id, name, &actor(&device), &cancel)
         .await
         .map_err(service_problem)?;
-    Ok((StatusCode::CREATED, Json(to_list_dto(&list))))
+    // `201 Created` only when this call actually created the list. The endpoint
+    // is idempotent on the name key, and answering "created" for a list that has
+    // been there since last week is a small lie the client cannot see through.
+    let status = if ensured.was_created() {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(to_list_dto(ensured.list()))))
 }
 
 /// `POST /api/v1/lists/{id}/items` — append one line.
-#[tracing::instrument(skip_all, fields(list.id = %id))]
+#[tracing::instrument(skip_all, fields(list.id = tracing::field::Empty))]
 pub async fn add_item(
     State(api): State<ListApi>,
     Path(id): Path<String>,
@@ -130,6 +139,7 @@ pub async fn add_item(
 ) -> Result<(StatusCode, Json<ListDto>), Response> {
     let cancel = CancellationToken::new();
     let id = parse_list_id(&id).map_err(fault_response)?;
+    record_list_id(&id);
     let text = ItemText::new(&req.text).map_err(|e| bad_request(&e.to_string()))?;
     let item_id: ListItemId = crate::auth::fresh_id();
     let list = api
@@ -141,7 +151,7 @@ pub async fn add_item(
 }
 
 /// `PATCH /api/v1/lists/{id}/items/{itemId}` — the card's check-off tap.
-#[tracing::instrument(skip_all, fields(list.id = %id, item.id = %item_id))]
+#[tracing::instrument(skip_all, fields(list.id = tracing::field::Empty, item.id = tracing::field::Empty))]
 pub async fn check_item(
     State(api): State<ListApi>,
     Path((id, item_id)): Path<(String, String)>,
@@ -151,6 +161,8 @@ pub async fn check_item(
     let cancel = CancellationToken::new();
     let id = parse_list_id(&id).map_err(fault_response)?;
     let item_id = parse_item_id(&item_id).map_err(fault_response)?;
+    record_list_id(&id);
+    record_item_id(&item_id);
     let list = api
         .service
         .set_checked(&id, &item_id, req.checked, &actor(&device), &cancel)
@@ -160,7 +172,7 @@ pub async fn check_item(
 }
 
 /// `DELETE /api/v1/lists/{id}/items/{itemId}` — take a line off the list.
-#[tracing::instrument(skip_all, fields(list.id = %id, item.id = %item_id))]
+#[tracing::instrument(skip_all, fields(list.id = tracing::field::Empty, item.id = tracing::field::Empty))]
 pub async fn remove_item(
     State(api): State<ListApi>,
     Path((id, item_id)): Path<(String, String)>,
@@ -169,6 +181,8 @@ pub async fn remove_item(
     let cancel = CancellationToken::new();
     let id = parse_list_id(&id).map_err(fault_response)?;
     let item_id = parse_item_id(&item_id).map_err(fault_response)?;
+    record_list_id(&id);
+    record_item_id(&item_id);
     let list = api
         .service
         .remove_item(&id, &item_id, &actor(&device), &cancel)
@@ -222,7 +236,7 @@ pub async fn command(
 
 /// `POST /api/v1/lists/{id}/promote` — the list becomes a versioned markdown
 /// artifact (FR-08, ADR-024). Re-promoting adds a version to the same document.
-#[tracing::instrument(skip_all, fields(list.id = %id))]
+#[tracing::instrument(skip_all, fields(list.id = tracing::field::Empty))]
 pub async fn promote(
     State(api): State<ListApi>,
     Path(id): Path<String>,
@@ -230,6 +244,7 @@ pub async fn promote(
 ) -> Result<Json<PromoteListResponse>, Response> {
     let cancel = CancellationToken::new();
     let id = parse_list_id(&id).map_err(fault_response)?;
+    record_list_id(&id);
     let artifact_id: ArtifactId = crate::auth::fresh_id();
     // A promotion the owner asked for directly is its own occasion; the run id
     // correlates the artifact's provenance to this request.
@@ -272,6 +287,23 @@ fn parse_item_id(raw: &str) -> Result<ListItemId, IdFault> {
     raw.parse().map_err(|_| IdFault::Item)
 }
 
+/// Record the **parsed** list id on the current span.
+///
+/// The raw path segment is deliberately never a span field. Axum
+/// percent-decodes path parameters, so `GET /api/v1/lists/%0Afake%20log%20line`
+/// would otherwise put an attacker-chosen newline into the log stream before
+/// anything validated it — a log-forging primitive aimed at a record that sits
+/// next to the audit chain. A [`ListId`] that survived `parse_list_id` is 26
+/// characters of Crockford base32 by construction, and cannot forge a line.
+fn record_list_id(id: &ListId) {
+    tracing::Span::current().record("list.id", tracing::field::display(id));
+}
+
+/// As [`record_list_id`], for the item segment.
+fn record_item_id(id: &ListItemId) {
+    tracing::Span::current().record("item.id", tracing::field::display(id));
+}
+
 fn bad_request(detail: &str) -> Response {
     problem(
         StatusCode::BAD_REQUEST,
@@ -304,6 +336,18 @@ fn service_problem(error: ListsError) -> Response {
             None,
         ),
         ListsError::Invalid(e) => bad_request(&e.to_string()),
+        // Another writer got there first. Permanent for this request but not a
+        // sick service: 409 tells the client to re-read and decide again, where
+        // 503 would tell it — and the ops dashboard — that storage is down.
+        ListsError::Conflict(e) => {
+            tracing::info!(error = %e, "list write lost a race");
+            problem(
+                StatusCode::CONFLICT,
+                ErrorCode::ResourceVersionConflict,
+                "the list changed under this request; re-read it and try again",
+                None,
+            )
+        }
         ListsError::Storage(e) => {
             tracing::error!(error = %e, "list storage failure");
             problem(
