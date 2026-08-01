@@ -92,6 +92,19 @@ pub fn export() -> Value {
     generator.subschema_for::<crate::timers::CreateTimerRequest>();
     generator.subschema_for::<crate::timers::TimerActionRequest>();
     generator.subschema_for::<crate::timers::TimerActionResponse>();
+    // List surface (F3b.8, FR-34, ADR-024). `ListDto` rides inside
+    // `HudCardDto::List`, but the shell also reads the index over REST and the
+    // create/add/check/command/promote request+response types are referenced by
+    // no event — each must be its own root or it ships absent from the wire
+    // schema, same reasoning as the timer surface above.
+    generator.subschema_for::<crate::lists::ListDto>();
+    generator.subschema_for::<crate::lists::ListIndexResponse>();
+    generator.subschema_for::<crate::lists::CreateListRequest>();
+    generator.subschema_for::<crate::lists::AddListItemRequest>();
+    generator.subschema_for::<crate::lists::CheckListItemRequest>();
+    generator.subschema_for::<crate::lists::ListCommandRequest>();
+    generator.subschema_for::<crate::lists::ListCommandResponse>();
+    generator.subschema_for::<crate::lists::PromoteListResponse>();
 
     let definitions: Value =
         serde_json::to_value(generator.definitions()).expect("schemas are valid JSON");

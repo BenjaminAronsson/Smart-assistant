@@ -14,10 +14,11 @@
 //! value readout, place, entity/person, media/menu grid, headlines/digest,
 //! now-playing (data only — live playback control stays on the media bar until
 //! M5), approval (wire-reused from [`crate::approvals::ApprovalCardDto`], never
-//! re-modeled), status/queued, and error. Timer/list/sources/gallery/map/
-//! product/agenda cards are later features (F3b.5/6/7/8) and are deliberately
-//! absent — adding one is an additive enum variant, never a change to this
-//! one's shape.
+//! re-modeled), status/queued, and error. Timer/sources/gallery/map/product/
+//! agenda cards are later features (F3b.5/6/7) and are deliberately absent —
+//! adding one is an additive enum variant, never a change to this one's shape.
+//! F3b.8 took exactly that route for the **list** card
+//! ([`HudCardDto::List`], FR-34/ADR-024).
 //!
 //! **Source-chip is structurally unavoidable** (docs/12 §2.3, FR-25/ADR-014).
 //! [`SourcedImageDto`] is the *only* way any card carries an image, and its
@@ -186,6 +187,22 @@ pub enum HudCardDto {
         art_url: Option<String>,
         source_app: String,
     },
+    /// A named list with its items (docs/12 §2.3, FR-34/ADR-024): the face of
+    /// "what's on the shopping list", with check-off by voice or tap. The list
+    /// itself is wire-reused from [`crate::lists::ListDto`] rather than
+    /// re-modeled, the same discipline as the approval variant below — there is
+    /// exactly one type that says what a list is on the wire.
+    ///
+    /// `listId` rides alongside the card's own `id` because the check-off tap
+    /// posts to `/api/v1/lists/{listId}/items/{itemId}`: a card id is a
+    /// presentation handle, never an address the client may derive a write from.
+    #[serde(rename = "card.list")]
+    List {
+        id: String,
+        #[schemars(with = "crate::schema::UlidString")]
+        list_id: jarvis_domain::ids::ListId,
+        list: crate::lists::ListDto,
+    },
     /// The approval surface, wire-reused verbatim (docs/06 §3) — never
     /// re-modeled as a distinct card shape, so there is exactly one type that
     /// carries `exactEffect`/`proposedArguments` on the wire.
@@ -218,6 +235,7 @@ impl HudCardDto {
             Self::MediaGrid { .. } => "card.media_grid",
             Self::Headlines { .. } => "card.headlines",
             Self::NowPlaying { .. } => "card.now_playing",
+            Self::List { .. } => "card.list",
             Self::Approval { .. } => "card.approval",
             Self::Status { .. } => "card.status",
             Self::Error { .. } => "card.error",

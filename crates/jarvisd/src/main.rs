@@ -48,12 +48,10 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     // Artifact read surface (F3a.3, FR-08): manifests in Postgres, blob bytes in
     // the content-addressed file store rooted at `[storage] artifacts_root`.
     let artifact_store = Arc::new(jarvis_infra::artifacts::PgArtifactStore::new(pool.clone()));
-    let artifacts = jarvisd::artifacts::ArtifactApi::new(
-        artifact_store.clone(),
-        Arc::new(jarvis_infra::artifact_cas::FileBlobStore::new(
-            config.storage.artifacts_root.clone(),
-        )),
-    );
+    let blob_store = Arc::new(jarvis_infra::artifact_cas::FileBlobStore::new(
+        config.storage.artifacts_root.clone(),
+    ));
+    let artifacts = jarvisd::artifacts::ArtifactApi::new(artifact_store.clone(), blob_store.clone());
 
     // Display profile (F3a.4, FR-09/10): surface→monitor map from `[display]`.
     // A bad assignment (unknown surface / malformed monitor) fails startup fast.
@@ -68,7 +66,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     // Display placement surface (F3a.4): the hub is the directive sink to agents;
     // placements are audited through the fallible audit log before dispatch.
     let display = jarvisd::display::DisplayApi::new(
-        artifact_store,
+        artifact_store.clone(),
         display_profile.clone(),
         Arc::new(jarvis_infra::audit_sink::PgAuditLog::new(pool.clone())),
         hub.clone(),
@@ -289,6 +287,24 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         None
     };
 
+    // Lists and quick notes (F3b.8, FR-34, ADR-024). Like timers, deliberately
+    // NOT gated on any external capability — the deterministic grammar is the
+    // whole point: lists keep working offline, in degraded mode, and with the
+    // model quota exhausted. Promotion reuses the artifact ports above, so a
+    // promoted list is an ordinary versioned artifact with no second code path.
+    let list_api = if config.lists.enabled {
+        Some(jarvisd::lists::ListApi::new(Arc::new(
+            jarvis_application::lists::ListsService::new(
+                Arc::new(jarvis_infra::lists::PgListStore::new(pool.clone())),
+                blob_store,
+                artifact_store,
+                Arc::new(SystemClock),
+            ),
+        )))
+    } else {
+        None
+    };
+
     let state = jarvisd::api::AppState::with_database(pool, auth);
     let app = jarvisd::api::router_with(
         state,
@@ -303,6 +319,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             media: media_api,
             maps,
             timers: timer_api,
+            lists: list_api,
             web_assets: config.server.web_assets.clone(),
         },
     )

@@ -222,39 +222,10 @@ pub struct ResearchThread {
 /// Facts, titles and alt text originate in fetched pages (Z4). The artifact
 /// renderer already refuses to execute markup, but a promoted document is also
 /// read by humans and other tools, so nothing here is allowed to *become*
-/// markup: control characters go, and the characters that open markup or a
-/// link are escaped rather than stripped, keeping the text readable.
-fn escape_markdown(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    for ch in raw.chars() {
-        match ch {
-            // Control characters (including the bidi overrides) never survive.
-            c if c.is_control() => out.push(' '),
-            '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' => {
-                out.push(' ')
-            }
-            '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '#' | '|' => {
-                out.push('\\');
-                out.push(ch);
-            }
-            c => out.push(c),
-        }
-    }
-    out.trim().to_owned()
-}
-
-/// A URL is only emitted as a link target if it is plainly http(s) — a
-/// `javascript:` or `data:` "source" is rendered as inert text instead.
-fn safe_link(url: &str) -> Option<String> {
-    let trimmed = url.trim();
-    let lower = trimmed.to_ascii_lowercase();
-    if lower.starts_with("http://") || lower.starts_with("https://") {
-        // Parentheses would close the markdown link target early.
-        Some(trimmed.replace('(', "%28").replace(')', "%29"))
-    } else {
-        None
-    }
-}
+/// markup. The rule and its implementation are shared with the other promotion
+/// path (a promoted list, ADR-024) in [`crate::markdown`] — one escaper, so the
+/// two documents cannot drift into differently-safe.
+use crate::markdown::{escape as escape_markdown, safe_link};
 
 /// Render a thread as the Research Notes markdown document (FR-08, ADR-017):
 /// paraphrased facts, every source consulted, and referenced images — each

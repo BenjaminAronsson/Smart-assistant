@@ -113,6 +113,18 @@ ulid_id!(
     TimerId
 );
 ulid_id!(
+    /// A named list of items — shopping, todo, Notes (FR-34, ADR-024). Stable
+    /// across renames: the display name is untrusted text the owner may change,
+    /// the id is what a card, a REST path, and an artifact promotion refer to.
+    ListId
+);
+ulid_id!(
+    /// One line on a list (FR-34, ADR-024). Minted at the edge like every other
+    /// id, so a check-off tap addresses exactly one row rather than matching on
+    /// the item's (untrusted, mutable, possibly duplicated) text.
+    ListItemId
+);
+ulid_id!(
     /// A single pending human-approval request (F2.5, docs/06 §3). Minted at the
     /// approval-gate boundary (host owns randomness) so the WS `approval.requested`
     /// event and the `POST /runs/{id}/approvals/{approval_id}` decision can be

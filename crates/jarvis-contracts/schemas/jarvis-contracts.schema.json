@@ -27,6 +27,18 @@
       ],
       "type": "string"
     },
+    "AddListItemRequest": {
+      "description": "`POST /api/v1/lists/{id}/items` — append one line.",
+      "properties": {
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
     "ApprovalCardDto": {
       "description": "What a human is asked to approve (docs/06 §3). Carries the exact effect and\nthe real proposed arguments so the approval binds precisely what is shown.",
       "properties": {
@@ -266,6 +278,18 @@
       ],
       "type": "string"
     },
+    "CheckListItemRequest": {
+      "description": "`PATCH /api/v1/lists/{id}/items/{itemId}` — the card's check-off tap, and\nfrom M5 the voice path. Deliberately a whole-value set rather than a toggle:\ntwo devices tapping the same line converge on the same result instead of\nracing each other back and forth.",
+      "properties": {
+        "checked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "checked"
+      ],
+      "type": "object"
+    },
     "ContentBlock": {
       "oneOf": [
         {
@@ -298,6 +322,18 @@
           "type": "object"
         }
       ]
+    },
+    "CreateListRequest": {
+      "description": "`POST /api/v1/lists` — create a named list, or return the existing one with\nthe same normalized name (creation is idempotent on the name key, because\n\"add milk to the shopping list\" must work before a shopping list exists).",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
     },
     "CreateSessionRequest": {
       "properties": {
@@ -673,6 +709,16 @@
           "const": "timer.stale",
           "description": "The timer moved between the client's read and its decision — it fired in\nthe same instant, or another device answered first. 409 and **safely\nretryable** after a refresh, which is why it is distinct from\n`timer.invalid_transition`.",
           "type": "string"
+        },
+        {
+          "const": "list.full",
+          "description": "The list already holds the maximum number of items (F3b.8, ADR-024).\n409: the request was well-formed, so it is not `validation.failed`, and\nretrying it unchanged will not help — the owner removes or checks off\nsomething first, or promotes the list to an artifact, which is exactly\nwhat promotion is for.",
+          "type": "string"
+        },
+        {
+          "const": "list.unrecognized_command",
+          "description": "The utterance is not unambiguously a list command, so the deterministic\ngrammar refused rather than guessing which list the owner meant\n(F3b.8, ADR-024/ADR-016). 422: the body was valid, the *content* was not\nresolvable here — the caller falls back to the normal run path.",
+          "type": "string"
         }
       ]
     },
@@ -1037,6 +1083,31 @@
           "type": "object"
         },
         {
+          "description": "A named list with its items (docs/12 §2.3, FR-34/ADR-024): the face of\n\"what's on the shopping list\", with check-off by voice or tap. The list\nitself is wire-reused from [`crate::lists::ListDto`] rather than\nre-modeled, the same discipline as the approval variant below — there is\nexactly one type that says what a list is on the wire.\n\n`listId` rides alongside the card's own `id` because the check-off tap\nposts to `/api/v1/lists/{listId}/items/{itemId}`: a card id is a\npresentation handle, never an address the client may derive a write from.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "list": {
+              "$ref": "#/definitions/ListDto"
+            },
+            "listId": {
+              "$ref": "#/definitions/UlidString"
+            },
+            "type": {
+              "const": "card.list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "listId",
+            "list"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The approval surface, wire-reused verbatim (docs/06 §3) — never\nre-modeled as a distinct card shape, so there is exactly one type that\ncarries `exactEffect`/`proposedArguments` on the wire.",
           "properties": {
             "card": {
@@ -1100,6 +1171,147 @@
           "type": "object"
         }
       ]
+    },
+    "ListCommandRequest": {
+      "description": "`POST /api/v1/lists/command` — run the **deterministic grammar** over one\nutterance (ADR-024). Zero model calls: an utterance the grammar does not\nunambiguously recognize is a `validation.failed` 400, never a guess.",
+      "properties": {
+        "utterance": {
+          "description": "The utterance as spoken or typed, e.g. \"add milk to the shopping list\".",
+          "type": "string"
+        }
+      },
+      "required": [
+        "utterance"
+      ],
+      "type": "object"
+    },
+    "ListCommandResponse": {
+      "description": "The list after the command was applied and audited, so the card re-renders\nwithout waiting for an event.",
+      "properties": {
+        "effect": {
+          "$ref": "#/definitions/ListEffectDto"
+        },
+        "itemId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UlidString"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The item the command touched, absent for a read."
+        },
+        "list": {
+          "$ref": "#/definitions/ListDto"
+        }
+      },
+      "required": [
+        "list",
+        "effect"
+      ],
+      "type": "object"
+    },
+    "ListDto": {
+      "description": "One named list with its items, in insertion order.",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/definitions/ListItemDto"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "Display name as the owner gave it (\"Shopping\"), sanitized.",
+          "type": "string"
+        },
+        "openCount": {
+          "description": "How many items are still open — the readback's \"two things left\"\ncomputed once server-side so the card and the spoken answer agree.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "promotedArtifactId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UlidString"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The versioned artifact this list has been promoted into, if any (FR-08).\nPresent ⇒ a further promotion adds a *version* to this artifact."
+        },
+        "promotionOffered": {
+          "description": "The list has grown into a document and promotion is worth offering\n(ADR-024). An offer the shell surfaces, never an automatic conversion.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "items",
+        "openCount",
+        "promotionOffered"
+      ],
+      "type": "object"
+    },
+    "ListEffectDto": {
+      "description": "What a grammar command did.",
+      "oneOf": [
+        {
+          "enum": [
+            "added",
+            "removed",
+            "checked_off"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "read",
+          "description": "A pure query — nothing was written and nothing was audited.",
+          "type": "string"
+        }
+      ]
+    },
+    "ListIndexResponse": {
+      "description": "`GET /api/v1/lists` — every list the owner has, name-ordered.",
+      "properties": {
+        "lists": {
+          "items": {
+            "$ref": "#/definitions/ListDto"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "lists"
+      ],
+      "type": "object"
+    },
+    "ListItemDto": {
+      "description": "One line on a list.",
+      "properties": {
+        "checked": {
+          "type": "boolean"
+        },
+        "id": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "text": {
+          "description": "Sanitized human text. Rendered as text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "checked"
+      ],
+      "type": "object"
     },
     "MapBoundsDto": {
       "description": "A WGS84 bounding box in degrees, `min <= max` on both axes. As an archive's\ncoverage, it is the region the extract covers: outside it the client must\nfall back (docs/12 §3), and the server refuses those tiles either way.",
@@ -1591,6 +1803,34 @@
         "title",
         "status",
         "code"
+      ],
+      "type": "object"
+    },
+    "PromoteListResponse": {
+      "description": "`POST /api/v1/lists/{id}/promote` — the list is now a versioned markdown\nartifact (FR-08). A list promoted before gets the **next version** of the\nsame artifact, never a rival document.",
+      "properties": {
+        "artifactId": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "firstPromotion": {
+          "description": "True when this promotion created the artifact rather than versioning it.",
+          "type": "boolean"
+        },
+        "sha256": {
+          "description": "Content address of the document, lowercase hex — the same value the\nartifact blob endpoint serves under.",
+          "type": "string"
+        },
+        "version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "artifactId",
+        "version",
+        "sha256",
+        "firstPromotion"
       ],
       "type": "object"
     },
