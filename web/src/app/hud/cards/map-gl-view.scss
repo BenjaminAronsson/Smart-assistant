@@ -1,0 +1,19 @@
+/* MapLibre's own control CSS. Imported here rather than globally so it ships
+ * in the same lazy chunk as the GL view itself (low-power skill: nothing
+ * this card doesn't need loads until a map card actually renders one). */
+@import 'maplibre-gl/dist/maplibre-gl.css';
+
+:host {
+  display: block;
+  inline-size: 100%;
+  /* docs/12 §7: by aspect-ratio, not a fixed pixel height, so the same card
+   * holds from a 1080p laptop to a 4K TV to portrait mobile. */
+  aspect-ratio: 16 / 10;
+  border-radius: 0.8vmin;
+  overflow: hidden;
+}
+
+.map-gl-container {
+  inline-size: 100%;
+  block-size: 100%;
+}

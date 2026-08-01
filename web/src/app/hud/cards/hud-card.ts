@@ -4,6 +4,7 @@ import { ApprovalCard } from './approval-card';
 import { EntityCard } from './entity-card';
 import { ErrorCard } from './error-card';
 import { HeadlinesCard } from './headlines-card';
+import { MapCard } from './map-card';
 import { MediaGridCard } from './media-grid-card';
 import { NowPlayingCard } from './now-playing-card';
 import { PlaceCard } from './place-card';
@@ -39,6 +40,7 @@ function narrow<T extends HudCardDto['type']>(
     MediaGridCard,
     HeadlinesCard,
     NowPlayingCard,
+    MapCard,
     ApprovalCard,
     StatusCard,
     ErrorCard,
@@ -68,6 +70,7 @@ export class HudCard {
   protected readonly asMediaGrid = computed(() => narrow(this.card(), 'card.media_grid'));
   protected readonly asHeadlines = computed(() => narrow(this.card(), 'card.headlines'));
   protected readonly asNowPlaying = computed(() => narrow(this.card(), 'card.now_playing'));
+  protected readonly asMap = computed(() => narrow(this.card(), 'card.map'));
   protected readonly asApproval = computed(() => narrow(this.card(), 'card.approval'));
   protected readonly asStatus = computed(() => narrow(this.card(), 'card.status'));
   protected readonly asError = computed(() => narrow(this.card(), 'card.error'));

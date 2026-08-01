@@ -1,4 +1,4 @@
-import { HttpClient, HttpHeaders } from '@angular/common/http';
+import { HttpClient, HttpErrorResponse, HttpHeaders } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import type {
@@ -16,6 +16,7 @@ import type {
   MediaCommandRequest,
   MediaCommandResponse,
   MediaStateResponse,
+  MapCoverageResponse,
 } from '../generated/api-types';
 
 const TOKEN_KEY = 'jarvis.deviceToken';
@@ -139,6 +140,30 @@ export class ApiService {
     return firstValueFrom(
       this.http.get<ProvidersResponse>('/api/v1/providers', { headers: this.authHeaders() }),
     );
+  }
+
+  /**
+   * The locally served PMTiles archive's coverage (F3b.5, docs/12 §3,
+   * ADR-013). `null` means "no local map configured" (jarvisd registers no
+   * map routes at all when `[maps] pmtiles_path` is unset, so this is a 404 —
+   * absent, not broken; docs/09 §1). Any other failure (network error, 5xx)
+   * rethrows, so the map card's fallback logic can tell "no archive" apart
+   * from "could not ask" and degrade to the safer of the two (coordinates-only)
+   * rather than assuming online raster is reachable.
+   */
+  async getMapCoverage(): Promise<MapCoverageResponse | null> {
+    try {
+      return await firstValueFrom(
+        this.http.get<MapCoverageResponse>('/api/v1/map/coverage', {
+          headers: this.authHeaders(),
+        }),
+      );
+    } catch (e) {
+      if (e instanceof HttpErrorResponse && e.status === 404) {
+        return null;
+      }
+      throw e;
+    }
   }
 
   private authHeaders(): HttpHeaders {

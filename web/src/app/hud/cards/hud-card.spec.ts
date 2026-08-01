@@ -1,14 +1,24 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { provideHttpClient, withXhr } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import type { HudCardDto } from '../../../generated/api-types';
 import { HudCard } from './hud-card';
 
 describe('HudCard', () => {
   let fixture: ComponentFixture<HudCard>;
   let el: HTMLElement;
+  let http: HttpTestingController;
 
   function render(card: HudCardDto, index = 0, reducedMotion = false): void {
-    TestBed.configureTestingModule({ providers: [provideZonelessChangeDetection()] });
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        provideHttpClient(withXhr()),
+        provideHttpClientTesting(),
+      ],
+    });
+    http = TestBed.inject(HttpTestingController);
     fixture = TestBed.createComponent(HudCard);
     fixture.componentRef.setInput('card', card);
     fixture.componentRef.setInput('index', index);
@@ -16,6 +26,8 @@ describe('HudCard', () => {
     fixture.detectChanges();
     el = fixture.nativeElement as HTMLElement;
   }
+
+  afterEach(() => http.verify());
 
   it('renders the registered sub-component for a value-readout card', () => {
     render({
@@ -34,6 +46,18 @@ describe('HudCard', () => {
     expect(el.querySelector('app-place-card')).not.toBeNull();
   });
 
+  it('renders the registered sub-component for a map card (F3b.5)', () => {
+    render({
+      type: 'card.map',
+      id: 'card-9',
+      label: 'Ramen Nagi',
+      destination: { lon: -122.4194, lat: 37.7749 },
+    });
+    expect(el.querySelector('app-map-card')).not.toBeNull();
+    // MapCard fetches its own coverage — flush it so `http.verify()` is clean.
+    http.expectOne('/api/v1/map/coverage').flush(null, { status: 404, statusText: 'Not Found' });
+  });
+
   // docs/12 §2.3/§9 acceptance: card grammar only — an unregistered type
   // degrades to the error card, never raw content.
   it('degrades an unrecognized discriminant to the error card', () => {
@@ -49,6 +73,7 @@ describe('HudCard', () => {
       'app-media-grid-card',
       'app-headlines-card',
       'app-now-playing-card',
+      'app-map-card',
       'app-approval-card',
       'app-status-card',
     ]) {

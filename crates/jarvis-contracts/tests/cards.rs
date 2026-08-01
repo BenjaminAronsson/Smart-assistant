@@ -8,7 +8,7 @@
 
 use jarvis_contracts::approvals::{ApprovalCardDto, DataEgressDto, RiskLevelDto};
 use jarvis_contracts::cards::{
-    HeadlineItemDto, HudCardDto, MediaGridItemDto, MiniStatDto, SourcedImageDto,
+    HeadlineItemDto, HudCardDto, MapPointDto, MediaGridItemDto, MiniStatDto, SourcedImageDto,
 };
 use serde_json::json;
 
@@ -80,6 +80,31 @@ fn every_card() -> Vec<HudCardDto> {
             art_url: Some("https://cdn.example/art.jpg".into()),
             source_app: "Spotify".into(),
         },
+        HudCardDto::Map {
+            id: "card-9".into(),
+            label: "Ramen Nagi".into(),
+            destination: MapPointDto {
+                lon: -122.4194,
+                lat: 37.7749,
+            },
+            destination_label: Some("Ramen Nagi".into()),
+            current_location: Some(MapPointDto {
+                lon: -122.42,
+                lat: 37.77,
+            }),
+            route: vec![
+                MapPointDto {
+                    lon: -122.42,
+                    lat: 37.77,
+                },
+                MapPointDto {
+                    lon: -122.4194,
+                    lat: 37.7749,
+                },
+            ],
+            distance: Some("1.2 mi".into()),
+            walk_time: Some("24 min".into()),
+        },
         HudCardDto::Approval {
             card: ApprovalCardDto {
                 approval_id: APPROVAL.parse().unwrap(),
@@ -126,6 +151,7 @@ fn card_type_tags_are_dotted_and_disjoint() {
             "card.entity",
             "card.error",
             "card.headlines",
+            "card.map",
             "card.media_grid",
             "card.now_playing",
             "card.place",
@@ -269,6 +295,76 @@ fn now_playing_art_is_a_plain_url_not_a_sourced_image() {
     let value = serde_json::to_value(&card).unwrap();
     assert_eq!(value["artUrl"], "https://cdn.example/art.jpg");
     assert!(value["artUrl"].is_string());
+}
+
+#[test]
+fn map_card_omits_absent_optional_fields_and_empty_route() {
+    // A bare "where is X" query with no navigation intent: no current
+    // location, no route, no routing facts — text-only besides the pin.
+    let value = serde_json::to_value(HudCardDto::Map {
+        id: "card-9".into(),
+        label: "Angkor Wat".into(),
+        destination: MapPointDto {
+            lon: 103.866667,
+            lat: 13.412500,
+        },
+        destination_label: None,
+        current_location: None,
+        route: vec![],
+        distance: None,
+        walk_time: None,
+    })
+    .unwrap();
+    assert_eq!(
+        value,
+        json!({
+            "type": "card.map",
+            "id": "card-9",
+            "label": "Angkor Wat",
+            "destination": { "lon": 103.866667, "lat": 13.4125 },
+        })
+    );
+    for absent in [
+        "destinationLabel",
+        "currentLocation",
+        "route",
+        "distance",
+        "walkTime",
+    ] {
+        assert!(value.get(absent).is_none(), "expected {absent} to be absent");
+    }
+}
+
+#[test]
+fn map_card_carries_route_and_current_location_camel_case() {
+    let card = HudCardDto::Map {
+        id: "card-9".into(),
+        label: "Ramen Nagi".into(),
+        destination: MapPointDto {
+            lon: -122.4194,
+            lat: 37.7749,
+        },
+        destination_label: Some("Ramen Nagi".into()),
+        current_location: Some(MapPointDto {
+            lon: -122.42,
+            lat: 37.77,
+        }),
+        route: vec![MapPointDto {
+            lon: -122.42,
+            lat: 37.77,
+        }],
+        distance: Some("1.2 mi".into()),
+        walk_time: Some("24 min".into()),
+    };
+    let value = serde_json::to_value(&card).unwrap();
+    assert_eq!(value["type"], "card.map");
+    assert_eq!(value["destinationLabel"], "Ramen Nagi");
+    assert_eq!(value["currentLocation"]["lat"], 37.77);
+    assert_eq!(value["route"][0]["lon"], -122.42);
+    assert_eq!(value["distance"], "1.2 mi");
+    assert_eq!(value["walkTime"], "24 min");
+    let back: HudCardDto = serde_json::from_value(value).unwrap();
+    assert_eq!(back, card);
 }
 
 #[test]

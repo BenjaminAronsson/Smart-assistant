@@ -380,6 +380,27 @@ export type HudCardDto =
       [k: string]: unknown;
     }
   | {
+      currentLocation?: MapPointDto | null;
+      destination: MapPointDto;
+      destinationLabel?: string | null;
+      /**
+       * Pre-formatted distance display text (e.g. "1.2 mi"), same
+       * convention as every other card's display-text fields — the client
+       * applies tabular-nums, it does not compute the value.
+       */
+      distance?: string | null;
+      id: string;
+      label: string;
+      /**
+       * Route polyline vertices, in order. Empty when there is no route to
+       * draw (a bare "where is X" query with no navigation intent).
+       */
+      route?: MapPointDto[];
+      type: "card.map";
+      walkTime?: string | null;
+      [k: string]: unknown;
+    }
+  | {
       card: ApprovalCardDto;
       type: "card.approval";
       [k: string]: unknown;
@@ -845,6 +866,21 @@ export interface MediaGridItemDto {
   name: string;
   photo?: SourcedImageDto | null;
   price?: string | null;
+  [k: string]: unknown;
+}
+/**
+ * A single WGS84 point in degrees (F3b.5, docs/12 §3): a destination pin, the
+ * current-location dot, or one vertex of a route polyline. Deliberately bare
+ * — no zoom, no bounds, no rendering hint. Those live on the coverage
+ * endpoint (`crate::maps::MapCoverageResponse`), which the client consults
+ * separately to decide *how* to render a point, never on the point itself.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MapPointDto".
+ */
+export interface MapPointDto {
+  lat: number;
+  lon: number;
   [k: string]: unknown;
 }
 /**

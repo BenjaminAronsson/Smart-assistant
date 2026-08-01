@@ -14,10 +14,10 @@
 //! value readout, place, entity/person, media/menu grid, headlines/digest,
 //! now-playing (data only — live playback control stays on the media bar until
 //! M5), approval (wire-reused from [`crate::approvals::ApprovalCardDto`], never
-//! re-modeled), status/queued, and error. Timer/list/sources/gallery/map/
-//! product/agenda cards are later features (F3b.5/6/7/8) and are deliberately
-//! absent — adding one is an additive enum variant, never a change to this
-//! one's shape.
+//! re-modeled), status/queued, and error. F3b.5 adds the map card (below).
+//! Timer/list/sources/gallery/product/agenda cards are later features
+//! (F3b.6/7/8) and are deliberately absent — adding one is an additive enum
+//! variant, never a change to this one's shape.
 //!
 //! **Source-chip is structurally unavoidable** (docs/12 §2.3, FR-25/ADR-014).
 //! [`SourcedImageDto`] is the *only* way any card carries an image, and its
@@ -26,6 +26,15 @@
 //! also carrying its attribution and alt text in the same value. A card with no
 //! extractable image simply omits the `Option<SourcedImageDto>` field and
 //! renders text-only (docs/12 §2.3).
+//!
+//! **The map card carries no rendering-mode field** (F3b.5, docs/12 §3,
+//! ADR-013). Whether the client draws the local PMTiles extract, falls back to
+//! online OSM raster, or degrades to a coordinates-only readout is decided
+//! *client-side*, at render time, from `GET /api/v1/map/coverage` and current
+//! network state (`crate::maps::MapCoverageResponse`) — never baked into the
+//! card payload at production time. A card produced while the archive was
+//! reachable must still degrade correctly if the client renders it later
+//! offline, so the DTO carries only the destination/route facts.
 
 use crate::approvals::ApprovalCardDto;
 use schemars::JsonSchema;
@@ -91,6 +100,18 @@ pub struct HeadlineItemDto {
     /// optional"); when present it still carries its own attribution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thumbnail: Option<SourcedImageDto>,
+}
+
+/// A single WGS84 point in degrees (F3b.5, docs/12 §3): a destination pin, the
+/// current-location dot, or one vertex of a route polyline. Deliberately bare
+/// — no zoom, no bounds, no rendering hint. Those live on the coverage
+/// endpoint (`crate::maps::MapCoverageResponse`), which the client consults
+/// separately to decide *how* to render a point, never on the point itself.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MapPointDto {
+    pub lon: f64,
+    pub lat: f64,
 }
 
 /// Registered HUD card types (docs/12 §2.3). The `type` discriminator is
@@ -186,6 +207,33 @@ pub enum HudCardDto {
         art_url: Option<String>,
         source_app: String,
     },
+    /// A map result (F3b.5, docs/12 §3, ADR-013, FR-25): destination pin,
+    /// optional current-location dot, optional route polyline, and
+    /// pre-formatted distance/walk-time text. See the module doc comment for
+    /// why there is no rendering-mode field — local-vs-raster-vs-coordinates
+    /// is a client-side decision made from `crate::maps::MapCoverageResponse`
+    /// at render time, not something baked in here.
+    #[serde(rename = "card.map")]
+    Map {
+        id: String,
+        label: String,
+        destination: MapPointDto,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        destination_label: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        current_location: Option<MapPointDto>,
+        /// Route polyline vertices, in order. Empty when there is no route to
+        /// draw (a bare "where is X" query with no navigation intent).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        route: Vec<MapPointDto>,
+        /// Pre-formatted distance display text (e.g. "1.2 mi"), same
+        /// convention as every other card's display-text fields — the client
+        /// applies tabular-nums, it does not compute the value.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        distance: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        walk_time: Option<String>,
+    },
     /// The approval surface, wire-reused verbatim (docs/06 §3) — never
     /// re-modeled as a distinct card shape, so there is exactly one type that
     /// carries `exactEffect`/`proposedArguments` on the wire.
@@ -218,6 +266,7 @@ impl HudCardDto {
             Self::MediaGrid { .. } => "card.media_grid",
             Self::Headlines { .. } => "card.headlines",
             Self::NowPlaying { .. } => "card.now_playing",
+            Self::Map { .. } => "card.map",
             Self::Approval { .. } => "card.approval",
             Self::Status { .. } => "card.status",
             Self::Error { .. } => "card.error",

@@ -10,6 +10,8 @@
   <app-headlines-card [card]="c" />
 } @else if (asNowPlaying(); as c) {
   <app-now-playing-card [card]="c" />
+} @else if (asMap(); as c) {
+  <app-map-card [card]="c" />
 } @else if (asApproval(); as c) {
   <app-approval-card
     [card]="c.card"

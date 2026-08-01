@@ -1037,6 +1037,67 @@
           "type": "object"
         },
         {
+          "description": "A map result (F3b.5, docs/12 §3, ADR-013, FR-25): destination pin,\noptional current-location dot, optional route polyline, and\npre-formatted distance/walk-time text. See the module doc comment for\nwhy there is no rendering-mode field — local-vs-raster-vs-coordinates\nis a client-side decision made from `crate::maps::MapCoverageResponse`\nat render time, not something baked in here.",
+          "properties": {
+            "currentLocation": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MapPointDto"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "destination": {
+              "$ref": "#/definitions/MapPointDto"
+            },
+            "destinationLabel": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "distance": {
+              "description": "Pre-formatted distance display text (e.g. \"1.2 mi\"), same\nconvention as every other card's display-text fields — the client\napplies tabular-nums, it does not compute the value.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "route": {
+              "description": "Route polyline vertices, in order. Empty when there is no route to\ndraw (a bare \"where is X\" query with no navigation intent).",
+              "items": {
+                "$ref": "#/definitions/MapPointDto"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "card.map",
+              "type": "string"
+            },
+            "walkTime": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "label",
+            "destination"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The approval surface, wire-reused verbatim (docs/06 §3) — never\nre-modeled as a distinct card shape, so there is exactly one type that\ncarries `exactEffect`/`proposedArguments` on the wire.",
           "properties": {
             "card": {
@@ -1202,6 +1263,24 @@
         "tileUrlTemplate",
         "tileFormat",
         "attribution"
+      ],
+      "type": "object"
+    },
+    "MapPointDto": {
+      "description": "A single WGS84 point in degrees (F3b.5, docs/12 §3): a destination pin, the\ncurrent-location dot, or one vertex of a route polyline. Deliberately bare\n— no zoom, no bounds, no rendering hint. Those live on the coverage\nendpoint (`crate::maps::MapCoverageResponse`), which the client consults\nseparately to decide *how* to render a point, never on the point itself.",
+      "properties": {
+        "lat": {
+          "format": "double",
+          "type": "number"
+        },
+        "lon": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "lon",
+        "lat"
       ],
       "type": "object"
     },
