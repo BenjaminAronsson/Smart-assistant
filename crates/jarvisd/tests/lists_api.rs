@@ -111,7 +111,8 @@ impl ListStore for FakeLists {
             .find(|l| l.id() == id)
             .cloned())
     }
-    async fn find_by_key(&self, key: &str) -> Result<Option<ItemList>, RepositoryError> {
+    async fn find_by_key(&self, name: &ListName) -> Result<Option<ItemList>, RepositoryError> {
+        let key = name.key();
         Ok(self
             .rows
             .lock()
@@ -549,7 +550,13 @@ async fn creating_a_list_twice_converges_on_one() {
             serde_json::json!({"name": "shopping list"}),
         )
         .await;
-    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the second call FOUND the list; only the first created one — \
+         answering 201 for a list that was already there is a lie the client \
+         cannot see through: {second}"
+    );
     assert_eq!(second["id"], first["id"]);
     let (_, index) = h.get("/api/v1/lists").await;
     assert_eq!(index["lists"].as_array().unwrap().len(), 1);

@@ -1024,7 +1024,10 @@ export interface ListItemDto {
 /**
  * `POST /api/v1/lists/command` — run the **deterministic grammar** over one
  * utterance (ADR-024). Zero model calls: an utterance the grammar does not
- * unambiguously recognize is a `validation.failed` 400, never a guess.
+ * unambiguously recognize is a `list.unrecognized_command` 422, never a guess.
+ * 422 rather than 400 because the body was perfectly valid — it is the
+ * *content* that did not resolve here, and the caller's answer is to fall back
+ * to the normal run path rather than to fix its request.
  *
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "ListCommandRequest".

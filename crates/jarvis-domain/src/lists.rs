@@ -93,6 +93,19 @@ fn sanitize_line(raw: &str, max_bytes: usize) -> Option<String> {
     (!out.is_empty()).then_some(out)
 }
 
+/// Truncate to at most `max_bytes`, never splitting a character. Returns the
+/// whole string when it already fits, so the common path allocates nothing.
+fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// A list's display name — **untrusted text** (the owner speaks or types it).
 /// Sanitized and capped at construction; [`ListName::key`] is the separate,
 /// normalized value used to find a list again ("Shopping", "shopping list" and
@@ -120,6 +133,15 @@ impl ListName {
     /// so "shopping" and "shopping list" address the same list. This is what
     /// uniqueness is enforced on, so a second "Shopping List" cannot silently
     /// shadow the existing "shopping".
+    ///
+    /// **Capped at [`MAX_LIST_NAME_BYTES`], exactly like the name itself.**
+    /// Lowercasing is not length-preserving — `Ⱥ` (U+023A, 2 bytes) lowercases
+    /// to `ⱥ` (U+2C65, 3 bytes) — so a name sitting exactly at the cap can
+    /// lowercase to half again as much. The store's key column carries the same
+    /// bound, and a key that overflowed it would turn a perfectly well-formed
+    /// name into a storage failure the owner could never work around. The cut
+    /// is on a character boundary, so the key stays valid UTF-8 and stays
+    /// deterministic for a given name.
     pub fn key(&self) -> String {
         let lowered = self.0.to_lowercase();
         let trimmed = lowered
@@ -127,12 +149,15 @@ impl ListName {
             .or_else(|| lowered.strip_suffix(" list"))
             .unwrap_or(&lowered);
         let trimmed = trimmed.trim();
-        if trimmed.is_empty() {
+        let key = if trimmed.is_empty() {
             // "list" on its own: keep the whole thing rather than key on "".
-            lowered
+            lowered.as_str()
         } else {
-            trimmed.to_owned()
-        }
+            trimmed
+        };
+        truncate_on_char_boundary(key, MAX_LIST_NAME_BYTES)
+            .trim_end()
+            .to_owned()
     }
 
     /// True when this is the well-known quick-notes list.
@@ -658,6 +683,42 @@ mod tests {
         assert!(!ListName::new("shopping").unwrap().is_notes());
         // "list" alone still keys to something rather than the empty string.
         assert_eq!(ListName::new("list").unwrap().key(), "list");
+    }
+
+    #[test]
+    fn a_key_never_outgrows_the_bound_its_name_was_capped_at() {
+        // Lowercasing can GROW a string: `Ⱥ` (U+023A) is 2 bytes and lowercases
+        // to `ⱥ` (U+2C65) at 3. Sixty of them are exactly MAX_LIST_NAME_BYTES
+        // on the way in and 180 bytes lowercased — half again over the bound the
+        // store's key column enforces. A name the domain accepted must produce a
+        // key the store can hold, or a well-formed request becomes an
+        // unfixable storage failure.
+        let name = ListName::new(&"Ⱥ".repeat(60)).unwrap();
+        assert_eq!(
+            name.as_str().len(),
+            MAX_LIST_NAME_BYTES,
+            "name is at the cap"
+        );
+        let key = name.key();
+        assert!(
+            key.len() <= MAX_LIST_NAME_BYTES,
+            "key grew to {} bytes, past the {MAX_LIST_NAME_BYTES}-byte bound",
+            key.len()
+        );
+        assert!(!key.is_empty(), "a non-empty name must not key to nothing");
+        // Still a pure function of the name, and still valid UTF-8 (a truncation
+        // that split a character would not even be a `String`).
+        assert_eq!(key, name.key());
+
+        // Every accepted name keys within the bound, growth case or not.
+        for raw in ["Shopping", "İstanbul packing", &"Ⱥ".repeat(200), "ǰ"] {
+            let key = ListName::new(raw).unwrap().key();
+            assert!(
+                key.len() <= MAX_LIST_NAME_BYTES,
+                "{raw:?} keyed {} bytes",
+                key.len()
+            );
+        }
     }
 
     // --- aggregate operations ---------------------------------------------

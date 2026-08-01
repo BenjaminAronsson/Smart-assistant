@@ -7,7 +7,7 @@ use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::conversations::{Message, Session};
 use jarvis_domain::grants::Sha256;
 use jarvis_domain::ids::{ArtifactId, ListId, ListItemId, RunId, SessionId, TimerId};
-use jarvis_domain::lists::{ItemList, ListItem};
+use jarvis_domain::lists::{ItemList, ListItem, ListName};
 use jarvis_domain::run::Run;
 use jarvis_domain::timers::{Timer, TimerState};
 use std::time::SystemTime;
@@ -198,6 +198,9 @@ pub trait ArtifactStore: Send + Sync {
 /// Lists are looked up by [`Self::find_by_key`] because the grammar names a list
 /// by (untrusted, case-varying) text and the normalized
 /// [`jarvis_domain::lists::ListName::key`] is what uniqueness is enforced on.
+/// That normalization is why the lookup takes a
+/// [`jarvis_domain::lists::ListName`] and not a `&str`: a caller holding a raw
+/// name would key on the wrong string and miss every list, silently.
 #[async_trait::async_trait]
 pub trait ListStore: Send + Sync {
     /// Create a list. A key that already exists is a
@@ -208,8 +211,12 @@ pub trait ListStore: Send + Sync {
     /// One list, with its items in insertion order. Unknown => `Ok(None)`.
     async fn get(&self, id: &ListId) -> Result<Option<ItemList>, RepositoryError>;
 
-    /// Find by normalized name key. Unknown => `Ok(None)`.
-    async fn find_by_key(&self, key: &str) -> Result<Option<ItemList>, RepositoryError>;
+    /// Find by name, matched on its normalized
+    /// [`jarvis_domain::lists::ListName::key`]. Unknown => `Ok(None)`.
+    /// Implementations derive the key themselves so no caller can bypass the
+    /// normalization — "Shopping", "shopping list" and "  SHOPPING  " must all
+    /// find the one list.
+    async fn find_by_key(&self, name: &ListName) -> Result<Option<ItemList>, RepositoryError>;
 
     /// Every list, name-ordered so the shell renders a stable index.
     async fn list_all(&self) -> Result<Vec<ItemList>, RepositoryError>;

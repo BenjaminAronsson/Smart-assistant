@@ -116,9 +116,21 @@ impl ListRow {
     }
 }
 
+/// A list is always read as a header row **plus** its item rows: two
+/// statements, and therefore — under the default READ COMMITTED — two different
+/// snapshots. A write landing between them hands the caller a list whose header
+/// and lines disagree (an item that is not on the list it says it is, a
+/// promotion pointer from after the items were read). Every read path here
+/// opens this transaction instead, so the pair is one consistent snapshot.
+/// `READ ONLY` says what it is and lets Postgres refuse a stray write.
+const READ_SNAPSHOT: &str = "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY";
+
 impl PgListStore {
-    /// Items of one list, in insertion order.
-    async fn items_of(&self, id: &ListId) -> Result<Vec<ListItem>, RepositoryError> {
+    /// Items of one list, in insertion order, inside the caller's snapshot.
+    async fn items_of(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        id: &ListId,
+    ) -> Result<Vec<ListItem>, RepositoryError> {
         let rows = sqlx::query_as!(
             ItemRow,
             r#"
@@ -129,7 +141,7 @@ impl PgListStore {
             "#,
             id.as_str(),
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut **tx)
         .await
         .map_err(storage("list items"))?;
         rows.into_iter()
@@ -137,13 +149,18 @@ impl PgListStore {
             .collect()
     }
 
-    async fn hydrate(&self, row: Option<ListRow>) -> Result<Option<ItemList>, RepositoryError> {
+    /// Attach a row's items, reading them in the same snapshot the row came
+    /// from.
+    async fn hydrate(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        row: Option<ListRow>,
+    ) -> Result<Option<ItemList>, RepositoryError> {
         let Some(row) = row else { return Ok(None) };
         let id = row
             .id
             .parse::<ListId>()
             .map_err(|e| RepositoryError::Storage(format!("bad list id: {e}")))?;
-        let items = self.items_of(&id).await?;
+        let items = Self::items_of(tx, &id).await?;
         row.into_list(items).map(Some)
     }
 }
@@ -182,6 +199,11 @@ impl ListStore for PgListStore {
     }
 
     async fn get(&self, id: &ListId) -> Result<Option<ItemList>, RepositoryError> {
+        let mut tx = self
+            .pool
+            .begin_with(READ_SNAPSHOT)
+            .await
+            .map_err(storage("list get: begin"))?;
         let row = sqlx::query_as!(
             ListRow,
             r#"
@@ -191,13 +213,23 @@ impl ListStore for PgListStore {
             "#,
             id.as_str(),
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(storage("list get"))?;
-        self.hydrate(row).await
+        let list = Self::hydrate(&mut tx, row).await?;
+        tx.commit().await.map_err(storage("list get: commit"))?;
+        Ok(list)
     }
 
-    async fn find_by_key(&self, key: &str) -> Result<Option<ItemList>, RepositoryError> {
+    async fn find_by_key(&self, name: &ListName) -> Result<Option<ItemList>, RepositoryError> {
+        // The normalization lives in the domain newtype and is applied HERE, so
+        // no caller can look a list up by a key it derived itself.
+        let key = name.key();
+        let mut tx = self
+            .pool
+            .begin_with(READ_SNAPSHOT)
+            .await
+            .map_err(storage("list find_by_key: begin"))?;
         let row = sqlx::query_as!(
             ListRow,
             r#"
@@ -207,16 +239,27 @@ impl ListStore for PgListStore {
             "#,
             key,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(storage("list find_by_key"))?;
-        self.hydrate(row).await
+        let list = Self::hydrate(&mut tx, row).await?;
+        tx.commit()
+            .await
+            .map_err(storage("list find_by_key: commit"))?;
+        Ok(list)
     }
 
     async fn list_all(&self) -> Result<Vec<ItemList>, RepositoryError> {
         // Two queries rather than a join: the index read is trivially small and
         // the grouping stays obvious, which matters more than one round trip on
-        // an 8 GB target (docs/09 §5).
+        // an 8 GB target (docs/09 §5). Both run in one snapshot, so the index
+        // cannot show a list whose lines were read a write later.
+        let mut tx = self
+            .pool
+            .begin_with(READ_SNAPSHOT)
+            .await
+            .map_err(storage("list list_all: begin"))?;
+
         let lists = sqlx::query_as!(
             ListRow,
             r#"
@@ -225,7 +268,7 @@ impl ListStore for PgListStore {
             ORDER BY name_key ASC, id ASC
             "#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(storage("list list_all"))?;
 
@@ -237,9 +280,13 @@ impl ListStore for PgListStore {
             ORDER BY list_id ASC, added_at ASC, id ASC
             "#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(storage("list list_all: items"))?;
+
+        tx.commit()
+            .await
+            .map_err(storage("list list_all: commit"))?;
 
         let mut by_list: HashMap<String, Vec<ListItem>> = HashMap::new();
         for row in item_rows {
