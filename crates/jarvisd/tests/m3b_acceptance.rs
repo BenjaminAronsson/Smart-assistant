@@ -172,7 +172,16 @@ async fn f3b6_a_follow_up_extends_the_canvas_a_new_topic_shelves_it_and_a_thread
     let artifacts = Arc::new(PgArtifactStore::new(pool.clone()));
     // `[ui] deepdive_promote_after = 2` so the scenario crosses the threshold
     // without a wall of filler turns; the default is 3 (docs/09 §1).
-    let service = DeepDiveService::new(blobs.clone(), artifacts.clone(), 2, ACTOR);
+    // The clock is injected, never read from the wall — same rule the
+    // `the_scenarios_read_time_only_from_an_injected_clock` guard below
+    // enforces, and what makes the promotion's `occurredAt` assertable.
+    let service = DeepDiveService::new(
+        blobs.clone(),
+        artifacts.clone(),
+        2,
+        ACTOR,
+        Arc::new(ManualClock::at_unix(T0)),
+    );
     let cancel = CancellationToken::new();
 
     // --- the thread as a real turn would have left it ----------------------
