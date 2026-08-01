@@ -51,7 +51,8 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     let blob_store = Arc::new(jarvis_infra::artifact_cas::FileBlobStore::new(
         config.storage.artifacts_root.clone(),
     ));
-    let artifacts = jarvisd::artifacts::ArtifactApi::new(artifact_store.clone(), blob_store.clone());
+    let artifacts =
+        jarvisd::artifacts::ArtifactApi::new(artifact_store.clone(), blob_store.clone());
 
     // Display profile (F3a.4, FR-09/10): surface→monitor map from `[display]`.
     // A bad assignment (unknown surface / malformed monitor) fails startup fast.

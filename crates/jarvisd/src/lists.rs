@@ -92,7 +92,7 @@ pub async fn get(
     State(api): State<ListApi>,
     Path(id): Path<String>,
 ) -> Result<Json<ListDto>, Response> {
-    let id = parse_list_id(&id)?;
+    let id = parse_list_id(&id).map_err(fault_response)?;
     let list = api.service.get(&id).await.map_err(service_problem)?;
     Ok(Json(to_list_dto(&list)))
 }
@@ -129,7 +129,7 @@ pub async fn add_item(
     Json(req): Json<AddListItemRequest>,
 ) -> Result<(StatusCode, Json<ListDto>), Response> {
     let cancel = CancellationToken::new();
-    let id = parse_list_id(&id)?;
+    let id = parse_list_id(&id).map_err(fault_response)?;
     let text = ItemText::new(&req.text).map_err(|e| bad_request(&e.to_string()))?;
     let item_id: ListItemId = crate::auth::fresh_id();
     let list = api
@@ -149,8 +149,8 @@ pub async fn check_item(
     Json(req): Json<CheckListItemRequest>,
 ) -> Result<Json<ListDto>, Response> {
     let cancel = CancellationToken::new();
-    let id = parse_list_id(&id)?;
-    let item_id = parse_item_id(&item_id)?;
+    let id = parse_list_id(&id).map_err(fault_response)?;
+    let item_id = parse_item_id(&item_id).map_err(fault_response)?;
     let list = api
         .service
         .set_checked(&id, &item_id, req.checked, &actor(&device), &cancel)
@@ -167,8 +167,8 @@ pub async fn remove_item(
     Extension(device): Extension<DeviceContext>,
 ) -> Result<Json<ListDto>, Response> {
     let cancel = CancellationToken::new();
-    let id = parse_list_id(&id)?;
-    let item_id = parse_item_id(&item_id)?;
+    let id = parse_list_id(&id).map_err(fault_response)?;
+    let item_id = parse_item_id(&item_id).map_err(fault_response)?;
     let list = api
         .service
         .remove_item(&id, &item_id, &actor(&device), &cancel)
@@ -229,7 +229,7 @@ pub async fn promote(
     Extension(device): Extension<DeviceContext>,
 ) -> Result<Json<PromoteListResponse>, Response> {
     let cancel = CancellationToken::new();
-    let id = parse_list_id(&id)?;
+    let id = parse_list_id(&id).map_err(fault_response)?;
     let artifact_id: ArtifactId = crate::auth::fresh_id();
     // A promotion the owner asked for directly is its own occasion; the run id
     // correlates the artifact's provenance to this request.
@@ -247,14 +247,29 @@ pub async fn promote(
     }))
 }
 
-fn parse_list_id(raw: &str) -> Result<ListId, Response> {
-    raw.parse()
-        .map_err(|_| bad_request("list id is not a ULID"))
+/// Which path segment failed to parse as a ULID. A unit-sized enum rather than
+/// a prebuilt `Response`, for the same reason as `TimerFault` in
+/// [`crate::timers`]: an axum `Response` is large, and returning one in every
+/// helper's `Err` makes those results enormous (clippy `result_large_err`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdFault {
+    List,
+    Item,
 }
 
-fn parse_item_id(raw: &str) -> Result<ListItemId, Response> {
-    raw.parse()
-        .map_err(|_| bad_request("list item id is not a ULID"))
+fn fault_response(fault: IdFault) -> Response {
+    bad_request(match fault {
+        IdFault::List => "list id is not a ULID",
+        IdFault::Item => "list item id is not a ULID",
+    })
+}
+
+fn parse_list_id(raw: &str) -> Result<ListId, IdFault> {
+    raw.parse().map_err(|_| IdFault::List)
+}
+
+fn parse_item_id(raw: &str) -> Result<ListItemId, IdFault> {
+    raw.parse().map_err(|_| IdFault::Item)
 }
 
 fn bad_request(detail: &str) -> Response {

@@ -505,7 +505,10 @@ async fn the_card_taps_add_check_and_remove_by_id() {
     let base = format!("/api/v1/lists/{}", list_id());
 
     let (status, added) = h
-        .post(&format!("{base}/items"), serde_json::json!({"text":"bread"}))
+        .post(
+            &format!("{base}/items"),
+            serde_json::json!({"text":"bread"}),
+        )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{added}");
     assert_eq!(added["items"].as_array().unwrap().len(), 3);
@@ -541,7 +544,10 @@ async fn creating_a_list_twice_converges_on_one() {
     assert_eq!(status, StatusCode::CREATED, "{first}");
     // A different spelling of the same normalized key must not fork.
     let (status, second) = h
-        .post("/api/v1/lists", serde_json::json!({"name": "shopping list"}))
+        .post(
+            "/api/v1/lists",
+            serde_json::json!({"name": "shopping list"}),
+        )
         .await;
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(second["id"], first["id"]);
@@ -565,7 +571,9 @@ async fn promotion_produces_a_versioned_document_with_escaped_content() {
     .await;
     let base = format!("/api/v1/lists/{}", list_id());
 
-    let (status, promoted) = h.post(&format!("{base}/promote"), serde_json::json!({})).await;
+    let (status, promoted) = h
+        .post(&format!("{base}/promote"), serde_json::json!({}))
+        .await;
     assert_eq!(status, StatusCode::OK, "{promoted}");
     assert_eq!(promoted["version"], 1);
     assert_eq!(promoted["firstPromotion"], true);
@@ -584,9 +592,14 @@ async fn promotion_produces_a_versioned_document_with_escaped_content() {
     assert_eq!(list["promotedArtifactId"], artifact);
 
     // A second promotion versions the SAME artifact.
-    h.post(&format!("{base}/items"), serde_json::json!({"text":"bread"}))
+    h.post(
+        &format!("{base}/items"),
+        serde_json::json!({"text":"bread"}),
+    )
+    .await;
+    let (status, again) = h
+        .post(&format!("{base}/promote"), serde_json::json!({}))
         .await;
-    let (status, again) = h.post(&format!("{base}/promote"), serde_json::json!({})).await;
     assert_eq!(status, StatusCode::OK, "{again}");
     assert_eq!(again["artifactId"], artifact);
     assert_eq!(again["version"], 2);
@@ -649,7 +662,9 @@ async fn every_list_route_requires_a_device_token() {
             .unwrap(),
         Request::post("/api/v1/lists/command")
             .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(r#"{"utterance":"add milk to the shopping list"}"#))
+            .body(Body::from(
+                r#"{"utterance":"add milk to the shopping list"}"#,
+            ))
             .unwrap(),
         Request::post(format!("{base}/items"))
             .header(header::CONTENT_TYPE, "application/json")
@@ -675,12 +690,41 @@ async fn every_list_route_requires_a_device_token() {
 
 #[tokio::test]
 async fn the_list_surface_is_absent_when_it_is_not_wired() {
-    // An unwired surface serves no routes at all — the stricter default.
+    // An unwired surface serves no routes at all. The check has to be made by an
+    // *authenticated* caller: auth runs ahead of routing, so an anonymous
+    // request is 401 on every path whether the surface is wired or not — which
+    // is the stricter answer, since route existence is not something an
+    // unauthenticated caller gets to probe (that property is covered by
+    // `every_list_route_requires_a_device_token`). Authenticating first is what
+    // makes the 404 here mean "not wired" rather than "not authenticated".
     let identity = Arc::new(FakeIdentityStore::default());
     let auth = AuthState::bootstrap(identity).await;
+    let code = auth.current_pairing_code().unwrap();
     let app = router_with(AppState::new().with_auth(auth), Wiring::default());
+
     let response = app
-        .oneshot(Request::get("/api/v1/lists").body(Body::empty()).unwrap())
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/auth/pair")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"pairingCode":"{code}","deviceName":"laptop"}}"#
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let token = body["deviceToken"].as_str().unwrap().to_owned();
+
+    let response = app
+        .oneshot(
+            Request::get("/api/v1/lists")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);

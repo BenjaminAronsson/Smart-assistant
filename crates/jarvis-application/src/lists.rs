@@ -209,11 +209,11 @@ impl ListsService {
         match self.lists.create(&list, &audit).await {
             Ok(()) => Ok(list),
             // Lost the race against another creator with the same key.
-            Err(RepositoryError::Conflict(_)) => self
-                .lists
-                .find_by_key(&key)
-                .await?
-                .ok_or_else(|| ListsError::Storage("list key conflict without a list".to_owned())),
+            Err(RepositoryError::Conflict(_)) => {
+                self.lists.find_by_key(&key).await?.ok_or_else(|| {
+                    ListsError::Storage("list key conflict without a list".to_owned())
+                })
+            }
             Err(e) => Err(e.into()),
         }
     }
@@ -882,7 +882,11 @@ mod tests {
 
         // "what's on the shopping list" — a pure query.
         let read = parse_list_command("what's on the shopping list").unwrap();
-        let out = h.service.apply(&read, ids(2), ACTOR, &live()).await.unwrap();
+        let out = h
+            .service
+            .apply(&read, ids(2), ACTOR, &live())
+            .await
+            .unwrap();
         assert_eq!(out.effect, CommandEffect::Read);
         assert_eq!(out.list.items().len(), 1);
 
@@ -1042,7 +1046,13 @@ mod tests {
         h.lists.seed(list);
         let err = h
             .service
-            .add_item(&list_id(1), item_id(1), text("one too many"), ACTOR, &live())
+            .add_item(
+                &list_id(1),
+                item_id(1),
+                text("one too many"),
+                ACTOR,
+                &live(),
+            )
             .await
             .unwrap_err();
         assert!(matches!(
@@ -1055,8 +1065,10 @@ mod tests {
     #[tokio::test]
     async fn a_cancelled_command_leaves_no_row_behind() {
         let h = harness();
-        h.lists
-            .seed(ItemList::new(list_id(1), ListName::new("Shopping").unwrap()));
+        h.lists.seed(ItemList::new(
+            list_id(1),
+            ListName::new("Shopping").unwrap(),
+        ));
         let cancel = CancellationToken::new();
         cancel.cancel();
         let err = h
@@ -1161,7 +1173,11 @@ mod tests {
         assert!(!second.first_promotion);
         assert_ne!(second.sha256_hex, first.sha256_hex);
         assert_eq!(
-            h.artifacts.list_versions(&artifact_id(1)).await.unwrap().len(),
+            h.artifacts
+                .list_versions(&artifact_id(1))
+                .await
+                .unwrap()
+                .len(),
             2
         );
         assert!(
@@ -1180,8 +1196,10 @@ mod tests {
     #[tokio::test]
     async fn a_cancelled_promotion_stores_no_blob_and_no_manifest() {
         let h = harness();
-        h.lists
-            .seed(ItemList::new(list_id(1), ListName::new("Shopping").unwrap()));
+        h.lists.seed(ItemList::new(
+            list_id(1),
+            ListName::new("Shopping").unwrap(),
+        ));
         let cancel = CancellationToken::new();
         cancel.cancel();
         let err = h

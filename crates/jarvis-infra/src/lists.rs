@@ -263,7 +263,11 @@ impl ListStore for PgListStore {
         audit: &AuditEvent,
     ) -> Result<(), RepositoryError> {
         let now = utc(audit.occurred_at);
-        let mut tx = self.pool.begin().await.map_err(storage("list add: begin"))?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(storage("list add: begin"))?;
 
         sqlx::query!(
             r#"
@@ -425,9 +429,7 @@ impl ListStore for PgListStore {
             .await
             .map_err(|e| RepositoryError::Storage(format!("list promote: audit: {e}")))?;
 
-        tx.commit()
-            .await
-            .map_err(storage("list promote: commit"))?;
+        tx.commit().await.map_err(storage("list promote: commit"))?;
         Ok(())
     }
 }

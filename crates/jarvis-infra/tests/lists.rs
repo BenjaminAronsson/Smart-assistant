@@ -91,7 +91,11 @@ async fn a_list_round_trips_in_insertion_order_with_every_change_audited(pool: P
     }
 
     // Reading it back is what a restart does.
-    let loaded = store.get(&list_id(SHOPPING)).await.unwrap().expect("present");
+    let loaded = store
+        .get(&list_id(SHOPPING))
+        .await
+        .unwrap()
+        .expect("present");
     assert_eq!(loaded.name().as_str(), "Shopping");
     assert_eq!(
         loaded
@@ -119,11 +123,7 @@ async fn a_list_round_trips_in_insertion_order_with_every_change_audited(pool: P
     );
     let loaded = store.get(&list_id(SHOPPING)).await.unwrap().unwrap();
     assert_eq!(
-        loaded
-            .items()
-            .iter()
-            .map(|i| i.checked)
-            .collect::<Vec<_>>(),
+        loaded.items().iter().map(|i| i.checked).collect::<Vec<_>>(),
         vec![false, true, false],
         "only the addressed item moved"
     );
@@ -297,7 +297,11 @@ async fn the_index_lists_every_list_with_its_own_items(pool: PgPool) {
 async fn an_empty_list_and_an_unknown_list_are_distinguishable(pool: PgPool) {
     let store = PgListStore::new(pool.clone());
     seeded_shopping(&store).await;
-    let empty = store.get(&list_id(SHOPPING)).await.unwrap().expect("exists");
+    let empty = store
+        .get(&list_id(SHOPPING))
+        .await
+        .unwrap()
+        .expect("exists");
     assert!(empty.is_empty());
     assert!(
         store.get(&list_id(TODO)).await.unwrap().is_none(),
@@ -340,7 +344,11 @@ async fn a_promoted_list_keeps_one_document_identity(pool: PgPool) {
     assert!(matches!(err, RepositoryError::Conflict(_)), "{err:?}");
     let loaded = store.get(&list_id(SHOPPING)).await.unwrap().unwrap();
     assert_eq!(loaded.promoted_artifact(), Some(&artifact));
-    assert_eq!(audit_types(&pool).await.len(), 2, "the refusal wrote nothing");
+    assert_eq!(
+        audit_types(&pool).await.len(),
+        2,
+        "the refusal wrote nothing"
+    );
 
     // An unknown list is the same conflict, not a panic.
     assert!(
