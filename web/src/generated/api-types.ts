@@ -294,7 +294,9 @@ export type ErrorCode =
   | "media.player_gone"
   | "media.control_unsupported"
   | "timer.invalid_transition"
-  | "timer.stale";
+  | "timer.stale"
+  | "list.full"
+  | "list.unrecognized_command";
 /**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "ServiceStatus".
@@ -415,6 +417,13 @@ export type HudCardDto =
       [k: string]: unknown;
     }
   | {
+      id: string;
+      list: ListDto;
+      listId: UlidString;
+      type: "card.list";
+      [k: string]: unknown;
+    }
+  | {
       card: ApprovalCardDto;
       type: "card.approval";
       [k: string]: unknown;
@@ -432,6 +441,13 @@ export type HudCardDto =
       type: "card.error";
       [k: string]: unknown;
     };
+/**
+ * What a grammar command did.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ListEffectDto".
+ */
+export type ListEffectDto = ("added" | "removed" | "checked_off") | "read";
 /**
  * What the archive's tiles are, so the client picks a vector or raster source.
  *
@@ -502,6 +518,16 @@ export interface JarvisContracts {
 export interface AdapterHealth {
   detail?: string | null;
   state: AdapterState;
+  [k: string]: unknown;
+}
+/**
+ * `POST /api/v1/lists/{id}/items` — append one line.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "AddListItemRequest".
+ */
+export interface AddListItemRequest {
+  text: string;
   [k: string]: unknown;
 }
 /**
@@ -618,6 +644,31 @@ export interface ArtifactSourceDto {
 export interface ArtifactVersionsResponse {
   artifactId: UlidString;
   versions: ArtifactManifestDto[];
+  [k: string]: unknown;
+}
+/**
+ * `PATCH /api/v1/lists/{id}/items/{itemId}` — the card's check-off tap, and
+ * from M5 the voice path. Deliberately a whole-value set rather than a toggle:
+ * two devices tapping the same line converge on the same result instead of
+ * racing each other back and forth.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "CheckListItemRequest".
+ */
+export interface CheckListItemRequest {
+  checked: boolean;
+  [k: string]: unknown;
+}
+/**
+ * `POST /api/v1/lists` — create a named list, or return the existing one with
+ * the same normalized name (creation is idempotent on the name key, because
+ * "add milk to the shopping list" must work before a shopping list exists).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "CreateListRequest".
+ */
+export interface CreateListRequest {
+  name: string;
   [k: string]: unknown;
 }
 /**
@@ -926,6 +977,92 @@ export interface SourceItemDto {
   [k: string]: unknown;
 }
 /**
+ * One named list with its items, in insertion order.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ListDto".
+ */
+export interface ListDto {
+  id: UlidString;
+  items: ListItemDto[];
+  /**
+   * Display name as the owner gave it ("Shopping"), sanitized.
+   */
+  name: string;
+  /**
+   * How many items are still open — the readback's "two things left"
+   * computed once server-side so the card and the spoken answer agree.
+   */
+  openCount: number;
+  /**
+   * The versioned artifact this list has been promoted into, if any (FR-08).
+   * Present ⇒ a further promotion adds a *version* to this artifact.
+   */
+  promotedArtifactId?: UlidString | null;
+  /**
+   * The list has grown into a document and promotion is worth offering
+   * (ADR-024). An offer the shell surfaces, never an automatic conversion.
+   */
+  promotionOffered: boolean;
+  [k: string]: unknown;
+}
+/**
+ * One line on a list.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ListItemDto".
+ */
+export interface ListItemDto {
+  checked: boolean;
+  id: UlidString;
+  /**
+   * Sanitized human text. Rendered as text.
+   */
+  text: string;
+  [k: string]: unknown;
+}
+/**
+ * `POST /api/v1/lists/command` — run the **deterministic grammar** over one
+ * utterance (ADR-024). Zero model calls: an utterance the grammar does not
+ * unambiguously recognize is a `validation.failed` 400, never a guess.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ListCommandRequest".
+ */
+export interface ListCommandRequest {
+  /**
+   * The utterance as spoken or typed, e.g. "add milk to the shopping list".
+   */
+  utterance: string;
+  [k: string]: unknown;
+}
+/**
+ * The list after the command was applied and audited, so the card re-renders
+ * without waiting for an event.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ListCommandResponse".
+ */
+export interface ListCommandResponse {
+  effect: ListEffectDto;
+  /**
+   * The item the command touched, absent for a read.
+   */
+  itemId?: UlidString | null;
+  list: ListDto;
+  [k: string]: unknown;
+}
+/**
+ * `GET /api/v1/lists` — every list the owner has, name-ordered.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ListIndexResponse".
+ */
+export interface ListIndexResponse {
+  lists: ListDto[];
+  [k: string]: unknown;
+}
+/**
  * A WGS84 bounding box in degrees, `min <= max` on both axes. As an archive's
  * coverage, it is the region the extract covers: outside it the client must
  * fall back (docs/12 §3), and the server refuses those tiles either way.
@@ -1209,6 +1346,28 @@ export interface ProblemDetails {
    * Problem type URI; `about:blank` when the code says it all.
    */
   type: string;
+  [k: string]: unknown;
+}
+/**
+ * `POST /api/v1/lists/{id}/promote` — the list is now a versioned markdown
+ * artifact (FR-08). A list promoted before gets the **next version** of the
+ * same artifact, never a rival document.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "PromoteListResponse".
+ */
+export interface PromoteListResponse {
+  artifactId: UlidString;
+  /**
+   * True when this promotion created the artifact rather than versioning it.
+   */
+  firstPromotion: boolean;
+  /**
+   * Content address of the document, lowercase hex — the same value the
+   * artifact blob endpoint serves under.
+   */
+  sha256: string;
+  version: number;
   [k: string]: unknown;
 }
 /**

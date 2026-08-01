@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE lists.lists\n            SET promoted_artifact_id = $2, updated_at = $3\n            WHERE id = $1 AND promoted_artifact_id IS NULL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8131bb4887d67ce24a3c4ffff2970ce1db069717864334edde87103de232ab8d"
+}

@@ -46,6 +46,17 @@ const REQUIRED_DEFINITIONS: &[&str] = &[
     "CreateTimerRequest",
     "TimerActionRequest",
     "TimerActionResponse",
+    // List surface (F3b.8, FR-34, ADR-024).
+    "ListDto",
+    "ListItemDto",
+    "ListIndexResponse",
+    "CreateListRequest",
+    "AddListItemRequest",
+    "CheckListItemRequest",
+    "ListCommandRequest",
+    "ListCommandResponse",
+    "ListEffectDto",
+    "PromoteListResponse",
 ];
 
 fn snapshot_path() -> std::path::PathBuf {

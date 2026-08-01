@@ -4,6 +4,7 @@
 
 pub mod deepdive;
 pub mod health;
+pub mod lists;
 pub mod location;
 pub mod model;
 pub mod orchestrator;

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE lists.items\n            SET checked = $3\n            WHERE id = $1 AND list_id = $2\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f09c8e5826ca6e38e083970cb92595cc20ff3b1d5aff8691fd2598b643456b86"
+}

@@ -14,18 +14,19 @@
 //! value readout, place, entity/person, media/menu grid, headlines/digest,
 //! now-playing (data only — live playback control stays on the media bar until
 //! M5), approval (wire-reused from [`crate::approvals::ApprovalCardDto`], never
-//! re-modeled), status/queued, and error. Timer/list/product/agenda cards are
-//! later features (F3b.7/8) and are deliberately absent — adding one is an
-//! additive enum variant, never a change to this one's shape.
+//! re-modeled), status/queued, and error. Timer/product/agenda cards are later
+//! features and are deliberately absent — adding one is an additive enum
+//! variant, never a change to this one's shape.
 //!
-//! F3b.5 added the map card ([`HudCardDto::Map`], below) that way, and F3b.6
-//! the two deep-dive types: [`HudCardDto::Sources`] (the bibliography for "show
-//! me the references") and [`HudCardDto::Gallery`] (images, **each tile
-//! individually attributed** — ADR-017). Note what neither deep-dive type has:
-//! a field for page *body* text. Reading a source is a browser handoff (FR-15,
-//! ADR-017 §3), so the HUD has nowhere to re-render a fetched page even if a
-//! producer wanted to — a scope and a copyright boundary made structural rather
-//! than remembered.
+//! Three later features took exactly that route: F3b.5 added the map card
+//! ([`HudCardDto::Map`], below); F3b.6 the two deep-dive types,
+//! [`HudCardDto::Sources`] (the bibliography for "show me the references") and
+//! [`HudCardDto::Gallery`] (images, **each tile individually attributed** —
+//! ADR-017); and F3b.8 the [`HudCardDto::List`] card (FR-34/ADR-024). Note what
+//! neither deep-dive type has: a field for page *body* text. Reading a source is
+//! a browser handoff (FR-15, ADR-017 §3), so the HUD has nowhere to re-render a
+//! fetched page even if a producer wanted to — a scope and a copyright boundary
+//! made structural rather than remembered.
 //!
 //! **Source-chip is structurally unavoidable** (docs/12 §2.3, FR-25/ADR-014).
 //! [`SourcedImageDto`] is the *only* way any card carries an image, and its
@@ -284,6 +285,22 @@ pub enum HudCardDto {
         title: String,
         images: Vec<SourcedImageDto>,
     },
+    /// A named list with its items (docs/12 §2.3, FR-34/ADR-024): the face of
+    /// "what's on the shopping list", with check-off by voice or tap. The list
+    /// itself is wire-reused from [`crate::lists::ListDto`] rather than
+    /// re-modeled, the same discipline as the approval variant below — there is
+    /// exactly one type that says what a list is on the wire.
+    ///
+    /// `listId` rides alongside the card's own `id` because the check-off tap
+    /// posts to `/api/v1/lists/{listId}/items/{itemId}`: a card id is a
+    /// presentation handle, never an address the client may derive a write from.
+    #[serde(rename = "card.list")]
+    List {
+        id: String,
+        #[schemars(with = "crate::schema::UlidString")]
+        list_id: jarvis_domain::ids::ListId,
+        list: crate::lists::ListDto,
+    },
     /// The approval surface, wire-reused verbatim (docs/06 §3) — never
     /// re-modeled as a distinct card shape, so there is exactly one type that
     /// carries `exactEffect`/`proposedArguments` on the wire.
@@ -319,6 +336,7 @@ impl HudCardDto {
             Self::Map { .. } => "card.map",
             Self::Sources { .. } => "card.sources",
             Self::Gallery { .. } => "card.gallery",
+            Self::List { .. } => "card.list",
             Self::Approval { .. } => "card.approval",
             Self::Status { .. } => "card.status",
             Self::Error { .. } => "card.error",

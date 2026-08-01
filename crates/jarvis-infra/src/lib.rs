@@ -12,6 +12,7 @@ pub mod dispatcher;
 pub mod events;
 pub mod grants;
 pub mod identity;
+pub mod lists;
 pub mod messages;
 pub mod runs;
 pub mod sessions;

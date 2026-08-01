@@ -9,6 +9,7 @@ pub mod auth;
 pub mod cards;
 pub mod config;
 pub mod display;
+pub mod lists;
 pub mod location;
 pub mod maps;
 pub mod media;
