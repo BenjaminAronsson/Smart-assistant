@@ -21,6 +21,11 @@
 //! recorders ([`ResearchThread::record_fact`] and friends) that keep a scrape
 //! from being filed as a paraphrase.
 //!
+//! Those recorders are the thread's **only** mutators — [`ResearchThread`],
+//! [`SourceRef`] and [`ImageRef`] have private fields, so "facts are
+//! paraphrases, not scrapes" is a property of the type rather than a habit of
+//! its callers, and no `thread.facts.push(page_body)` exists to work around.
+//!
 //! No I/O, no clock, no allocation of authority: this module decides *shape*,
 //! never side effects.
 
@@ -295,13 +300,11 @@ pub fn select_source(query: &str, source_count: usize) -> Option<usize> {
 /// to remember.
 pub const GALLERY_IMAGE_CAP: usize = 8;
 
-/// Whether a URL is a plain `http(s)` URL — the only kind this system will emit
-/// as a link target, navigate to, or badge with a domain. `javascript:`,
-/// `data:`, and `file:` never qualify.
-pub fn is_web_url(url: &str) -> bool {
-    let lower = url.trim().to_ascii_lowercase();
-    lower.starts_with("http://") || lower.starts_with("https://")
-}
+/// The http(s) rule has **one** definition, in [`crate::markdown`], because it
+/// is the same question whether a URL is about to become a link target, a
+/// navigation, or a chip: a URL that cannot be linked must not be badged either.
+/// Re-exported here so `deepdive::is_web_url` keeps its meaning at call sites.
+pub use crate::markdown::is_web_url;
 
 /// The display domain for a source chip ("wikipedia.org ↗"), computed **once,
 /// host-side, from the parsed host** so the client never derives trusted-looking
@@ -375,6 +378,48 @@ pub fn display_domain(url: &str) -> Option<String> {
 /// summary still fits.
 pub const MAX_PARAPHRASE_CHARS: usize = 400;
 
+/// Most facts one thread accumulates. The per-fact cap bounds one entry; without
+/// this, a page body filed in [`MAX_PARAPHRASE_CHARS`] chunks is still a page
+/// body (docs/06 §5, artifact size limits). At these two numbers a thread's
+/// findings are at most ~40 kB — a long document, not a mirror of the web.
+pub const MAX_THREAD_FACTS: usize = 100;
+
+/// Most pages one thread cites. A deep dive consults a bibliography, not a
+/// crawl.
+pub const MAX_THREAD_SOURCES: usize = 50;
+
+/// Most images one thread references. Far above [`GALLERY_IMAGE_CAP`] — the
+/// gallery shows a few, the document may keep more — and far below "every image
+/// on the page".
+pub const MAX_THREAD_IMAGES: usize = 32;
+
+/// Longest topic kept, in characters. The topic is the user's utterance and it
+/// becomes the document's H1: a label, not prose.
+pub const MAX_TOPIC_CHARS: usize = 200;
+
+/// Longest source title kept, in characters — untrusted display text from a
+/// fetched page, bounded like every other label (cf.
+/// [`crate::lists::MAX_ITEM_TEXT_BYTES`]).
+pub const MAX_SOURCE_TITLE_CHARS: usize = 200;
+
+/// Longest image alt text kept, in characters. Same reasoning as
+/// [`MAX_SOURCE_TITLE_CHARS`]; alt text is read aloud, so it is a sentence at
+/// most.
+pub const MAX_IMAGE_ALT_CHARS: usize = 200;
+
+/// Keep at most `max` characters of an untrusted label.
+///
+/// Truncation, not refusal: a title is decoration around a source that is
+/// otherwise worth citing, so an over-long one is shortened rather than costing
+/// the citation. (A *fact* is the opposite case — see [`ThreadError::NotAParaphrase`].)
+fn truncate_label(raw: &str, max: usize) -> String {
+    let trimmed = raw.trim();
+    match trimmed.char_indices().nth(max) {
+        Some((byte, _)) => trimmed[..byte].trim_end().to_owned(),
+        None => trimmed.to_owned(),
+    }
+}
+
 /// Why a thread refused to record something.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ThreadError {
@@ -387,6 +432,16 @@ pub enum ThreadError {
     /// Empty after trimming — nothing to record.
     #[error("nothing to record")]
     Empty,
+    /// The thread already holds [`MAX_THREAD_FACTS`] findings. A clean, loud
+    /// refusal rather than a silent drop or an unbounded document.
+    #[error("this thread already holds the most findings it can accumulate ({MAX_THREAD_FACTS})")]
+    FactsFull,
+    /// The thread already cites [`MAX_THREAD_SOURCES`] pages.
+    #[error("this thread already cites the most pages it can ({MAX_THREAD_SOURCES})")]
+    SourcesFull,
+    /// The thread already references [`MAX_THREAD_IMAGES`] images.
+    #[error("this thread already references the most images it can ({MAX_THREAD_IMAGES})")]
+    ImagesFull,
     /// A source or image URL that is not a plain `http(s)` URL, or whose host
     /// cannot be turned into an honest attribution label.
     #[error("not an attributable http(s) source: {0}")]
@@ -394,40 +449,109 @@ pub enum ThreadError {
 }
 
 /// One source consulted during a thread.
+///
+/// Fields are private and there is no public constructor: a `SourceRef` can
+/// only come from [`ResearchThread::record_source`], which is what makes the
+/// attribution check ([`display_domain`]) unavoidable rather than customary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceRef {
-    pub title: String,
-    pub url: String,
+    title: String,
+    url: String,
+}
+
+impl SourceRef {
+    /// The page's title — untrusted display text, capped at
+    /// [`MAX_SOURCE_TITLE_CHARS`], escaped wherever it is rendered.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// The page's URL. Checked [`is_web_url`] and attributable when recorded.
+    pub fn url(&self) -> &str {
+        &self.url
+    }
 }
 
 /// One image referenced by the thread, with its own provenance — images from
 /// different pages must not share one attribution (ADR-017).
+///
+/// Private fields for the same reason as [`SourceRef`]: the only way to obtain
+/// one is [`ResearchThread::record_image`], which refuses an image whose own
+/// page is not attributable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageRef {
-    pub alt: String,
-    pub url: String,
-    pub source_url: String,
+    alt: String,
+    url: String,
+    source_url: String,
+}
+
+impl ImageRef {
+    /// Alt text — untrusted display text, capped at [`MAX_IMAGE_ALT_CHARS`].
+    pub fn alt(&self) -> &str {
+        &self.alt
+    }
+
+    /// The image's own URL.
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// The page this image came from — **this** image's provenance, never a
+    /// neighbour's (ADR-017).
+    pub fn source_url(&self) -> &str {
+        &self.source_url
+    }
 }
 
 /// The accumulated thread, ready to become a versioned markdown artifact.
+///
+/// **Every field is private, and that is the security property.** ADR-017 says
+/// facts are paraphrases and not scrapes, every source is attributable, and
+/// every image carries its own provenance — claims that are worth nothing if a
+/// caller holding a fetched page body can write `thread.facts.push(body)` or
+/// build the struct literally. The guarded recorders below are therefore the
+/// *only* way content gets in, and the accessors hand back shared slices, so
+/// nothing that skipped a check can exist inside a thread.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResearchThread {
-    pub topic: String,
-    /// **Paraphrased** facts (ADR-017: paraphrased, not scraped). The caller is
-    /// responsible for the paraphrasing; this type carries the intent in its
-    /// name so a future contributor does not quietly start storing page text.
-    pub facts: Vec<String>,
-    pub sources: Vec<SourceRef>,
-    pub images: Vec<ImageRef>,
+    topic: String,
+    /// **Paraphrased** facts (ADR-017: paraphrased, not scraped) — see
+    /// [`ResearchThread::record_fact`], the only thing that can add one.
+    facts: Vec<String>,
+    sources: Vec<SourceRef>,
+    images: Vec<ImageRef>,
 }
 
 impl ResearchThread {
-    /// Start a thread on a topic.
+    /// Start a thread on a topic. The topic is untrusted (it is the user's
+    /// utterance) and becomes the document's heading, so it is trimmed and
+    /// capped at [`MAX_TOPIC_CHARS`] here.
     pub fn new(topic: impl Into<String>) -> ResearchThread {
         ResearchThread {
-            topic: topic.into(),
+            topic: truncate_label(&topic.into(), MAX_TOPIC_CHARS),
             ..ResearchThread::default()
         }
+    }
+
+    /// The thread's topic.
+    pub fn topic(&self) -> &str {
+        &self.topic
+    }
+
+    /// The paraphrased findings, in the order they were recorded.
+    pub fn facts(&self) -> &[String] {
+        &self.facts
+    }
+
+    /// Every page consulted — the bibliography the document renders.
+    pub fn sources(&self) -> &[SourceRef] {
+        &self.sources
+    }
+
+    /// Every image referenced. The *document* may show all of them; the HUD
+    /// gallery is capped separately by [`ResearchThread::gallery_images`].
+    pub fn images(&self) -> &[ImageRef] {
+        &self.images
     }
 
     /// Record one **paraphrased** fact (ADR-017).
@@ -444,9 +568,15 @@ impl ResearchThread {
         if text.chars().count() > MAX_PARAPHRASE_CHARS {
             return Err(ThreadError::NotAParaphrase);
         }
-        if !self.facts.contains(&text) {
-            self.facts.push(text);
+        if self.facts.contains(&text) {
+            return Ok(());
         }
+        // The per-fact cap alone would let a page arrive in 400-character
+        // instalments; this is where that stops.
+        if self.facts.len() >= MAX_THREAD_FACTS {
+            return Err(ThreadError::FactsFull);
+        }
+        self.facts.push(text);
         Ok(())
     }
 
@@ -465,8 +595,11 @@ impl ResearchThread {
         if self.sources.iter().any(|s| s.url == url) {
             return Ok(());
         }
+        if self.sources.len() >= MAX_THREAD_SOURCES {
+            return Err(ThreadError::SourcesFull);
+        }
         self.sources.push(SourceRef {
-            title: title.into().trim().to_owned(),
+            title: truncate_label(&title.into(), MAX_SOURCE_TITLE_CHARS),
             url,
         });
         Ok(())
@@ -492,8 +625,11 @@ impl ResearchThread {
         if self.images.iter().any(|i| i.url == url) {
             return Ok(());
         }
+        if self.images.len() >= MAX_THREAD_IMAGES {
+            return Err(ThreadError::ImagesFull);
+        }
         self.images.push(ImageRef {
-            alt: alt.into().trim().to_owned(),
+            alt: truncate_label(&alt.into(), MAX_IMAGE_ALT_CHARS),
             url,
             source_url,
         });

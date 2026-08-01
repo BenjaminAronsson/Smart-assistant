@@ -3,8 +3,9 @@
 //! *shelved*, so its boundary cases are the feature's spec.
 
 use jarvis_domain::deepdive::{
-    GALLERY_IMAGE_CAP, ImageRef, MAX_PARAPHRASE_CHARS, QueryRelation, ResearchThread, SourceRef,
-    ThreadError, classify_query, display_domain, is_source_handoff, is_web_url,
+    GALLERY_IMAGE_CAP, MAX_IMAGE_ALT_CHARS, MAX_PARAPHRASE_CHARS, MAX_SOURCE_TITLE_CHARS,
+    MAX_THREAD_FACTS, MAX_THREAD_IMAGES, MAX_THREAD_SOURCES, MAX_TOPIC_CHARS, QueryRelation,
+    ResearchThread, ThreadError, classify_query, display_domain, is_source_handoff, is_web_url,
     render_research_notes, select_source, should_offer_promotion,
 };
 
@@ -96,20 +97,25 @@ fn promotion_is_offered_past_the_threshold_and_not_twice_for_the_same_turn() {
     assert!(!should_offer_promotion(9, 0, None));
 }
 
+/// A thread can only be built by *recording* into it — the fields are private,
+/// so there is no struct literal that could put page text or an unattributable
+/// URL where a checked paraphrase belongs (ADR-017).
 fn thread() -> ResearchThread {
-    ResearchThread {
-        topic: "Ramen in Kreuzberg".to_owned(),
-        facts: vec!["Kome opens at 12:00 and is rated 4.7".to_owned()],
-        sources: vec![SourceRef {
-            title: "Kome Ramen".to_owned(),
-            url: "https://example.org/kome".to_owned(),
-        }],
-        images: vec![ImageRef {
-            alt: "bowl of ramen".to_owned(),
-            url: "https://cdn.example.org/ramen.jpg".to_owned(),
-            source_url: "https://example.org/kome".to_owned(),
-        }],
-    }
+    let mut thread = ResearchThread::new("Ramen in Kreuzberg");
+    thread
+        .record_fact("Kome opens at 12:00 and is rated 4.7")
+        .unwrap();
+    thread
+        .record_source("Kome Ramen", "https://example.org/kome")
+        .unwrap();
+    thread
+        .record_image(
+            "bowl of ramen",
+            "https://cdn.example.org/ramen.jpg",
+            "https://example.org/kome",
+        )
+        .unwrap();
+    thread
 }
 
 #[test]
@@ -125,23 +131,27 @@ fn research_notes_carry_facts_sources_and_per_image_attribution() {
 
 #[test]
 fn untrusted_thread_text_cannot_become_markup_in_the_document() {
-    let hostile = ResearchThread {
-        topic: "# pwned".to_owned(),
-        facts: vec![
-            "<script>alert(1)</script>".to_owned(),
-            "[click me](javascript:alert(1))".to_owned(),
-            "line\u{202e}reversed\u{7}bell".to_owned(),
-        ],
-        sources: vec![SourceRef {
-            title: "](https://evil.example/) [pwn".to_owned(),
-            url: "javascript:alert(1)".to_owned(),
-        }],
-        images: vec![ImageRef {
-            alt: "![nested](x)".to_owned(),
-            url: "data:text/html,<script>1</script>".to_owned(),
-            source_url: "https://example.org/page".to_owned(),
-        }],
-    };
+    let mut hostile = ResearchThread::new("# pwned");
+    for fact in [
+        "<script>alert(1)</script>",
+        "[click me](javascript:alert(1))",
+        "line\u{202e}reversed\u{7}bell",
+    ] {
+        hostile.record_fact(fact).unwrap();
+    }
+    // Hostile *text* is recorded and neutralised at render time; a hostile
+    // *URL* never gets in at all (see the recorder tests below), which is why
+    // these two carry real pages and only their labels are hostile.
+    hostile
+        .record_source("](https://evil.example/) [pwn", "https://example.org/page")
+        .unwrap();
+    hostile
+        .record_image(
+            "![nested](x)",
+            "https://cdn.example.org/a.jpg",
+            "https://example.org/page",
+        )
+        .unwrap();
     let md = render_research_notes(&hostile);
 
     // Markup-opening characters are escaped, so a fact that looks like a link
@@ -176,6 +186,145 @@ fn untrusted_thread_text_cannot_become_markup_in_the_document() {
     assert!(!md.contains('\u{7}'));
     // The honest bits are still there: the image keeps its real source.
     assert!(md.contains("https://example.org/page"));
+    // Every heading in the document is one this module wrote: the four we emit
+    // and nothing an untrusted string introduced.
+    let headings: Vec<&str> = md.lines().filter(|l| l.starts_with('#')).collect();
+    assert_eq!(
+        headings,
+        [
+            "# Research Notes: \\# pwned",
+            "## What I found",
+            "## Sources",
+            "## Images"
+        ],
+        "the document's structure is ours: {md}"
+    );
+}
+
+#[test]
+fn a_url_that_could_inject_document_structure_is_refused_by_the_recorders() {
+    // The escaper protects the link *text*; this protects the link
+    // *destination*. A newline inside a fetched page's URL used to survive into
+    // `[label](…)`, where CommonMark refuses the destination and the injected
+    // tail becomes a heading — or a real, clickable anchor pointing anywhere
+    // the page likes. `display_domain` cut the authority at the first `/` and
+    // attributed such a URL happily, so nothing downstream caught it either.
+    let mut thread = ResearchThread::new("Ramen");
+    for hostile in [
+        "https://a.example/x\n# Owned heading\n",
+        "https://a.example/\n[Reset your password](https://evil.example)",
+        "https://a.example/x\r\n> quote",
+        "https://a.example/x\ttab",
+        "https://a.example/spaced out",
+        "https://a.example/x\\y",
+        "https://a.example/\u{202e}gpj.exe",
+    ] {
+        assert!(
+            !is_web_url(hostile),
+            "{hostile:?} is not a URL this system will emit or navigate to"
+        );
+        assert_eq!(
+            display_domain(hostile),
+            None,
+            "{hostile:?} must not get an attribution chip either"
+        );
+        assert!(
+            matches!(
+                thread.record_source("Fine title", hostile),
+                Err(ThreadError::Unattributable(_))
+            ),
+            "{hostile:?} must not be recordable as a source"
+        );
+        assert!(matches!(
+            thread.record_image("alt", hostile, "https://example.org/page"),
+            Err(ThreadError::Unattributable(_))
+        ));
+        assert!(matches!(
+            thread.record_image("alt", "https://cdn.example.org/a.jpg", hostile),
+            Err(ThreadError::Unattributable(_))
+        ));
+    }
+    assert!(thread.sources().is_empty());
+    assert!(thread.images().is_empty());
+    // Nothing reached the document, so nothing had to be caught at render time.
+    assert!(!render_research_notes(&thread).contains("a.example"));
+}
+
+#[test]
+fn a_thread_stops_accumulating_before_it_becomes_a_scrape() {
+    // The per-fact paraphrase cap bounds one entry; without a bound on the
+    // *number* of entries, a page body filed in 400-character chunks is still a
+    // page body (docs/06 §5, artifact size limits).
+    let mut thread = ResearchThread::new("Ramen");
+    for i in 0..MAX_THREAD_FACTS {
+        thread.record_fact(format!("finding number {i}")).unwrap();
+    }
+    assert_eq!(
+        thread.record_fact("one chunk too many"),
+        Err(ThreadError::FactsFull)
+    );
+    assert_eq!(thread.facts().len(), MAX_THREAD_FACTS);
+
+    let mut thread = ResearchThread::new("Ramen");
+    for i in 0..MAX_THREAD_SOURCES {
+        thread
+            .record_source("page", format!("https://example.org/{i}"))
+            .unwrap();
+    }
+    assert_eq!(
+        thread.record_source("page", "https://example.org/one-more"),
+        Err(ThreadError::SourcesFull)
+    );
+    assert_eq!(thread.sources().len(), MAX_THREAD_SOURCES);
+
+    let mut thread = ResearchThread::new("Ramen");
+    for i in 0..MAX_THREAD_IMAGES {
+        thread
+            .record_image(
+                "bowl",
+                format!("https://cdn.example.org/{i}.jpg"),
+                "https://example.org/page",
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        thread.record_image(
+            "bowl",
+            "https://cdn.example.org/one-more.jpg",
+            "https://example.org/page"
+        ),
+        Err(ThreadError::ImagesFull)
+    );
+    assert_eq!(thread.images().len(), MAX_THREAD_IMAGES);
+}
+
+#[test]
+fn untrusted_labels_are_capped_to_a_label_length() {
+    // A title and an alt text are display labels from a fetched page — bounded
+    // like every other piece of untrusted display text (cf. `MAX_ITEM_TEXT_BYTES`).
+    let mut thread = ResearchThread::new("t".repeat(MAX_TOPIC_CHARS * 3));
+    assert_eq!(thread.topic().chars().count(), MAX_TOPIC_CHARS);
+    thread
+        .record_source(
+            "s".repeat(MAX_SOURCE_TITLE_CHARS * 3),
+            "https://example.org/a",
+        )
+        .unwrap();
+    assert_eq!(
+        thread.sources()[0].title().chars().count(),
+        MAX_SOURCE_TITLE_CHARS
+    );
+    thread
+        .record_image(
+            "a".repeat(MAX_IMAGE_ALT_CHARS * 3),
+            "https://cdn.example.org/a.jpg",
+            "https://example.org/a",
+        )
+        .unwrap();
+    assert_eq!(
+        thread.images()[0].alt().chars().count(),
+        MAX_IMAGE_ALT_CHARS
+    );
 }
 
 #[test]
@@ -297,12 +446,12 @@ fn a_fact_longer_than_a_paraphrase_is_rejected_not_truncated() {
         "page text must not be storable as a fact"
     );
     // A truncated scrape is still a scrape: nothing was kept.
-    assert!(thread.facts.is_empty());
+    assert!(thread.facts().is_empty());
     assert_eq!(thread.record_fact("   "), Err(ThreadError::Empty));
     assert!(thread.record_fact("Kome opens at noon.").is_ok());
     // A thread does not repeat itself.
     assert!(thread.record_fact("Kome opens at noon.").is_ok());
-    assert_eq!(thread.facts.len(), 1);
+    assert_eq!(thread.facts().len(), 1);
 }
 
 #[test]
@@ -312,7 +461,7 @@ fn a_source_without_an_honest_attribution_is_refused() {
         thread.record_source("Evil", "javascript:alert(1)"),
         Err(ThreadError::Unattributable(_))
     ));
-    assert!(thread.sources.is_empty());
+    assert!(thread.sources().is_empty());
     assert!(
         thread
             .record_source("Kome", "https://example.org/kome")
@@ -324,7 +473,7 @@ fn a_source_without_an_honest_attribution_is_refused() {
             .record_source("Kome", "https://example.org/kome")
             .is_ok()
     );
-    assert_eq!(thread.sources.len(), 1);
+    assert_eq!(thread.sources().len(), 1);
 }
 
 #[test]
@@ -340,7 +489,7 @@ fn an_image_cannot_be_recorded_without_its_own_source() {
         thread.record_image("bowl", "data:image/png;base64,AA", "https://example.org/p"),
         Err(ThreadError::Unattributable(_))
     ));
-    assert!(thread.images.is_empty());
+    assert!(thread.images().is_empty());
 }
 
 #[test]
@@ -360,14 +509,14 @@ fn the_gallery_is_capped_at_the_adr_017_limit() {
     let sources: Vec<&str> = thread
         .gallery_images()
         .iter()
-        .map(|i| i.source_url.as_str())
+        .map(|i| i.source_url())
         .collect();
     let mut deduped = sources.clone();
     deduped.sort_unstable();
     deduped.dedup();
     assert_eq!(deduped.len(), sources.len());
     // The full record (what the artifact gets) is not truncated by the cap.
-    assert_eq!(thread.images.len(), GALLERY_IMAGE_CAP + 5);
+    assert_eq!(thread.images().len(), GALLERY_IMAGE_CAP + 5);
 }
 
 #[test]

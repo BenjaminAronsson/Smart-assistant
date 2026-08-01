@@ -32,7 +32,7 @@ pub fn sources_card(
     title: impl Into<String>,
     thread: &ResearchThread,
 ) -> Option<HudCardDto> {
-    let items: Vec<SourceItemDto> = thread.sources.iter().filter_map(source_item).collect();
+    let items: Vec<SourceItemDto> = thread.sources().iter().filter_map(source_item).collect();
     (!items.is_empty()).then(|| HudCardDto::Sources {
         id: id.into(),
         title: title.into(),
@@ -66,8 +66,8 @@ pub fn gallery_card(
 }
 
 fn source_item(source: &SourceRef) -> Option<SourceItemDto> {
-    let domain = display_domain(&source.url)?;
-    let title = source.title.trim();
+    let domain = display_domain(source.url())?;
+    let title = source.title().trim();
     Some(SourceItemDto {
         // A reference with no title still needs something readable; the domain
         // is honest and is already computed.
@@ -76,7 +76,7 @@ fn source_item(source: &SourceRef) -> Option<SourceItemDto> {
         } else {
             title.to_owned()
         },
-        url: source.url.clone(),
+        url: source.url().to_owned(),
         domain,
     })
 }
@@ -84,12 +84,12 @@ fn source_item(source: &SourceRef) -> Option<SourceItemDto> {
 fn gallery_image(image: &ImageRef) -> Option<SourcedImageDto> {
     // Both the image and the page it came from must be real web URLs: the tile
     // paints one and links the other.
-    let source_domain = display_domain(&image.source_url)?;
-    display_domain(&image.url)?;
-    let alt = image.alt.trim();
+    let source_domain = display_domain(image.source_url())?;
+    display_domain(image.url())?;
+    let alt = image.alt().trim();
     Some(SourcedImageDto {
-        url: image.url.clone(),
-        source_url: image.source_url.clone(),
+        url: image.url().to_owned(),
+        source_url: image.source_url().to_owned(),
         source_domain,
         // Alt text is required by the wire type (docs/12 §8). An image that
         // arrived without any gets a plain, honest stand-in rather than an empty
