@@ -57,6 +57,15 @@ const REQUIRED_DEFINITIONS: &[&str] = &[
     "ListCommandResponse",
     "ListEffectDto",
     "PromoteListResponse",
+    // Deep-dive surface (F3b.6, FR-27, ADR-017).
+    "HudCanvasDto",
+    "CanvasActionDto",
+    "SourceHandoffDto",
+    "DeepDiveFindingsRequest",
+    "SourceFindingDto",
+    "ImageFindingDto",
+    "DeepDiveFindingsResponse",
+    "PromoteNotesResponse",
 ];
 
 fn snapshot_path() -> std::path::PathBuf {

@@ -162,6 +162,30 @@ pub enum TransientEvent {
     /// which is why this variant carries no `RunId`.
     #[serde(rename = "media.state")]
     MediaState { state: crate::media::MediaStateDto },
+    /// One canvas instruction for the HUD (F3b.6, FR-27/FR-24, ADR-017): what
+    /// this turn does to the materialization canvas, and the cards that belong
+    /// on it. The **first producer** of [`crate::cards::HudCardDto`] on the wire.
+    ///
+    /// Transient, for the same reason as `media.state` and for one more:
+    ///
+    /// * The canvas is a *current-value* surface, not history. Panels shelve,
+    ///   are dismissible, and expire silently on a TTL (docs/12 §4), so a
+    ///   client that missed an instruction is not missing a fact about the past
+    ///   — and the payload carries the live card set rather than a delta, so
+    ///   the next instruction re-converges it. The durable record of a thread
+    ///   is the Research Notes artifact (FR-08), which has its own read surface.
+    /// * A `DomainEvent` is published from the outbox in the same transaction
+    ///   as the domain change it describes (invariant #6). A deep-dive turn
+    ///   commits no row, so there is no transaction to ride and nothing
+    ///   honest to replay from.
+    ///
+    /// Not run-scoped: a canvas update can come from a list command with no run
+    /// and no session at all, which is why the session id lives (optional)
+    /// inside the payload rather than beside it.
+    #[serde(rename = "hud.canvas")]
+    HudCanvas {
+        canvas: crate::deepdive::HudCanvasDto,
+    },
 }
 
 impl TransientEvent {
@@ -169,6 +193,7 @@ impl TransientEvent {
         match self {
             Self::TextDelta { .. } => "text.delta",
             Self::MediaState { .. } => "media.state",
+            Self::HudCanvas { .. } => "hud.canvas",
         }
     }
 }

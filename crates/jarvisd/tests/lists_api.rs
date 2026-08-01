@@ -286,11 +286,26 @@ impl ArtifactStore for FakeArtifacts {
 
 // --- harness ------------------------------------------------------------
 
+/// Records the canvas instructions the list surface publishes (F3b.6's
+/// `hud.canvas`), so a test can assert the list card actually reaches the wire
+/// rather than only that it can be built.
+#[derive(Default)]
+struct RecordingCanvas {
+    published: Mutex<Vec<jarvis_contracts::deepdive::HudCanvasDto>>,
+}
+
+impl jarvisd::cards::CanvasSink for RecordingCanvas {
+    fn publish(&self, canvas: jarvis_contracts::deepdive::HudCanvasDto) {
+        self.published.lock().unwrap().push(canvas);
+    }
+}
+
 struct Harness {
     app: Router,
     token: String,
     blobs: Arc<FakeBlobs>,
     artifacts: Arc<FakeArtifacts>,
+    canvas: Arc<RecordingCanvas>,
 }
 
 impl Harness {
@@ -357,10 +372,11 @@ async fn harness(seed: Vec<ItemList>) -> Harness {
         Arc::new(FixedClock(at(T0))),
     ));
 
+    let canvas = Arc::new(RecordingCanvas::default());
     let app = router_with(
         AppState::new().with_auth(auth),
         Wiring {
-            lists: Some(ListApi::new(service)),
+            lists: Some(ListApi::new(service, Some(canvas.clone()))),
             ..Wiring::default()
         },
     );
@@ -385,6 +401,7 @@ async fn harness(seed: Vec<ItemList>) -> Harness {
         token,
         blobs,
         artifacts,
+        canvas,
     }
 }
 
@@ -469,6 +486,43 @@ async fn the_grammar_round_trip_works_end_to_end_over_rest() {
     let (status, index) = h.get("/api/v1/lists").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(index["lists"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_list_command_puts_the_list_card_on_the_canvas() {
+    // `to_list_card` had no caller: `card.list` was a registered, schema-
+    // exported contract variant that nothing produced. The deterministic
+    // grammar is its producer — "what's on the shopping list" materializes the
+    // card (docs/12 §2.3), and so does every write, because the card the owner
+    // is looking at has to be the list as it now is.
+    let h = harness(vec![shopping(&[("milk", false)])]).await;
+
+    let (status, _added) = h
+        .post(
+            "/api/v1/lists/command",
+            serde_json::json!({ "utterance": "what's on the shopping list" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let published = h.canvas.published.lock().unwrap();
+    assert_eq!(published.len(), 1);
+    let instruction = &published[0];
+    // A list command is not a topic change: it must never shelve the canvas it
+    // interrupts (FR-24), and it belongs to no session — the grammar has no run
+    // and no model in it (ADR-024).
+    assert_eq!(
+        instruction.action,
+        jarvis_contracts::deepdive::CanvasActionDto::Extend
+    );
+    assert!(instruction.session_id.is_none());
+    assert_eq!(instruction.cards.len(), 1);
+    let value = serde_json::to_value(&instruction.cards[0]).unwrap();
+    assert_eq!(value["type"], "card.list");
+    // The list id rides in its own field: the check-off tap posts against it,
+    // and a card id is a presentation handle, never an address.
+    assert_eq!(value["listId"], list_id().to_string());
+    assert_eq!(value["list"]["items"][0]["text"], "milk");
 }
 
 #[tokio::test]

@@ -13,6 +13,7 @@
 //!    and a thread that cannot be audited is not persisted at all.
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, UNIX_EPOCH};
 
 use jarvis_domain::artifact::{ArtifactManifest, ArtifactVersion};
 use jarvis_domain::audit::AuditEvent;
@@ -23,6 +24,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::deepdive::{CanvasAction, DeepDiveError, DeepDiveService, ThreadState};
 use crate::ports::{ArtifactStore, BlobStore, BlobStoreError, RepositoryError};
+use crate::testing::ManualClock;
 
 // --- fake ports -----------------------------------------------------------
 
@@ -128,6 +130,11 @@ impl ArtifactStore for FakeArtifacts {
     }
 }
 
+/// The instant every promotion audit in this file is pinned to. A wall clock
+/// would make the audit row's `occurred_at` unassertable, which is why the
+/// service takes the [`Clock`](crate::orchestrator::Clock) port.
+const AUDIT_AT_UNIX: u64 = 1_700_000_000;
+
 fn service(promote_after: u32) -> (DeepDiveService, Arc<FakeBlobs>, Arc<FakeArtifacts>) {
     let blobs = Arc::new(FakeBlobs::default());
     let artifacts = Arc::new(FakeArtifacts::default());
@@ -136,6 +143,7 @@ fn service(promote_after: u32) -> (DeepDiveService, Arc<FakeBlobs>, Arc<FakeArti
         artifacts.clone(),
         promote_after,
         "user:owner",
+        Arc::new(ManualClock::at_unix(AUDIT_AT_UNIX)),
     );
     (svc, blobs, artifacts)
 }
@@ -380,6 +388,13 @@ async fn promoting_writes_a_versioned_audited_markdown_artifact() {
     let audits = artifacts.audits.lock().unwrap();
     assert_eq!(audits.len(), 1);
     assert_eq!(audits[0].event_type, "artifact.created");
+    // The timestamp comes from the injected clock, not the wall clock — an
+    // audit row is evidence, and evidence with an unassertable time is evidence
+    // no test can check (rust-reviewer R6).
+    assert_eq!(
+        audits[0].occurred_at,
+        UNIX_EPOCH + Duration::from_secs(AUDIT_AT_UNIX)
+    );
     assert_eq!(audits[0].target, format!("artifact:{}", artifact_id()));
     // The payload is built from structural values only — counts, a constant
     // media type, a hex hash. The thread's *topic* and its facts are Z2/Z4 free
@@ -435,7 +450,13 @@ async fn an_artifact_that_cannot_be_audited_is_not_persisted() {
         refuse: true,
         ..FakeArtifacts::default()
     });
-    let svc = DeepDiveService::new(blobs, artifacts.clone(), 3, "user:owner");
+    let svc = DeepDiveService::new(
+        blobs,
+        artifacts.clone(),
+        3,
+        "user:owner",
+        Arc::new(ManualClock::at_unix(AUDIT_AT_UNIX)),
+    );
     let mut state = started();
     state.thread.record_fact("Kome opens at noon.").unwrap();
 

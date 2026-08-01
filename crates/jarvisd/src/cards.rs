@@ -20,7 +20,19 @@
 //! accident (ADR-017 §3 — the browser worker opens the real page instead).
 
 use jarvis_contracts::cards::{HudCardDto, SourceItemDto, SourcedImageDto};
+use jarvis_contracts::deepdive::HudCanvasDto;
 use jarvis_domain::deepdive::{ImageRef, ResearchThread, SourceRef, display_domain};
+
+/// Where a produced canvas instruction goes (F3b.6). Implemented by
+/// [`crate::ws::WsHub`], which wraps it in the transient `hud.canvas` envelope;
+/// a test substitutes a recorder.
+///
+/// Narrow on purpose: a producer can publish a canvas instruction and do
+/// nothing else with the hub. Synchronous because a broadcast to a bounded
+/// channel is — publishing must never be a place a request can block.
+pub trait CanvasSink: Send + Sync {
+    fn publish(&self, canvas: HudCanvasDto);
+}
 
 /// Project the pages a thread consulted into a sources card (docs/12 §2.3:
 /// "title + domain + link each").

@@ -122,6 +122,22 @@ pub struct MediaType(String);
 pub struct MediaTypeError(String);
 
 impl MediaType {
+    /// `text/markdown` — the media type of every promoted document (a Research
+    /// Notes thread, FR-27/ADR-017; a promoted list, FR-34/ADR-024).
+    ///
+    /// A named constructor rather than a `&str` each caller re-parses: parsing a
+    /// literal that is known-good forces every promotion path to carry an
+    /// `.expect()` for a case that cannot occur, and `.expect()` in a library
+    /// crate is a lint the project does not want to keep explaining. The value
+    /// is host-authored and never derived from anything untrusted, which is the
+    /// property that actually matters here.
+    ///
+    /// `MediaType` wraps a `String`, so this cannot be a `const`; the round-trip
+    /// against [`FromStr`] is asserted by a test instead.
+    pub fn markdown() -> MediaType {
+        MediaType("text/markdown".to_owned())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -513,6 +529,15 @@ mod tests {
             "  text/plain  ".parse::<MediaType>().unwrap().as_str(),
             "text/plain"
         );
+    }
+
+    #[test]
+    fn the_markdown_constant_is_exactly_what_parsing_the_literal_yields() {
+        // This is what lets every promotion path drop its `.expect()`: the
+        // named constructor and the validated parse agree, asserted once here
+        // rather than re-proved by a panic at each call site.
+        assert_eq!(MediaType::markdown(), "text/markdown".parse().unwrap());
+        assert_eq!(MediaType::markdown().as_str(), "text/markdown");
     }
 
     // --- Capability validation --------------------------------------------

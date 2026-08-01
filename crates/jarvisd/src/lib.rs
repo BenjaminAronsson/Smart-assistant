@@ -8,6 +8,7 @@ pub mod artifacts;
 pub mod auth;
 pub mod cards;
 pub mod config;
+pub mod deepdive;
 pub mod display;
 pub mod lists;
 pub mod location;

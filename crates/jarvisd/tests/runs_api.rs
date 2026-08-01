@@ -12,13 +12,16 @@ use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use jarvis_application::orchestrator::{CheckpointError, Checkpointer};
 use jarvis_application::ports::{
-    CreateOutcome, IdentityStore, MessageStore, RepositoryError, RunStore, RunView, SessionStore,
+    BlobStoreError, CreateOutcome, IdentityStore, MessageStore, RepositoryError, RunStore, RunView,
+    SessionStore,
 };
 use jarvis_application::testing::FakeModel;
+use jarvis_domain::artifact::{ArtifactManifest, ArtifactVersion};
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::conversations::{Message, Session};
+use jarvis_domain::grants::Sha256;
 use jarvis_domain::identity::Device;
-use jarvis_domain::ids::{RunId, SessionId};
+use jarvis_domain::ids::{ArtifactId, RunId, SessionId};
 use jarvis_domain::run::{Run, RunBudget, RunEvent};
 use jarvis_infra::dispatcher::OutboxRecord;
 use jarvisd::api::{AppState, RunWiring, Wiring, router_with};
@@ -181,18 +184,80 @@ fn terminal_view() -> RunView {
     }
 }
 
-async fn app_with_token(model: FakeModel, run_store: Arc<FakeRunStore>) -> (Router, String) {
+/// Blob + artifact doubles for the deep-dive wiring (F3b.6). `latest` always
+/// answers `None`, which is the first-promotion path: re-promotion (versioning
+/// the same document rather than minting a rival) is asserted where the
+/// versioning logic lives, in the `jarvis-application` deep-dive tests.
+#[derive(Default)]
+struct FakeBlobs;
+
+#[async_trait::async_trait]
+impl jarvis_application::ports::BlobStore for FakeBlobs {
+    async fn put(&self, bytes: &[u8]) -> Result<Sha256, BlobStoreError> {
+        let mut key = [0u8; 32];
+        key[31] = bytes.len() as u8;
+        Ok(Sha256::from_bytes(key))
+    }
+    async fn get(&self, _hash: &Sha256) -> Result<Option<Vec<u8>>, BlobStoreError> {
+        Ok(None)
+    }
+    async fn contains(&self, _hash: &Sha256) -> Result<bool, BlobStoreError> {
+        Ok(false)
+    }
+}
+
+#[derive(Default)]
+struct FakeArtifacts {
+    versions: Mutex<Vec<ArtifactManifest>>,
+}
+
+#[async_trait::async_trait]
+impl jarvis_application::ports::ArtifactStore for FakeArtifacts {
+    async fn create_version(
+        &self,
+        manifest: &ArtifactManifest,
+        _audit: &AuditEvent,
+    ) -> Result<(), RepositoryError> {
+        self.versions.lock().unwrap().push(manifest.clone());
+        Ok(())
+    }
+    async fn get(
+        &self,
+        _id: &ArtifactId,
+        _version: ArtifactVersion,
+    ) -> Result<Option<ArtifactManifest>, RepositoryError> {
+        Ok(None)
+    }
+    async fn latest(&self, _id: &ArtifactId) -> Result<Option<ArtifactManifest>, RepositoryError> {
+        Ok(None)
+    }
+    async fn list_versions(
+        &self,
+        _id: &ArtifactId,
+    ) -> Result<Vec<ArtifactManifest>, RepositoryError> {
+        Ok(Vec::new())
+    }
+}
+
+/// The router, a live device token, and the hub the deep-dive router publishes
+/// canvas instructions on (F3b.6) — one hub, shared with the run surface, so a
+/// test can watch what a real message submission actually broadcasts.
+async fn app_with_token(
+    model: FakeModel,
+    run_store: Arc<FakeRunStore>,
+) -> (Router, String, Arc<WsHub>) {
     let identity = Arc::new(FakeIdentityStore::default());
     let auth = AuthState::bootstrap(identity).await;
     let code = auth.current_pairing_code().unwrap();
 
     let messages = Arc::new(FakeMessageStore::default());
+    let hub = WsHub::new();
     let engine = RunEngine::new(
         Arc::new(model),
         Arc::new(PassthroughAssembler),
         Arc::new(NoopCheckpointer),
         messages.clone(),
-        WsHub::new(),
+        hub.clone(),
         Arc::new(SystemClock),
         CancellationToken::new(),
         None, // text-only path: the run REST surface tests wire no tool plane.
@@ -204,6 +269,16 @@ async fn app_with_token(model: FakeModel, run_store: Arc<FakeRunStore>) -> (Rout
         1,
     )
     .expect("lazy pool");
+    let deepdive = jarvisd::deepdive::DeepDiveApi::new(
+        Arc::new(jarvis_application::deepdive::DeepDiveService::new(
+            Arc::new(FakeBlobs),
+            Arc::new(FakeArtifacts::default()),
+            3,
+            "user:owner",
+            Arc::new(SystemClock),
+        )),
+        hub.clone(),
+    );
     let run_api = RunApi::new(
         Arc::new(FakeSessionStore {
             known: SESSION.parse().unwrap(),
@@ -213,9 +288,10 @@ async fn app_with_token(model: FakeModel, run_store: Arc<FakeRunStore>) -> (Rout
         Arc::new(EmptyEventReader),
         engine,
         jarvisd::approvals::JarvisApprovalGate::new(pool),
+        Some(deepdive.clone()),
     );
     let ws = WsState {
-        hub: WsHub::new(),
+        hub: hub.clone(),
         events: Arc::new(EmptyEventReader),
         shutdown: CancellationToken::new(),
     };
@@ -224,6 +300,7 @@ async fn app_with_token(model: FakeModel, run_store: Arc<FakeRunStore>) -> (Rout
         AppState::new().with_auth(auth.clone()),
         Wiring {
             runs: Some(RunWiring { runs: run_api, ws }),
+            deepdive: Some(deepdive),
             ..Wiring::default()
         },
     );
@@ -243,7 +320,7 @@ async fn app_with_token(model: FakeModel, run_store: Arc<FakeRunStore>) -> (Rout
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let token = body["deviceToken"].as_str().unwrap().to_owned();
-    (app, token)
+    (app, token, hub)
 }
 
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, serde_json::Value) {
@@ -270,7 +347,7 @@ fn post_message(token: &str, session: &str, body: &str) -> Request<Body> {
 
 #[tokio::test]
 async fn run_routes_require_a_token() {
-    let (app, _token) = app_with_token(FakeModel::streaming(["hi"]), Arc::default()).await;
+    let (app, _token, _hub) = app_with_token(FakeModel::streaming(["hi"]), Arc::default()).await;
     for request in [
         Request::post(format!("/api/v1/sessions/{SESSION}/messages"))
             .header(header::CONTENT_TYPE, "application/json")
@@ -285,6 +362,14 @@ async fn run_routes_require_a_token() {
         Request::get(format!("/api/v1/sessions/{SESSION}/timeline"))
             .body(Body::empty())
             .unwrap(),
+        // The deep-dive surface is authenticated like every other one (F3b.6).
+        Request::post(format!("/api/v1/sessions/{SESSION}/deepdive/findings"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{}"))
+            .unwrap(),
+        Request::post(format!("/api/v1/sessions/{SESSION}/deepdive/promote"))
+            .body(Body::empty())
+            .unwrap(),
     ] {
         let (status, body) = send(&app, request).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -295,7 +380,7 @@ async fn run_routes_require_a_token() {
 #[tokio::test]
 async fn submit_message_acknowledges_a_received_run() {
     let runs = Arc::new(FakeRunStore::default());
-    let (app, token) = app_with_token(FakeModel::streaming(["hello"]), runs.clone()).await;
+    let (app, token, _hub) = app_with_token(FakeModel::streaming(["hello"]), runs.clone()).await;
 
     let (status, ack) = send(
         &app,
@@ -316,7 +401,7 @@ async fn submit_message_acknowledges_a_received_run() {
 
 #[tokio::test]
 async fn submit_to_unknown_session_is_404() {
-    let (app, token) = app_with_token(FakeModel::streaming(["hi"]), Arc::default()).await;
+    let (app, token, _hub) = app_with_token(FakeModel::streaming(["hi"]), Arc::default()).await;
     let (status, body) = send(
         &app,
         post_message(
@@ -332,7 +417,7 @@ async fn submit_to_unknown_session_is_404() {
 
 #[tokio::test]
 async fn empty_content_is_a_validation_error() {
-    let (app, token) = app_with_token(FakeModel::streaming(["hi"]), Arc::default()).await;
+    let (app, token, _hub) = app_with_token(FakeModel::streaming(["hi"]), Arc::default()).await;
     let (status, body) = send(
         &app,
         post_message(
@@ -348,7 +433,7 @@ async fn empty_content_is_a_validation_error() {
 
 #[tokio::test]
 async fn get_unknown_run_is_404() {
-    let (app, token) = app_with_token(FakeModel::streaming(["hi"]), Arc::default()).await;
+    let (app, token, _hub) = app_with_token(FakeModel::streaming(["hi"]), Arc::default()).await;
     let (status, body) = send(
         &app,
         Request::get(format!("/api/v1/runs/{TERMINAL_RUN}"))
@@ -368,7 +453,7 @@ async fn get_run_projects_the_domain_state() {
         .lock()
         .unwrap()
         .insert(TERMINAL_RUN.to_owned(), terminal_view());
-    let (app, token) = app_with_token(FakeModel::streaming(["hi"]), runs).await;
+    let (app, token, _hub) = app_with_token(FakeModel::streaming(["hi"]), runs).await;
 
     let (status, dto) = send(
         &app,
@@ -393,7 +478,7 @@ async fn cancel_active_run_is_accepted_but_terminal_is_conflict() {
         .unwrap()
         .insert(TERMINAL_RUN.to_owned(), terminal_view());
     // A hanging model keeps the submitted run active in the registry.
-    let (app, token) = app_with_token(FakeModel::hangs_after(["thinking"]), runs).await;
+    let (app, token, _hub) = app_with_token(FakeModel::hangs_after(["thinking"]), runs).await;
 
     // Start a run and cancel it while it is active → 202.
     let (_s, ack) = send(
@@ -438,4 +523,195 @@ async fn cancel_active_run_is_accepted_but_terminal_is_conflict() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// --- deep-dive wiring (F3b.6, FR-27, ADR-017) ------------------------------
+
+/// Drain the hub for the `hud.canvas` payloads broadcast so far, checking the
+/// envelope discipline on the way past: the discriminator and the contract
+/// version are the hub's job, never the payload author's (docs/05 §3).
+fn canvases(
+    rx: &mut tokio::sync::broadcast::Receiver<Arc<jarvis_contracts::envelope::EventEnvelope>>,
+) -> Vec<serde_json::Value> {
+    let mut seen = Vec::new();
+    while let Ok(envelope) = rx.try_recv() {
+        if envelope.event_type == "hud.canvas" {
+            assert_eq!(envelope.v, jarvis_contracts::CONTRACT_VERSION);
+            assert_eq!(
+                envelope.channel,
+                jarvis_contracts::envelope::Channel::Session
+            );
+            // The payload carries the event's own fields with the tag split
+            // out onto the envelope, so the instruction sits under `canvas` —
+            // the same shape as `media.state`'s `state`.
+            seen.push(envelope.payload["canvas"].clone());
+        }
+    }
+    seen
+}
+
+#[tokio::test]
+async fn submitting_a_message_routes_the_deep_dive_turn_onto_the_canvas() {
+    // The finding this test exists for: F3b.6 must be reachable from the
+    // running system, not only from its own unit tests. An ordinary
+    // `POST /sessions/{id}/messages` — the normal turn on the Run Spine,
+    // docs/12 §2.5 — has to produce a canvas instruction on the WS stream.
+    let (app, token, hub) = app_with_token(FakeModel::streaming(["hi"]), Arc::default()).await;
+    let mut rx = hub.subscribe();
+
+    let (status, _ack) = send(
+        &app,
+        post_message(
+            &token,
+            SESSION,
+            r#"{"content":[{"type":"text","text":"ramen places near Kreuzberg"}]}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    let first = canvases(&mut rx);
+    assert_eq!(first.len(), 1, "the turn published one canvas instruction");
+    // Nothing to continue yet, so the first query of a session is a new topic.
+    assert_eq!(first[0]["action"], "shelve");
+    assert_eq!(first[0]["sessionId"], SESSION);
+
+    // A follow-up on the same thread EXTENDS: it must not shelve the canvas the
+    // answer is sitting on (FR-27 — the whole point of the feature).
+    let (status, _ack) = send(
+        &app,
+        post_message(
+            &token,
+            SESSION,
+            r#"{"content":[{"type":"text","text":"tell me more about that"}]}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let second = canvases(&mut rx);
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0]["action"], "extend");
+}
+
+#[tokio::test]
+async fn filing_findings_puts_the_sources_card_on_the_wire() {
+    let (app, token, hub) = app_with_token(FakeModel::streaming(["hi"]), Arc::default()).await;
+
+    let (status, _ack) = send(
+        &app,
+        post_message(
+            &token,
+            SESSION,
+            r#"{"content":[{"type":"text","text":"ramen places near Kreuzberg"}]}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    let mut rx = hub.subscribe();
+    let (status, body) = send(
+        &app,
+        Request::post(format!("/api/v1/sessions/{SESSION}/deepdive/findings"))
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "facts": ["Kome opens at noon and is rated 4.7."],
+                    "sources": [
+                        { "title": "Ramen — Wikipedia", "url": "https://en.wikipedia.org/wiki/Ramen" },
+                        { "title": "Definitely fine", "url": "javascript:alert(1)" }
+                    ],
+                    "images": [{
+                        "alt": "a bowl of shoyu ramen",
+                        "url": "https://cdn.example/one.jpg",
+                        "sourceUrl": "https://kome.example/menu"
+                    }]
+                })
+                .to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["facts"], 1);
+    assert_eq!(body["sources"], 1);
+    assert_eq!(body["images"], 1);
+    // The `javascript:` URL was refused by the recorder, not filed (B1).
+    assert_eq!(body["refused"].as_array().unwrap().len(), 1);
+
+    let published = canvases(&mut rx);
+    assert_eq!(published.len(), 1);
+    let cards = published[0]["cards"].as_array().unwrap();
+    let types: Vec<&str> = cards.iter().map(|c| c["type"].as_str().unwrap()).collect();
+    assert_eq!(types, ["card.sources", "card.gallery"]);
+    // The chip label is computed server-side from the parsed host, and the
+    // refused URL is nowhere on the wire.
+    let items = cards[0]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["domain"], "en.wikipedia.org");
+    assert!(!published[0].to_string().contains("javascript:"));
+}
+
+#[tokio::test]
+async fn promoting_a_thread_with_nothing_in_it_is_refused_with_its_own_code() {
+    let (app, token, _hub) = app_with_token(FakeModel::streaming(["hi"]), Arc::default()).await;
+    let (status, body) = send(
+        &app,
+        Request::post(format!("/api/v1/sessions/{SESSION}/deepdive/promote"))
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "deepdive.nothing_to_promote");
+}
+
+#[tokio::test]
+async fn accepting_the_offer_writes_the_document_over_rest() {
+    // Bullet 4 of the wiring end to end: the offer is an offer, and *accepting*
+    // it is what writes the versioned markdown artifact through the F3a.2 ports.
+    let (app, token, _hub) = app_with_token(FakeModel::streaming(["hi"]), Arc::default()).await;
+
+    let (status, _ack) = send(
+        &app,
+        post_message(
+            &token,
+            SESSION,
+            r#"{"content":[{"type":"text","text":"ramen places near Kreuzberg"}]}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    let (status, _filed) = send(
+        &app,
+        Request::post(format!("/api/v1/sessions/{SESSION}/deepdive/findings"))
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "facts": ["Kome opens at noon and is rated 4.7."],
+                    "sources": [{ "title": "Guide", "url": "https://guide.example/ramen" }]
+                })
+                .to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, promoted) = send(
+        &app,
+        Request::post(format!("/api/v1/sessions/{SESSION}/deepdive/promote"))
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{promoted}");
+    assert_eq!(promoted["version"], 1);
+    assert_eq!(promoted["firstPromotion"], true);
+    assert!(promoted["artifactId"].as_str().unwrap().len() == 26);
+    assert!(promoted["sha256"].as_str().unwrap().len() == 64);
 }

@@ -33,6 +33,7 @@ use jarvis_application::lists::{
     CommandEffect, CommandIds, CommandOutcome, ListsError, ListsService,
 };
 use jarvis_contracts::cards::HudCardDto;
+use jarvis_contracts::deepdive::{CanvasActionDto, HudCanvasDto};
 use jarvis_contracts::errors::ErrorCode;
 use jarvis_contracts::lists::{
     AddListItemRequest, CheckListItemRequest, CreateListRequest, ListCommandRequest,
@@ -43,6 +44,7 @@ use jarvis_domain::lists::{ItemList, ItemText, ListName, parse_list_command};
 use tokio_util::sync::CancellationToken;
 
 use crate::auth::DeviceContext;
+use crate::cards::CanvasSink;
 use crate::problem::problem;
 
 /// Project a domain list onto the wire.
@@ -53,6 +55,11 @@ pub fn to_list_dto(list: &ItemList) -> ListDto {
 /// Build the HUD list card for a list (docs/12 §2.3, FR-34). The card id is a
 /// presentation handle derived from the list id; the list id itself rides in its
 /// own field because the check-off tap posts against it.
+///
+/// Deriving the id from the list id is what makes re-publishing safe: "add
+/// milk" and the check-off that follows produce the *same* card, so a client
+/// applying the canvas set upsert-by-id shows one live list rather than a pile
+/// of stale copies.
 pub fn to_list_card(list: &ItemList) -> HudCardDto {
     HudCardDto::List {
         id: format!("list-{}", list.id()),
@@ -65,11 +72,39 @@ pub fn to_list_card(list: &ItemList) -> HudCardDto {
 #[derive(Clone)]
 pub struct ListApi {
     service: Arc<ListsService>,
+    /// Where the list card goes (F3b.6's `hud.canvas` event). `None` mounts the
+    /// REST surface with no HUD projection at all — the stricter default for a
+    /// host that wired lists but no canvas.
+    canvas: Option<Arc<dyn CanvasSink>>,
 }
 
 impl ListApi {
-    pub fn new(service: Arc<ListsService>) -> Self {
-        Self { service }
+    pub fn new(service: Arc<ListsService>, canvas: Option<Arc<dyn CanvasSink>>) -> Self {
+        Self { service, canvas }
+    }
+
+    /// Put a list on the materialization canvas (docs/12 §2.3: the list card is
+    /// "the face of *what's on the shopping list*").
+    ///
+    /// Always `extend`, never `shelve`: adding milk to a list in the middle of
+    /// a deep dive is not a topic change, and shelving the canvas it interrupts
+    /// would throw away work the owner did not ask to put down (FR-24).
+    ///
+    /// `session_id` is `None` because the deterministic list grammar has no
+    /// session — it is one owner talking to their own device (ADR-024), with no
+    /// run and no model in the path.
+    fn show(&self, list: &ItemList) {
+        let Some(canvas) = &self.canvas else {
+            return;
+        };
+        canvas.publish(HudCanvasDto {
+            session_id: None,
+            action: CanvasActionDto::Extend,
+            label: list.name().as_str().to_owned(),
+            cards: vec![to_list_card(list)],
+            offer: None,
+            handoff: None,
+        });
     }
 }
 
@@ -227,6 +262,10 @@ pub async fn command(
         CommandEffect::CheckedOff(id) => (ListEffectDto::CheckedOff, Some(id)),
         CommandEffect::Read => (ListEffectDto::Read, None),
     };
+    // "What's on the shopping list" materializes the list card; so does every
+    // write, because the card the owner is looking at must be the list as it now
+    // is (docs/12 §2.3, check-off by voice or tap).
+    api.show(&list);
     Ok(Json(ListCommandResponse {
         list: to_list_dto(&list),
         effect,

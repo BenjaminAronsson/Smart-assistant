@@ -129,6 +129,22 @@ pub struct ToolId(String);
 pub struct ToolIdParseError(String);
 
 impl ToolId {
+    /// `browser.navigate` — the browser worker's read-only navigation action
+    /// (F3a.5), named here because the deep-dive source handoff (FR-27,
+    /// ADR-017 §3) has to *propose* it and `jarvis-application` may not depend
+    /// on an adapter crate to learn its name.
+    ///
+    /// **Naming a tool is not authorizing it.** This value confers nothing: the
+    /// id still has to be *registered* with host policy for `policy::evaluate`
+    /// to do anything but reject a proposal carrying it (invariant #1). A named
+    /// constructor rather than a re-parsed literal for the same reason as
+    /// [`crate::artifact::MediaType::markdown`] — a `String` newtype cannot be a
+    /// `const`, and the round-trip is asserted by a test instead of by an
+    /// `.expect()` at every call site.
+    pub fn browser_navigate() -> ToolId {
+        ToolId("browser.navigate".to_owned())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }

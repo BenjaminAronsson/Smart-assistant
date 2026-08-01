@@ -117,6 +117,10 @@ pub struct Wiring {
     pub timers: Option<crate::timers::TimerApi>,
     /// Lists and quick notes (F3b.8, FR-34, ADR-024).
     pub lists: Option<crate::lists::ListApi>,
+    /// Deep-dive threads (F3b.6, FR-27, ADR-017). The same handle is given to
+    /// [`crate::runs::RunApi`], which routes the turn on the message path; this
+    /// mounts the findings and promotion entry points.
+    pub deepdive: Option<crate::deepdive::DeepDiveApi>,
     pub web_assets: Option<std::path::PathBuf>,
 }
 
@@ -138,6 +142,7 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
         maps,
         timers,
         lists,
+        deepdive,
         web_assets,
     } = wiring;
     // Health and pair are unauthenticated by design but loopback-only:
@@ -254,6 +259,20 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
                     .route(
                         "/api/v1/lists/{id}/promote",
                         axum::routing::post(crate::lists::promote),
+                    )
+                    .with_state(api),
+            );
+        }
+        if let Some(api) = deepdive {
+            protected = protected.merge(
+                Router::new()
+                    .route(
+                        "/api/v1/sessions/{id}/deepdive/findings",
+                        axum::routing::post(crate::deepdive::record_findings),
+                    )
+                    .route(
+                        "/api/v1/sessions/{id}/deepdive/promote",
+                        axum::routing::post(crate::deepdive::promote),
                     )
                     .with_state(api),
             );

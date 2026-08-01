@@ -97,6 +97,13 @@ pub enum ErrorCode {
     /// resolvable here — the caller falls back to the normal run path.
     #[serde(rename = "list.unrecognized_command")]
     ListUnrecognizedCommand,
+    /// The deep-dive thread has accumulated nothing worth keeping, so there is
+    /// no Research Notes document to write (F3b.6, FR-27/ADR-017). 409: the
+    /// request was well-formed and retrying it unchanged will not help — the
+    /// thread has to consult something first. Promoting a bare heading would
+    /// mint a versioned artifact that says nothing.
+    #[serde(rename = "deepdive.nothing_to_promote")]
+    DeepDiveNothingToPromote,
 }
 
 /// RFC 9457 problem details body plus the stable machine `code` (docs/05 §2).

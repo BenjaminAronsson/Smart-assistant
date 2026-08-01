@@ -36,7 +36,6 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use jarvis_domain::artifact::{
     ArtifactContent, ArtifactKind, ArtifactManifest, ArtifactSource, ArtifactVersion,
@@ -52,16 +51,8 @@ use jarvis_domain::location::Sensitivity;
 use jarvis_domain::tools::{CanonicalValue, ToolId, ToolProposal};
 use tokio_util::sync::CancellationToken;
 
+use crate::orchestrator::Clock;
 use crate::ports::{ArtifactStore, BlobStore, RepositoryError};
-
-/// The media type of a Research Notes document. A constant, never derived from
-/// anything untrusted.
-const RESEARCH_NOTES_MEDIA_TYPE: &str = "text/markdown";
-
-/// The tool the source handoff proposes (F3a.5). Naming it here is not an
-/// authorization: the id has to be *registered* with a policy for
-/// `policy::evaluate` to do anything but reject it.
-const BROWSER_NAVIGATE: &str = "browser.navigate";
 
 /// What the HUD must do with the materialization canvas for this turn
 /// (docs/12 §2.5/§4). Exhaustive and deliberately small: a third answer would
@@ -204,6 +195,11 @@ pub struct DeepDiveService {
     promote_after: u32,
     /// Who the `artifact.created` audit names.
     actor: String,
+    /// The audit timestamp comes from the [`Clock`] port, never from
+    /// `SystemTime::now()` — same discipline as [`crate::lists::ListsService`].
+    /// An audit row is evidence (invariant #6), and evidence whose time cannot
+    /// be pinned in a test is evidence nothing asserts.
+    clock: Arc<dyn Clock>,
 }
 
 impl DeepDiveService {
@@ -212,13 +208,21 @@ impl DeepDiveService {
         artifacts: Arc<dyn ArtifactStore>,
         promote_after: u32,
         actor: impl Into<String>,
+        clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             blobs,
             artifacts,
             promote_after,
             actor: actor.into(),
+            clock,
         }
+    }
+
+    /// `[ui] deepdive_promote_after` as configured — exposed so the surface that
+    /// wires this service can report the threshold it is running with.
+    pub fn promote_after(&self) -> u32 {
+        self.promote_after
     }
 
     /// Route one turn against the live thread.
@@ -291,7 +295,7 @@ impl DeepDiveService {
         );
         Some(SourceHandoff {
             proposal: ToolProposal {
-                tool_id: browser_navigate_id(),
+                tool_id: ToolId::browser_navigate(),
                 arguments: CanonicalValue::Object(arguments),
             },
             url: source.url().to_owned(),
@@ -347,11 +351,10 @@ impl DeepDiveService {
             url: s.url().to_owned(),
         }));
 
+        let media_type = MediaType::markdown();
         let content = ArtifactContent {
             sha256,
-            media_type: RESEARCH_NOTES_MEDIA_TYPE
-                .parse::<MediaType>()
-                .expect("text/markdown is a valid media type"),
+            media_type: media_type.clone(),
             kind: ArtifactKind::MarkdownHtml,
             sources,
             sensitivity: Sensitivity::Normal,
@@ -373,7 +376,7 @@ impl DeepDiveService {
         };
 
         let audit = AuditEvent {
-            occurred_at: SystemTime::now(),
+            occurred_at: self.clock.now(),
             actor: self.actor.clone(),
             event_type: "artifact.created".to_owned(),
             target: format!("artifact:{}", manifest.id()),
@@ -383,7 +386,8 @@ impl DeepDiveService {
             // and this row is assembled by formatting, so they stay out of it;
             // the document is where that content belongs.
             payload_json: format!(
-                r#"{{"kind":"markdown_html","mediaType":"{RESEARCH_NOTES_MEDIA_TYPE}","sha256":"{sha256_hex}","facts":{},"sources":{},"images":{}}}"#,
+                r#"{{"kind":"markdown_html","mediaType":"{}","sha256":"{sha256_hex}","facts":{},"sources":{},"images":{}}}"#,
+                media_type.as_str(),
                 state.thread.facts().len(),
                 state.thread.sources().len(),
                 state.thread.images().len()
@@ -400,12 +404,6 @@ impl DeepDiveService {
         state.promoted = Some(promoted.artifact_id.clone());
         Ok(promoted)
     }
-}
-
-fn browser_navigate_id() -> ToolId {
-    BROWSER_NAVIGATE
-        .parse()
-        .expect("browser.navigate is a valid tool id")
 }
 
 /// The spoken offer (docs/12 §2.5: Jarvis's normal voice, one line, never a

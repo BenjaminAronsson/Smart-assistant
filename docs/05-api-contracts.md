@@ -224,3 +224,4 @@ and grows additively. HTTP mapping via RFC 9457 problem details.
 | `timer.stale` | Timer changed between read and decision (fired, or another device answered); retryable after refresh | 409 |
 | `list.full` | The list is at its item bound; retrying unchanged will not help — the owner removes or checks something off, or promotes the list to an artifact (FR-34) | 409 |
 | `list.unrecognized_command` | The deterministic grammar refused rather than guessing which list the owner meant (FR-34, ADR-024/ADR-016); the body was valid, its *content* was not resolvable here, so the caller falls back to the normal run path | 422 |
+| `deepdive.nothing_to_promote` | The deep-dive thread has consulted nothing yet, so there is no Research Notes document to write (FR-27, ADR-017); promoting a bare heading would mint a versioned artifact that says nothing | 409 |

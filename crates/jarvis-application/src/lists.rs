@@ -46,7 +46,9 @@ use tokio_util::sync::CancellationToken;
 use crate::orchestrator::Clock;
 use crate::ports::{ArtifactStore, BlobStore, ListStore, RepositoryError};
 
-/// Media type of a promoted list document.
+/// Media type of a promoted list document. The value itself comes from
+/// [`MediaType::markdown`] — this string exists only for the audit payload,
+/// which is assembled by formatting.
 pub const LIST_DOCUMENT_MEDIA_TYPE: &str = "text/markdown";
 
 /// Why a lists use case could not complete.
@@ -518,9 +520,7 @@ impl ListsService {
         let sha256_hex = sha256.to_string();
         let content = ArtifactContent {
             sha256,
-            media_type: LIST_DOCUMENT_MEDIA_TYPE
-                .parse::<MediaType>()
-                .expect("text/markdown is a valid media type"),
+            media_type: MediaType::markdown(),
             kind: ArtifactKind::MarkdownHtml,
             sources: vec![ArtifactSource::Run(run_id.clone())],
             // A list is personal context (a shopping list, a packing list, a
@@ -631,6 +631,14 @@ mod tests {
     use std::sync::Mutex;
 
     const ACTOR: &str = "device:01ARZ3NDEKTSV4RRFFQ69G5FAV";
+
+    #[test]
+    fn the_audit_media_type_string_matches_the_one_actually_written() {
+        // The manifest takes `MediaType::markdown()` and the audit payload is
+        // assembled from this string; they must not drift into saying two
+        // different things about the same document.
+        assert_eq!(LIST_DOCUMENT_MEDIA_TYPE, MediaType::markdown().as_str());
+    }
 
     fn list_id(n: u8) -> ListId {
         format!("01J8Z0000000000000000000{n:02}").parse().unwrap()

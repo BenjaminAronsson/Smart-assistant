@@ -228,10 +228,24 @@ export class HudStateService {
     this.touchCards(next);
   }
 
-  /** Extend the live canvas — a continuation appends, it never shelves (FR-24,
-   * docs/12 §2.5). */
+  /**
+   * Extend the live canvas — a continuation appends, it never shelves (FR-24,
+   * docs/12 §2.5).
+   *
+   * **Upsert by id**, not blind concatenation: the server publishes the live
+   * card set for a canvas rather than a delta (F3b.6), and card ids are stable
+   * by design — a deep-dive thread's bibliography and a list card both keep the
+   * same id as they change. A card that arrives again is therefore the same
+   * card refreshed, and it replaces its older copy in place instead of
+   * appearing twice (which `@for … track` would reject as a duplicate key
+   * anyway).
+   */
   appendCards(cards: HudCardDto[]): void {
-    this.cardsSignal.update((existing) => [...existing, ...cards]);
+    const incoming = new Set(cards.map(hudCardId));
+    this.cardsSignal.update((existing) => [
+      ...existing.filter((card) => !incoming.has(hudCardId(card))),
+      ...cards,
+    ]);
     this.touchCards(cards);
   }
 
