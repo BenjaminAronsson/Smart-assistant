@@ -174,7 +174,7 @@ fn a_continuation_extends_the_canvas_and_counts_as_a_follow_up() {
     // The live thread is untouched: extending never retires anything.
     assert!(outcome.retired.is_none());
     assert_eq!(state.follow_ups(), 1);
-    assert_eq!(state.thread.topic, "ramen places near Kreuzberg");
+    assert_eq!(state.thread.topic(), "ramen places near Kreuzberg");
 }
 
 #[test]
@@ -187,11 +187,11 @@ fn a_genuine_topic_change_shelves_and_retires_the_thread() {
     // The retired thread comes back to the caller rather than being dropped —
     // it may still be worth promoting.
     let retired = outcome.retired.expect("the old thread is handed back");
-    assert_eq!(retired.topic, "ramen places near Kreuzberg");
-    assert_eq!(retired.sources.len(), 2);
+    assert_eq!(retired.topic(), "ramen places near Kreuzberg");
+    assert_eq!(retired.sources().len(), 2);
     // A new thread starts on the new topic, with the follow-up count reset.
-    assert_eq!(state.thread.topic, "what's the weather tomorrow");
-    assert!(state.thread.sources.is_empty());
+    assert_eq!(state.thread.topic(), "what's the weather tomorrow");
+    assert!(state.thread.sources().is_empty());
     assert_eq!(state.follow_ups(), 0);
 }
 

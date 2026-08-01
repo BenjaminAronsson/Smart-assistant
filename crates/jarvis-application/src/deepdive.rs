@@ -23,9 +23,11 @@
 //!   attribution label, and the wire card grammar has no field for a page body
 //!   either (`jarvis_contracts::cards`).
 //! * **Facts are paraphrases, not scrapes** (ADR-017). The guard lives on
-//!   [`ResearchThread::record_fact`]; this module simply has no other way to
-//!   put content into a thread, so a caller holding fetched text cannot file
-//!   it as a finding.
+//!   [`ResearchThread::record_fact`], and it is structural, not advisory: a
+//!   thread's fields are private, so `record_fact` and its siblings are the
+//!   only way content gets in — there is no `thread.facts.push(page_body)` and
+//!   no struct literal. A caller holding fetched text therefore cannot file it
+//!   as a finding, here or anywhere else in the workspace.
 //!
 //! Card *construction* is deliberately not here: `jarvis-application` may not
 //! depend on `jarvis-contracts` (invariant #3), so this module yields domain
@@ -236,12 +238,12 @@ impl DeepDiveService {
     /// topic change retires the thread and starts a new one.
     pub fn observe_turn(&self, state: &mut ThreadState, query: &str) -> TurnOutcome {
         let reset = is_explicit_reset(query);
-        let wants_source = !reset && is_source_handoff(query) && !state.thread.sources.is_empty();
+        let wants_source = !reset && is_source_handoff(query) && !state.thread.sources().is_empty();
 
         let relation = if wants_source {
             QueryRelation::Continuation
         } else {
-            classify_query(&state.thread.topic, query)
+            classify_query(state.thread.topic(), query)
         };
 
         match relation {
@@ -251,7 +253,7 @@ impl DeepDiveService {
                     should_offer_promotion(state.follow_ups, self.promote_after, state.offered_at)
                         .then(|| {
                             state.offered_at = Some(state.follow_ups);
-                            promotion_offer(&state.thread.topic)
+                            promotion_offer(state.thread.topic())
                         });
                 TurnOutcome {
                     relation,
@@ -279,17 +281,20 @@ impl DeepDiveService {
     /// URL has no honest attribution is never navigated to (it could not have
     /// been recorded in the first place, so this is defence in depth).
     fn handoff(&self, state: &ThreadState, query: &str) -> Option<SourceHandoff> {
-        let index = select_source(query, state.thread.sources.len())?;
-        let source = state.thread.sources.get(index)?;
-        let domain = display_domain(&source.url)?;
+        let index = select_source(query, state.thread.sources().len())?;
+        let source = state.thread.sources().get(index)?;
+        let domain = display_domain(source.url())?;
         let mut arguments = BTreeMap::new();
-        arguments.insert("url".to_owned(), CanonicalValue::str(source.url.clone()));
+        arguments.insert(
+            "url".to_owned(),
+            CanonicalValue::str(source.url().to_owned()),
+        );
         Some(SourceHandoff {
             proposal: ToolProposal {
                 tool_id: browser_navigate_id(),
                 arguments: CanonicalValue::Object(arguments),
             },
-            url: source.url.clone(),
+            url: source.url().to_owned(),
             domain,
         })
     }
@@ -336,15 +341,11 @@ impl DeepDiveService {
 
         // Provenance names the run *and every page the notes were built from*,
         // so a promoted fact never loses which source it came from (docs/04 §4).
-        let mut sources = Vec::with_capacity(state.thread.sources.len() + 1);
+        let mut sources = Vec::with_capacity(state.thread.sources().len() + 1);
         sources.push(ArtifactSource::Run(run_id.clone()));
-        sources.extend(
-            state
-                .thread
-                .sources
-                .iter()
-                .map(|s| ArtifactSource::Web { url: s.url.clone() }),
-        );
+        sources.extend(state.thread.sources().iter().map(|s| ArtifactSource::Web {
+            url: s.url().to_owned(),
+        }));
 
         let content = ArtifactContent {
             sha256,
@@ -383,9 +384,9 @@ impl DeepDiveService {
             // the document is where that content belongs.
             payload_json: format!(
                 r#"{{"kind":"markdown_html","mediaType":"{RESEARCH_NOTES_MEDIA_TYPE}","sha256":"{sha256_hex}","facts":{},"sources":{},"images":{}}}"#,
-                state.thread.facts.len(),
-                state.thread.sources.len(),
-                state.thread.images.len()
+                state.thread.facts().len(),
+                state.thread.sources().len(),
+                state.thread.images().len()
             ),
         };
 

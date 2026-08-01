@@ -278,14 +278,19 @@ pub struct SanitizedContent {
 /// can make `example.org` render as a different domain, and zero-width joiners
 /// can hide or splice text. `char::is_control` does **not** catch them (they are
 /// Unicode category `Cf`, not C0/C1), so they are enumerated explicitly.
-fn is_bidi_or_zero_width(ch: char) -> bool {
+///
+/// Shared with [`crate::markdown::escape`]: the promotion path and the
+/// tool-result path face the same hostile source, so they must not disagree
+/// about which characters are format controls.
+pub(crate) fn is_bidi_or_zero_width(ch: char) -> bool {
     matches!(ch,
         // Bidi embeddings / overrides / isolates and explicit marks.
-        '\u{200E}' | '\u{200F}'            // LRM, RLM
+        '\u{061C}'                         // ALM (Arabic letter mark)
+        | '\u{200E}' | '\u{200F}'          // LRM, RLM
         | '\u{202A}'..='\u{202E}'          // LRE, RLE, PDF, LRO, RLO
         | '\u{2066}'..='\u{2069}'          // LRI, RLI, FSI, PDI
-        // Zero-width space / non-joiner / joiner / no-break space (BOM).
-        | '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}')
+        // Zero-width space / non-joiner / joiner, word joiner, BOM.
+        | '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' | '\u{FEFF}')
 }
 
 /// Neutralize untrusted tool-result content before it is folded into a model
