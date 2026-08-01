@@ -1,0 +1,102 @@
+/* List card (docs/12 §2.3, FR-34/ADR-024). */
+
+:host {
+  display: block;
+}
+
+.list-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8vmin;
+}
+
+.list-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1vmin;
+}
+
+.list-title {
+  margin: 0;
+  font-size: clamp(14px, 2vmin, 18px);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.list-open-count {
+  flex: none;
+  font-size: clamp(11px, 1.5vmin, 13px);
+  color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.list-empty {
+  margin: 0;
+  font-size: clamp(12px, 1.7vmin, 15px);
+  color: var(--ink-dim);
+}
+
+.list-items {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4vmin;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.list-item {
+  min-inline-size: 0;
+}
+
+.list-item-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.8vmin;
+  inline-size: 100%;
+  padding: 0.4vmin 0.2vmin;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.list-item-toggle:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.list-item-box {
+  flex: none;
+  inline-size: 1.6vmin;
+  block-size: 1.6vmin;
+  min-inline-size: 14px;
+  min-block-size: 14px;
+  border-radius: 0.3vmin;
+  border: 0.15vmin solid var(--glass-border);
+  background: var(--glass-bg);
+}
+
+.list-item-toggle[aria-checked='true'] .list-item-box {
+  background: var(--c-card-accent, #4a7fd4);
+  border-color: var(--c-card-accent, #4a7fd4);
+}
+
+.list-item-text {
+  font-size: clamp(13px, 1.8vmin, 16px);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.list-item-text.checked {
+  color: var(--ink-dim);
+  text-decoration: line-through;
+}
+
+.list-item-toggle:focus-visible {
+  outline: 0.2vmin solid var(--c-card-accent, #4a7fd4);
+  outline-offset: 0.2vmin;
+}

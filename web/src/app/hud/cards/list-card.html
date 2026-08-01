@@ -1,0 +1,34 @@
+<section class="list-card" [attr.aria-label]="card().list.name">
+  <header class="list-head">
+    <h3 class="list-title">{{ card().list.name }}</h3>
+    @if (openLabel(); as label) {
+      <span class="list-open-count">{{ label }}</span>
+    }
+  </header>
+
+  @if (card().list.items.length === 0) {
+    <p class="list-empty">Nothing on this list yet.</p>
+  } @else {
+    <ul class="list-items">
+      @for (item of card().list.items; track item.id) {
+        <li class="list-item">
+          <!-- role="checkbox" button rather than a native <input>: the card
+               grammar's tap targets are all buttons (see TimerCard), and this
+               keeps voice/tap check-off on the same code path — no form
+               submission, just an intent the host turns into a PATCH. -->
+          <button
+            type="button"
+            class="list-item-toggle"
+            role="checkbox"
+            [attr.aria-checked]="item.checked"
+            [disabled]="pending()"
+            (click)="onToggle(item)"
+          >
+            <span class="list-item-box" aria-hidden="true"></span>
+            <span class="list-item-text" [class.checked]="item.checked">{{ item.text }}</span>
+          </button>
+        </li>
+      }
+    </ul>
+  }
+</section>

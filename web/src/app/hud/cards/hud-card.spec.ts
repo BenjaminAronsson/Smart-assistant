@@ -76,6 +76,7 @@ describe('HudCard', () => {
       'app-map-card',
       'app-sources-card',
       'app-gallery-card',
+      'app-list-card',
       'app-approval-card',
       'app-status-card',
     ]) {
@@ -112,6 +113,28 @@ describe('HudCard', () => {
     });
     expect(el.querySelector('app-gallery-card')).not.toBeNull();
     expect(el.querySelector('app-error-card')).toBeNull();
+  });
+
+  it('renders the registered sub-component for a list card and forwards check-off intents', () => {
+    render({
+      type: 'card.list',
+      id: 'card-11',
+      listId: 'list-1',
+      list: {
+        id: 'list-1',
+        name: 'Shopping',
+        openCount: 1,
+        promotionOffered: false,
+        items: [{ id: 'item-1', text: 'Milk', checked: false }],
+      },
+    });
+    expect(el.querySelector('app-list-card')).not.toBeNull();
+    expect(el.querySelector('app-error-card')).toBeNull();
+
+    const emitted: unknown[] = [];
+    fixture.componentInstance.listCheckItem.subscribe((intent) => emitted.push(intent));
+    el.querySelector<HTMLButtonElement>('.list-item-toggle')?.click();
+    expect(emitted).toEqual([{ listId: 'list-1', itemId: 'item-1', checked: true }]);
   });
 
   it('renders a genuine error card the same way', () => {

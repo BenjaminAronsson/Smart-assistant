@@ -16,6 +16,8 @@
   <app-sources-card [card]="c" />
 } @else if (asGallery(); as c) {
   <app-gallery-card [card]="c" />
+} @else if (asList(); as c) {
+  <app-list-card [card]="c" [pending]="listPending()" (checkItem)="listCheckItem.emit($event)" />
 } @else if (asApproval(); as c) {
   <app-approval-card
     [card]="c.card"

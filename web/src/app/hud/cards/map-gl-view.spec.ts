@@ -38,4 +38,31 @@ describe('MapGlView', () => {
     fixture.detectChanges();
     expect(() => fixture.destroy()).not.toThrow();
   });
+
+  // S4: attribution must render as plain text (a normal Angular text
+  // interpolation) and never be interpreted as markup — it is not passed to
+  // MapLibre's own `AttributionControl`, which would write it through an
+  // `innerHTML` sink.
+  it('renders the attribution as plain text', () => {
+    setup();
+    fixture.detectChanges();
+    const el = (fixture.nativeElement as HTMLElement).querySelector('.map-attribution');
+    expect(el).not.toBeNull();
+    expect(el?.textContent).toBe('© OpenStreetMap contributors');
+  });
+
+  it('does not interpret markup in a hostile attribution string', () => {
+    setup();
+    const hostile = '<img src=x onerror="window.__pwned = true"><b>bold</b> & "quotes"';
+    fixture.componentRef.setInput('attribution', hostile);
+    fixture.detectChanges();
+    const el = (fixture.nativeElement as HTMLElement).querySelector('.map-attribution');
+    expect(el).not.toBeNull();
+    // Rendered verbatim as text content...
+    expect(el?.textContent).toBe(hostile);
+    // ...never parsed into child elements.
+    expect(el?.querySelector('img')).toBeNull();
+    expect(el?.querySelector('b')).toBeNull();
+    expect(el?.children.length).toBe(0);
+  });
 });

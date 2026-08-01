@@ -112,9 +112,15 @@ export class MapGlView implements OnDestroy {
     });
     this.map = map;
 
-    // Non-collapsible: `compact: false` keeps the OSM credit permanently
-    // visible rather than folded behind an "i" toggle (docs/12 §3).
-    map.addControl(new maplibregl.AttributionControl({ customAttribution: this.attribution(), compact: false }));
+    // No `maplibregl.AttributionControl` here (S4): MapLibre renders a
+    // control's `customAttribution` by assigning it to
+    // `_innerContainer.innerHTML` internally (sanitized, but the library's
+    // own comment admits that "might not be enough to prevent all XSS
+    // attacks") — a markup sink, when `attribution` is a server-supplied
+    // string the contract (`MapCoverageResponse.attribution`) promises is
+    // plain text. The attribution is instead rendered as a plain Angular
+    // text interpolation in `map-gl-view.html`, permanently visible
+    // (docs/12 §3) without ever reaching a markup sink.
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
 
     const currentLocation = this.currentLocation();

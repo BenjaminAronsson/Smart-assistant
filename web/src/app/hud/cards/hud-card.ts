@@ -5,6 +5,7 @@ import { EntityCard } from './entity-card';
 import { ErrorCard } from './error-card';
 import { GalleryCard } from './gallery-card';
 import { HeadlinesCard } from './headlines-card';
+import { ListCard, type ListItemCheckIntent } from './list-card';
 import { MapCard } from './map-card';
 import { MediaGridCard } from './media-grid-card';
 import { NowPlayingCard } from './now-playing-card';
@@ -45,6 +46,7 @@ function narrow<T extends HudCardDto['type']>(
     MapCard,
     SourcesCard,
     GalleryCard,
+    ListCard,
     ApprovalCard,
     StatusCard,
     ErrorCard,
@@ -67,6 +69,9 @@ export class HudCard {
   /** A decision for the approval variant, forwarded from the tray. */
   readonly approvalPending = input(false);
   readonly approvalDecide = output<ApprovalDecisionDto>();
+  /** A check-off is in flight for the list variant, forwarded from the host. */
+  readonly listPending = input(false);
+  readonly listCheckItem = output<ListItemCheckIntent>();
 
   protected readonly asValueReadout = computed(() => narrow(this.card(), 'card.value_readout'));
   protected readonly asPlace = computed(() => narrow(this.card(), 'card.place'));
@@ -77,6 +82,7 @@ export class HudCard {
   protected readonly asMap = computed(() => narrow(this.card(), 'card.map'));
   protected readonly asSources = computed(() => narrow(this.card(), 'card.sources'));
   protected readonly asGallery = computed(() => narrow(this.card(), 'card.gallery'));
+  protected readonly asList = computed(() => narrow(this.card(), 'card.list'));
   protected readonly asApproval = computed(() => narrow(this.card(), 'card.approval'));
   protected readonly asStatus = computed(() => narrow(this.card(), 'card.status'));
   protected readonly asError = computed(() => narrow(this.card(), 'card.error'));
