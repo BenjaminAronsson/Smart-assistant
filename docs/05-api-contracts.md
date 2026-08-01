@@ -222,3 +222,5 @@ and grows additively. HTTP mapping via RFC 9457 problem details.
 | `media.control_unsupported` | Player reports it cannot perform this control | 409 |
 | `timer.invalid_transition` | Verb illegal for the timer's state (snooze before it rang, cancel after) — FR-33 | 409 |
 | `timer.stale` | Timer changed between read and decision (fired, or another device answered); retryable after refresh | 409 |
+| `list.full` | The list is at its item bound; retrying unchanged will not help — the owner removes or checks something off, or promotes the list to an artifact (FR-34) | 409 |
+| `list.unrecognized_command` | The deterministic grammar refused rather than guessing which list the owner meant (FR-34, ADR-024/ADR-016); the body was valid, its *content* was not resolvable here, so the caller falls back to the normal run path | 422 |

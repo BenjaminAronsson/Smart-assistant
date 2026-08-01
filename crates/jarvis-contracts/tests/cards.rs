@@ -11,10 +11,28 @@ use jarvis_contracts::cards::{
     HeadlineItemDto, HudCardDto, MapPointDto, MediaGridItemDto, MiniStatDto, SourceItemDto,
     SourcedImageDto,
 };
+use jarvis_contracts::lists::{ListDto, ListItemDto};
 use serde_json::json;
 
 const RUN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const APPROVAL: &str = "01BX5ZZKBKACTAV9WEVGEMMVS1";
+const LIST: &str = "01BX5ZZKBKACTAV9WEVGEMMVS2";
+const LIST_ITEM: &str = "01BX5ZZKBKACTAV9WEVGEMMVS3";
+
+fn shopping_list() -> ListDto {
+    ListDto {
+        id: LIST.parse().unwrap(),
+        name: "Shopping".into(),
+        items: vec![ListItemDto {
+            id: LIST_ITEM.parse().unwrap(),
+            text: "milk".into(),
+            checked: false,
+        }],
+        open_count: 1,
+        promoted_artifact_id: None,
+        promotion_offered: false,
+    }
+}
 
 fn photo() -> SourcedImageDto {
     SourcedImageDto {
@@ -132,6 +150,11 @@ fn every_card() -> Vec<HudCardDto> {
             title: "Pictures of ramen".into(),
             images: vec![photo()],
         },
+        HudCardDto::List {
+            id: "card-12".into(),
+            list_id: LIST.parse().unwrap(),
+            list: shopping_list(),
+        },
         HudCardDto::Status {
             id: "card-7".into(),
             message: "Queued — provider recovering".into(),
@@ -167,6 +190,7 @@ fn card_type_tags_are_dotted_and_disjoint() {
             "card.error",
             "card.gallery",
             "card.headlines",
+            "card.list",
             "card.map",
             "card.media_grid",
             "card.now_playing",
@@ -176,6 +200,40 @@ fn card_type_tags_are_dotted_and_disjoint() {
             "card.value_readout",
         ]
     );
+}
+
+// --- List card (F3b.8, FR-34/ADR-024) ------------------------------------
+
+#[test]
+fn list_card_carries_the_list_id_alongside_its_presentation_id() {
+    // The two ids are deliberately distinct (see the variant's doc comment):
+    // `id` is a presentation handle, `listId` is the address the check-off tap
+    // writes to. A client must never be able to derive the write target from
+    // the card id, so both have to survive the wire separately.
+    let card = HudCardDto::List {
+        id: "card-12".into(),
+        list_id: LIST.parse().unwrap(),
+        list: shopping_list(),
+    };
+    let value = serde_json::to_value(&card).unwrap();
+
+    assert_eq!(value["type"], "card.list");
+    assert_eq!(value["id"], "card-12");
+    assert_eq!(
+        value["listId"], LIST,
+        "listId is camelCase and is its own field"
+    );
+    assert_eq!(value["list"]["id"], LIST);
+    assert_eq!(value["list"]["name"], "Shopping");
+    assert_eq!(value["list"]["openCount"], 1, "openCount is camelCase");
+    assert_eq!(value["list"]["items"][0]["text"], "milk");
+    assert_eq!(value["list"]["items"][0]["checked"], false);
+    // Absent rather than null, so "never promoted" and "promoted to nothing"
+    // cannot be confused on the wire.
+    assert!(value["list"].get("promotedArtifactId").is_none());
+
+    let back: HudCardDto = serde_json::from_value(value).unwrap();
+    assert_eq!(back, card);
 }
 
 // --- Deep-dive cards (F3b.6, FR-27/ADR-017) ------------------------------
