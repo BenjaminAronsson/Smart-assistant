@@ -74,11 +74,44 @@ describe('HudCard', () => {
       'app-headlines-card',
       'app-now-playing-card',
       'app-map-card',
+      'app-sources-card',
+      'app-gallery-card',
       'app-approval-card',
       'app-status-card',
     ]) {
       expect(el.querySelector(selector)).toBeNull();
     }
+  });
+
+  it('renders the registered sub-component for a sources card', () => {
+    render({
+      type: 'card.sources',
+      id: 'card-9',
+      title: 'References',
+      items: [
+        { title: 'Ramen', url: 'https://en.wikipedia.org/wiki/Ramen', domain: 'en.wikipedia.org' },
+      ],
+    });
+    expect(el.querySelector('app-sources-card')).not.toBeNull();
+    expect(el.querySelector('app-error-card')).toBeNull();
+  });
+
+  it('renders the registered sub-component for a gallery card', () => {
+    render({
+      type: 'card.gallery',
+      id: 'card-10',
+      title: 'Pictures',
+      images: [
+        {
+          url: 'https://cdn.example/1.jpg',
+          sourceUrl: 'https://a.example/p',
+          sourceDomain: 'a.example',
+          alt: 'A bowl of ramen',
+        },
+      ],
+    });
+    expect(el.querySelector('app-gallery-card')).not.toBeNull();
+    expect(el.querySelector('app-error-card')).toBeNull();
   });
 
   it('renders a genuine error card the same way', () => {

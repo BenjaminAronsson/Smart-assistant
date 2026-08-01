@@ -3,11 +3,13 @@ import type { ApprovalDecisionDto, HudCardDto } from '../../../generated/api-typ
 import { ApprovalCard } from './approval-card';
 import { EntityCard } from './entity-card';
 import { ErrorCard } from './error-card';
+import { GalleryCard } from './gallery-card';
 import { HeadlinesCard } from './headlines-card';
 import { MapCard } from './map-card';
 import { MediaGridCard } from './media-grid-card';
 import { NowPlayingCard } from './now-playing-card';
 import { PlaceCard } from './place-card';
+import { SourcesCard } from './sources-card';
 import { StatusCard } from './status-card';
 import { ValueReadoutCard } from './value-readout-card';
 
@@ -41,6 +43,8 @@ function narrow<T extends HudCardDto['type']>(
     HeadlinesCard,
     NowPlayingCard,
     MapCard,
+    SourcesCard,
+    GalleryCard,
     ApprovalCard,
     StatusCard,
     ErrorCard,
@@ -71,6 +75,8 @@ export class HudCard {
   protected readonly asHeadlines = computed(() => narrow(this.card(), 'card.headlines'));
   protected readonly asNowPlaying = computed(() => narrow(this.card(), 'card.now_playing'));
   protected readonly asMap = computed(() => narrow(this.card(), 'card.map'));
+  protected readonly asSources = computed(() => narrow(this.card(), 'card.sources'));
+  protected readonly asGallery = computed(() => narrow(this.card(), 'card.gallery'));
   protected readonly asApproval = computed(() => narrow(this.card(), 'card.approval'));
   protected readonly asStatus = computed(() => narrow(this.card(), 'card.status'));
   protected readonly asError = computed(() => narrow(this.card(), 'card.error'));

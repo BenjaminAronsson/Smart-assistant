@@ -1,0 +1,12 @@
+<section class="gallery-card" [attr.aria-label]="card().title">
+  <h3 class="gallery-title">{{ card().title }}</h3>
+  <ul class="gallery-grid">
+    @for (image of card().images; track image.url) {
+      <li class="gallery-tile">
+        <!-- Every tile is its own sourced image: its own chip, its own alt
+             text, its own page (ADR-017 — provenance differs per image). -->
+        <app-sourced-image [image]="image" />
+      </li>
+    }
+  </ul>
+</section>

@@ -12,6 +12,10 @@
   <app-now-playing-card [card]="c" />
 } @else if (asMap(); as c) {
   <app-map-card [card]="c" />
+} @else if (asSources(); as c) {
+  <app-sources-card [card]="c" />
+} @else if (asGallery(); as c) {
+  <app-gallery-card [card]="c" />
 } @else if (asApproval(); as c) {
   <app-approval-card
     [card]="c.card"

@@ -2,6 +2,7 @@
 //! Use cases, orchestrator state machine, context assembler, router, policy
 //! engine, and the ports (traits) adapters implement (docs/02 §3).
 
+pub mod deepdive;
 pub mod health;
 pub mod location;
 pub mod model;
@@ -19,6 +20,9 @@ mod adversarial_tests;
 
 #[cfg(test)]
 mod approval_tests;
+
+#[cfg(test)]
+mod deepdive_tests;
 
 #[cfg(test)]
 mod orchestrator_tests;
