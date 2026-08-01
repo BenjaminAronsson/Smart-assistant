@@ -1,7 +1,18 @@
-/* MapLibre's own control CSS. Imported here rather than globally so it ships
- * in the same lazy chunk as the GL view itself (low-power skill: nothing
- * this card doesn't need loads until a map card actually renders one). */
-@import 'maplibre-gl/dist/maplibre-gl.css';
+/* MapLibre's own control CSS is NOT imported here — it lives in
+ * `src/styles.scss`. Two reasons, both hard:
+ *
+ * 1. It would not work. This component uses Angular's default emulated
+ *    encapsulation, so every selector in this file is rewritten to match a
+ *    `_ngcontent-*` attribute. MapLibre builds its controls imperatively at
+ *    runtime, and those elements never carry that attribute — so a vendor
+ *    stylesheet scoped here styles nothing.
+ * 2. At 70 kB it is 8x the `anyComponentStyle` error budget in angular.json,
+ *    which exists to catch exactly this: bulk CSS smuggled in as a component
+ *    style. The budget is not the problem; the placement was.
+ *
+ * The expensive half of MapLibre — the ~955 kB of JS — is still lazy, loaded
+ * by `map-gl-view.ts`'s dynamic `import('maplibre-gl')` behind MapCard's
+ * `@defer`. Only the stylesheet is eager, and it gzips to roughly 10 kB. */
 
 :host {
   display: block;
