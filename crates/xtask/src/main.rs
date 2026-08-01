@@ -23,9 +23,12 @@ fn main() -> anyhow::Result<()> {
 /// Traces 1–6 (M1/M2) are pure application-layer suites with fake adapters.
 /// Trace 7 and the M3a acceptance scenarios (F3a.8) need the compose test env —
 /// **live Postgres** (`DATABASE_URL`), plus `node` and `git` for the real coding
-/// worker — matching docs/07 §2 ("against the compose test env").
+/// worker — matching docs/07 §2 ("against the compose test env"). The M3b UX
+/// acceptance scenarios (F3b.9) need live Postgres but no browser and no model:
+/// see `docs/milestones/M3b-acceptance.md` for the browser-gated remainder of
+/// the docs/12 §9 checklist.
 fn golden() -> anyhow::Result<()> {
-    println!("Running golden traces 1–7 + M3a acceptance scenarios...");
+    println!("Running golden traces 1–7 + M3a/M3b acceptance scenarios...");
     println!("  Trace 1: simple question streams within budget");
     println!("  Trace 2: complex question (placeholder for M1)");
     println!("  Trace 3: quota-exhausted → degraded mode → recovery");
@@ -87,7 +90,107 @@ fn golden() -> anyhow::Result<()> {
         run_scenario(&args, Some(filter), 1, label)?;
     }
 
-    println!("✓ Golden traces 1–7 + M3a acceptance scenarios passed");
+    // M3b UX acceptance scenarios (F3b.9, docs/12 §9). Each named scenario is
+    // the repeatable demonstration of one M3b feature's user-visible promise.
+    // The §9 items that genuinely need a browser — the screenshot set, the
+    // keyboard walkthrough, the reduced-motion/hidden-window CPU checks and the
+    // panel lifecycle — are NOT here and are not claimed by this command; see
+    // docs/milestones/M3b-acceptance.md §3. The contrast audit *is* here: it is
+    // arithmetic over the same tokens the browser suite reads, so it needs no
+    // renderer.
+    println!("Running M3b UX acceptance scenarios (docs/12 §9)...");
+    for (args, filter, label, expected) in [
+        // F3b.4's panel lifecycle is client state, so its shelve/restore/dismiss/
+        // TTL behaviours live in the Angular suite (browser-gated — see
+        // docs/milestones/M3b-acceptance.md §3). The two halves the *server* owns
+        // run here: no router decision can express retracting a pending approval,
+        // and the 2h TTL is a real configured default rather than a magic number
+        // in a component.
+        (
+            [
+                "test",
+                "-p",
+                "jarvis-application",
+                "--lib",
+                "deepdive_tests",
+            ],
+            Some("deepdive_tests::the_canvas_action_never_speaks_to_approvals"),
+            "M3b F3b.4: a canvas decision cannot retract a pending approval (server half)",
+            1,
+        ),
+        (
+            ["test", "-p", "jarvisd", "--lib", "config"],
+            Some("config::tests::the_ui_section_defaults_to_the_documented_values"),
+            "M3b F3b.4: the 2h panel TTL is a documented, validated default",
+            1,
+        ),
+        (
+            ["test", "-p", "jarvisd", "--test", "m3b_acceptance"],
+            Some(
+                "f3b6_a_follow_up_extends_the_canvas_a_new_topic_shelves_it_and_a_thread_promotes_to_one_growing_document",
+            ),
+            "M3b F3b.6: continuation extends / new topic shelves, per-tile attribution, Research Notes promotion",
+            1,
+        ),
+        (
+            ["test", "-p", "jarvisd", "--test", "m3b_acceptance"],
+            Some("f3b7_a_timer_set_before_a_restart_rings_as_a_missed_alarm_after_it"),
+            "M3b F3b.7: timer set → fire → persist across restart → missed alarm announced",
+            1,
+        ),
+        (
+            ["test", "-p", "jarvisd", "--test", "m3b_acceptance"],
+            Some("f3b8_a_list_item_is_added_checked_off_and_promoted_to_one_versioned_document"),
+            "M3b F3b.8: list add → check off → promote to one versioned document",
+            1,
+        ),
+        (
+            ["test", "-p", "jarvisd", "--test", "map_api"],
+            Some("in_region_tile_is_served_with_type_encoding_nosniff_and_a_strong_etag"),
+            "M3b F3b.5: the map renders offline from the local PMTiles extract",
+            1,
+        ),
+        (
+            ["test", "-p", "jarvisd", "--test", "map_api"],
+            Some("a_tile_outside_the_bounding_box_is_refused_not_approximated"),
+            "M3b F3b.5: out of region is refused, never approximated with the wrong one",
+            1,
+        ),
+        (
+            ["test", "-p", "jarvisd", "--test", "map_api"],
+            Some("an_empty_square_inside_coverage_is_no_content_not_a_neighbour"),
+            "M3b F3b.5: an empty square in coverage is blank, never a neighbour's tile",
+            1,
+        ),
+        (
+            ["test", "-p", "xtask", "--test", "hud_acceptance"],
+            Some("both_bundled_wallpapers_pass_the_wcag_aa_contrast_audit"),
+            "M3b docs/12 §9: both worst-case wallpapers pass the WCAG AA contrast audit",
+            1,
+        ),
+        (
+            ["test", "-p", "xtask", "--test", "hud_acceptance"],
+            None,
+            "M3b docs/12 §9: card grammar only, image attribution, amber exclusivity (grep half)",
+            6,
+        ),
+        (
+            ["test", "-p", "jarvisd", "--test", "m3b_acceptance"],
+            Some("every_web_sourced_image_a_producer_can_emit_carries_its_source_link"),
+            "M3b docs/12 §9: no producer can emit a web image without its source link",
+            1,
+        ),
+        (
+            ["test", "-p", "jarvis-contracts", "--test", "cards"],
+            Some("every_web_sourced_image_on_any_card_carries_its_source_link"),
+            "M3b docs/12 §9: no card variant can carry a web image without its source link",
+            1,
+        ),
+    ] {
+        run_scenario(&args, filter, expected, label)?;
+    }
+
+    println!("✓ Golden traces 1–7 + M3a/M3b acceptance scenarios passed");
     println!("  - Orchestrator: simple/complex question, degraded mode recovery");
     println!("  - Policy: R0/R1 auto tool path, result sanitization, denial");
     println!("  - Approval: R2 approve/deny/edit, grant mint/validate, adversarial text");
@@ -96,6 +199,12 @@ fn golden() -> anyhow::Result<()> {
     println!("  - Coding: real worker + disposable worktree → immutable patch artifact;");
     println!("    source repo untouched, and a worker cannot declare a deployment");
     println!("  - M3a acceptance: artifact reopen, canvas placement, browser audit, media pause");
+    println!("  - M3b acceptance: deep-dive canvas routing + Research Notes, timers across a");
+    println!("    restart, lists add/check-off/promote, offline map tiles, and the grep half");
+    println!("    of the docs/12 §9 HUD checklist");
+    println!("  NOTE: the §9 screenshot set, keyboard walkthrough, reduced-motion/CPU checks");
+    println!("        and panel lifecycle need a browser and are NOT covered here —");
+    println!("        see docs/milestones/M3b-acceptance.md §3");
     Ok(())
 }
 

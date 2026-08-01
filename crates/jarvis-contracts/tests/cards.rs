@@ -88,7 +88,11 @@ fn every_card() -> Vec<HudCardDto> {
                 relative_time: "2h ago".into(),
                 source_url: "https://news.example/wc".into(),
                 source_domain: "news.example".into(),
-                thumbnail: None,
+                // Populated on purpose: a digest thumbnail is a web image like
+                // any other, so the attribution walk below must actually reach
+                // it. `headlines_item_omits_an_absent_thumbnail` covers the
+                // `None` shape separately.
+                thumbnail: Some(photo()),
             }],
         },
         HudCardDto::NowPlaying {
@@ -342,6 +346,96 @@ fn no_card_variant_carries_page_body_text() {
             );
         }
     }
+}
+
+#[test]
+fn headlines_item_omits_an_absent_thumbnail() {
+    // docs/12 §2.3: "no photos required, thumbnail optional". An item without
+    // one omits the key entirely rather than sending `null`, so a text-only
+    // digest costs nothing on the wire and the client has one shape to test.
+    let value = serde_json::to_value(HudCardDto::Headlines {
+        id: "card-5".into(),
+        title: "World Cup".into(),
+        items: vec![HeadlineItemDto {
+            title: "Final set for Sunday".into(),
+            summary: "Two sides confirmed after semifinal wins.".into(),
+            relative_time: "2h ago".into(),
+            source_url: "https://news.example/wc".into(),
+            source_domain: "news.example".into(),
+            thumbnail: None,
+        }],
+    })
+    .unwrap();
+    let item = &value["items"][0];
+    assert!(item.get("thumbnail").is_none());
+    // The item's own source link is never optional, thumbnail or not.
+    assert_eq!(item["sourceUrl"], "https://news.example/wc");
+    assert_eq!(item["sourceDomain"], "news.example");
+}
+
+#[test]
+fn every_web_sourced_image_on_any_card_carries_its_source_link() {
+    // docs/12 §9 acceptance, mechanised across the *whole* union rather than
+    // one variant at a time: walk every card's serialized form and require that
+    // anything image-shaped (`url` + `alt`) also carries `sourceUrl`,
+    // `sourceDomain` and non-empty alt text. A future variant that adds an image
+    // field as a bare URL string is caught here without anyone remembering to
+    // extend the test — which is the point, since the omission would be silent.
+    //
+    // `card.now_playing`'s `artUrl` is deliberately *not* image-shaped: it is the
+    // player's own album art, not third-party web content, and owes no chip
+    // (see the variant's doc comment). It has no `alt` sibling, so the walk
+    // skips it — and the moment someone gives it one, this test starts
+    // demanding attribution for it.
+    fn walk(value: &serde_json::Value, card_type: &str, found: &mut usize) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if let (Some(url), Some(alt)) = (
+                    map.get("url").and_then(|v| v.as_str()),
+                    map.get("alt").and_then(|v| v.as_str()),
+                ) {
+                    for field in ["sourceUrl", "sourceDomain"] {
+                        assert!(
+                            map.get(field)
+                                .and_then(|v| v.as_str())
+                                .is_some_and(|s| !s.trim().is_empty()),
+                            "{card_type}: image {url} carries no `{field}` — every \
+                             web-sourced image on a card shows its source link \
+                             (docs/12 §9, FR-25/ADR-014)"
+                        );
+                    }
+                    assert!(
+                        !alt.trim().is_empty(),
+                        "{card_type}: image {url} carries no alt text (docs/12 §8)"
+                    );
+                    *found += 1;
+                }
+                for nested in map.values() {
+                    walk(nested, card_type, found);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    walk(item, card_type, found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut found = 0usize;
+    for card in every_card() {
+        walk(
+            &serde_json::to_value(&card).unwrap(),
+            card.card_type(),
+            &mut found,
+        );
+    }
+    assert!(
+        found >= 5,
+        "the walk found only {found} images — `every_card()` must keep exercising \
+         every image-bearing variant, or this passes vacuously"
+    );
 }
 
 #[test]
