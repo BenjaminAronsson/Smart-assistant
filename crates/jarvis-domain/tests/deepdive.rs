@@ -3,8 +3,9 @@
 //! *shelved*, so its boundary cases are the feature's spec.
 
 use jarvis_domain::deepdive::{
-    ImageRef, QueryRelation, ResearchThread, SourceRef, classify_query, render_research_notes,
-    should_offer_promotion,
+    GALLERY_IMAGE_CAP, ImageRef, MAX_PARAPHRASE_CHARS, QueryRelation, ResearchThread, SourceRef,
+    ThreadError, classify_query, display_domain, is_source_handoff, is_web_url,
+    render_research_notes, select_source, should_offer_promotion,
 };
 
 const TOPIC: &str = "ramen places near Kreuzberg";
@@ -184,4 +185,211 @@ fn an_empty_thread_still_renders_an_honest_document() {
     assert!(md.contains("_No sources consulted._"));
     // No Images section at all rather than an empty promise.
     assert!(!md.contains("## Images"));
+}
+
+// --- Source handoff: "open that / read it" (ADR-017 §3) --------------------
+
+#[test]
+fn reading_the_source_is_recognised_as_a_handoff() {
+    for query in [
+        "open that",
+        "open it",
+        "read it",
+        "let me read that",
+        "open the second one",
+        "show me the source",
+    ] {
+        assert!(is_source_handoff(query), "{query:?} asks for the real page");
+    }
+}
+
+#[test]
+fn asking_for_more_summary_is_not_a_handoff() {
+    // A continuation is not a handoff — these still get cards, not a browser.
+    for query in [
+        "tell me more",
+        "what about vegetarian options",
+        "show me the references",
+        "compare that to the first",
+    ] {
+        assert!(!is_source_handoff(query), "{query:?} is not a handoff");
+    }
+}
+
+#[test]
+fn an_ordinal_picks_that_source_and_out_of_range_picks_nothing() {
+    assert_eq!(select_source("open the second one", 3), Some(1));
+    assert_eq!(select_source("read the third", 3), Some(2));
+    // Out of range opens nothing rather than a different page than was asked for.
+    assert_eq!(select_source("open the fifth one", 3), None);
+    // No ordinal: the source just cited.
+    assert_eq!(select_source("open that", 3), Some(0));
+    // Nothing consulted yet: nothing to open.
+    assert_eq!(select_source("open that", 0), None);
+}
+
+// --- Attribution labels cannot be spoofed (ADR-014/ADR-017) ---------------
+
+#[test]
+fn the_display_domain_comes_from_the_parsed_host() {
+    assert_eq!(
+        display_domain("https://en.wikipedia.org/wiki/Ramen").as_deref(),
+        Some("en.wikipedia.org")
+    );
+    assert_eq!(
+        display_domain("https://WWW.Example.ORG:8443/a?b#c").as_deref(),
+        Some("example.org")
+    );
+}
+
+#[test]
+fn userinfo_cannot_dress_a_hostile_host_up_as_a_trusted_one() {
+    // The classic chip spoof: everything before '@' is userinfo, not the host.
+    assert_eq!(
+        display_domain("https://wikipedia.org@evil.example/x").as_deref(),
+        Some("evil.example")
+    );
+    // Taking the FIRST '@' would re-open the same hole.
+    assert_eq!(
+        display_domain("https://a@wikipedia.org@evil.example/x").as_deref(),
+        Some("evil.example")
+    );
+}
+
+#[test]
+fn unlabellable_urls_yield_no_domain_at_all() {
+    for url in [
+        "javascript:alert(1)",
+        "data:text/html,<script>1</script>",
+        "file:///etc/passwd",
+        "https://",
+        "https:///path-only",
+        // A raw Unicode host is the homograph attack; punycode is the honest form.
+        "https://wikipediа.org/x",
+        "https://exa mple.org/x",
+    ] {
+        assert_eq!(display_domain(url), None, "{url:?} must not get a chip");
+    }
+    // Punycode is ASCII and passes through visibly encoded.
+    assert_eq!(
+        display_domain("https://xn--80ak6aa92e.com/x").as_deref(),
+        Some("xn--80ak6aa92e.com")
+    );
+}
+
+#[test]
+fn only_http_urls_are_web_urls() {
+    assert!(is_web_url("http://example.org"));
+    assert!(is_web_url("HTTPS://Example.org"));
+    assert!(!is_web_url("javascript:alert(1)"));
+    assert!(!is_web_url("//example.org"));
+}
+
+// --- The thread refuses to file a scrape as a paraphrase (ADR-017) --------
+
+#[test]
+fn a_fact_longer_than_a_paraphrase_is_rejected_not_truncated() {
+    let mut thread = ResearchThread::new("Ramen");
+    let scrape = "a".repeat(MAX_PARAPHRASE_CHARS + 1);
+    assert_eq!(
+        thread.record_fact(scrape),
+        Err(ThreadError::NotAParaphrase),
+        "page text must not be storable as a fact"
+    );
+    // A truncated scrape is still a scrape: nothing was kept.
+    assert!(thread.facts.is_empty());
+    assert_eq!(thread.record_fact("   "), Err(ThreadError::Empty));
+    assert!(thread.record_fact("Kome opens at noon.").is_ok());
+    // A thread does not repeat itself.
+    assert!(thread.record_fact("Kome opens at noon.").is_ok());
+    assert_eq!(thread.facts.len(), 1);
+}
+
+#[test]
+fn a_source_without_an_honest_attribution_is_refused() {
+    let mut thread = ResearchThread::new("Ramen");
+    assert!(matches!(
+        thread.record_source("Evil", "javascript:alert(1)"),
+        Err(ThreadError::Unattributable(_))
+    ));
+    assert!(thread.sources.is_empty());
+    assert!(
+        thread
+            .record_source("Kome", "https://example.org/kome")
+            .is_ok()
+    );
+    // Cited once, however often it is consulted.
+    assert!(
+        thread
+            .record_source("Kome", "https://example.org/kome")
+            .is_ok()
+    );
+    assert_eq!(thread.sources.len(), 1);
+}
+
+#[test]
+fn an_image_cannot_be_recorded_without_its_own_source() {
+    let mut thread = ResearchThread::new("Ramen");
+    // Image fine, provenance not: refused, because a tile with no honest badge
+    // would have to borrow another image's (ADR-017 forbids exactly that).
+    assert!(matches!(
+        thread.record_image("bowl", "https://cdn.example.org/a.jpg", ""),
+        Err(ThreadError::Unattributable(_))
+    ));
+    assert!(matches!(
+        thread.record_image("bowl", "data:image/png;base64,AA", "https://example.org/p"),
+        Err(ThreadError::Unattributable(_))
+    ));
+    assert!(thread.images.is_empty());
+}
+
+#[test]
+fn the_gallery_is_capped_at_the_adr_017_limit() {
+    let mut thread = ResearchThread::new("Ramen");
+    for i in 0..(GALLERY_IMAGE_CAP + 5) {
+        thread
+            .record_image(
+                format!("bowl {i}"),
+                format!("https://cdn.example.org/{i}.jpg"),
+                format!("https://example.org/page/{i}"),
+            )
+            .unwrap();
+    }
+    assert_eq!(thread.gallery_images().len(), GALLERY_IMAGE_CAP);
+    // Every image the gallery shows keeps its OWN page, not a shared one.
+    let sources: Vec<&str> = thread
+        .gallery_images()
+        .iter()
+        .map(|i| i.source_url.as_str())
+        .collect();
+    let mut deduped = sources.clone();
+    deduped.sort_unstable();
+    deduped.dedup();
+    assert_eq!(deduped.len(), sources.len());
+    // The full record (what the artifact gets) is not truncated by the cap.
+    assert_eq!(thread.images.len(), GALLERY_IMAGE_CAP + 5);
+}
+
+#[test]
+fn the_promoted_document_is_built_only_from_recorded_paraphrases() {
+    // The document generator has no other input: what survives `record_*` is
+    // exactly what the artifact can contain.
+    let mut thread = ResearchThread::new("Ramen in Kreuzberg");
+    thread
+        .record_fact("Kome is rated 4.7 and opens at noon.")
+        .unwrap();
+    thread
+        .record_source("Kome Ramen", "https://example.org/kome")
+        .unwrap();
+    thread
+        .record_image(
+            "bowl of ramen",
+            "https://cdn.example.org/ramen.jpg",
+            "https://example.org/kome",
+        )
+        .unwrap();
+    let md = render_research_notes(&thread);
+    assert!(md.contains("- Kome is rated 4.7 and opens at noon."));
+    assert!(md.contains("[Kome Ramen](https://example.org/kome)"));
+    assert!(md.contains("source: https://example.org/kome"));
 }

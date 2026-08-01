@@ -21,6 +21,17 @@ export function isApproval(card: HudCardDto): boolean {
 }
 
 /**
+ * What the deep-dive router decided this turn should do to the canvas (FR-27,
+ * ADR-017, docs/12 §2.5) — the client mirror of the server's `CanvasAction`.
+ *
+ * A continuation *extends*; only a genuine topic change shelves. The decision
+ * is made server-side (`jarvis_application::deepdive`), never re-derived here
+ * from the utterance — there is one classifier, and it is the one that can be
+ * corrected by voice.
+ */
+export type CanvasAction = 'extend' | 'shelve';
+
+/**
  * Presence states (docs/12 §2.1). Exhaustive on purpose — a new state needs a
  * hue **and** a motion signature, because colour alone fails accessibility.
  */
@@ -218,10 +229,30 @@ export class HudStateService {
   }
 
   /** Extend the live canvas — a continuation appends, it never shelves (FR-24,
-   * docs/12 §2.5; the continuation-vs-new-topic router lands in F3b.6). */
+   * docs/12 §2.5). */
   appendCards(cards: HudCardDto[]): void {
     this.cardsSignal.update((existing) => [...existing, ...cards]);
     this.touchCards(cards);
+  }
+
+  /**
+   * Apply one deep-dive turn's canvas decision (F3b.6, FR-27/ADR-017).
+   *
+   * This is the single place the continuation signal meets the panel lifecycle,
+   * so there is exactly one answer to "does a follow-up shelve?": a
+   * `'extend'` appends to the live canvas and leaves prior cards in place; only
+   * a `'shelve'` collapses them into a labeled chip (FR-24, unchanged for that
+   * case). Pending approvals are exempt from either — both paths below go
+   * through [`newQuery`]/[`setCards`], which carry them over rather than
+   * dropping a decision the human still owes.
+   */
+  routeTurn(action: CanvasAction, label: string, cards: HudCardDto[]): void {
+    if (action === 'extend') {
+      this.appendCards(cards);
+      return;
+    }
+    this.newQuery(label);
+    this.setCards(cards);
   }
 
   // --- panel lifecycle (FR-24, docs/12 §4) --------------------------------

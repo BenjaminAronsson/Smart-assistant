@@ -1,0 +1,13 @@
+<section class="sources-card" [attr.aria-label]="card().title">
+  <h3 class="sources-title">{{ card().title }}</h3>
+  <ol class="source-items">
+    @for (item of card().items; track item.url) {
+      <li class="source-item">
+        <!-- Title is plain interpolation: page titles are untrusted text and
+             render as text, never as markup (docs/12 §9). -->
+        <p class="source-item-title">{{ item.title }}</p>
+        <app-source-chip [domain]="item.domain" [href]="item.url" />
+      </li>
+    }
+  </ol>
+</section>

@@ -1037,6 +1037,62 @@
           "type": "object"
         },
         {
+          "description": "The pages a deep dive consulted (docs/12 §2.3/§2.5, FR-27/ADR-017) —\nwhat \"show me the references\" materializes. A bibliography, not a\nreader: each item is a title, a domain chip and a link, and opening one\nis a browser handoff (ADR-017 §3), never page content rendered here.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "items": {
+              "items": {
+                "$ref": "#/definitions/SourceItemDto"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "const": "card.sources",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "title",
+            "items"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A small image grid (docs/12 §2.3, FR-27/ADR-017), capped at\n`jarvis_domain::deepdive::GALLERY_IMAGE_CAP` by the producer.\n\n**Per-tile attribution is structural**: the images are full\n[`SourcedImageDto`]s and this variant has no card-level source field, so\nthere is no way to express \"one source for all of these\" — which ADR-017\nforbids, because a gallery's images routinely come from different pages.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "images": {
+              "items": {
+                "$ref": "#/definitions/SourcedImageDto"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "const": "card.gallery",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "title",
+            "images"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The approval surface, wire-reused verbatim (docs/06 §3) — never\nre-modeled as a distinct card shape, so there is exactly one type that\ncarries `exactEffect`/`proposedArguments` on the wire.",
           "properties": {
             "card": {
@@ -1896,6 +1952,29 @@
         "archived"
       ],
       "type": "string"
+    },
+    "SourceItemDto": {
+      "description": "One page consulted during a deep dive, as the sources card lists it\n(docs/12 §2.3: \"title + domain + link each\"; FR-27/ADR-017).\n\n`domain` is the chip label and is computed **server-side** from the parsed\nhost (`jarvis_domain::deepdive::display_domain`), never by the client from\n`url` — a `https://wikipedia.org@evil.example/` link must not be able to\npresent itself as `wikipedia.org`. Like [`SourcedImageDto`], every field is\nrequired: there is no way to list a reference without saying where it goes.",
+      "properties": {
+        "domain": {
+          "description": "Display domain for the chip, e.g. \"en.wikipedia.org\".",
+          "type": "string"
+        },
+        "title": {
+          "description": "The page's title as consulted — plain text, never markup.",
+          "type": "string"
+        },
+        "url": {
+          "description": "The link target; always `http(s)` (validated server-side).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "url",
+        "domain"
+      ],
+      "type": "object"
     },
     "SourcedImageDto": {
       "description": "A card image sourced from the web (docs/12 §2.3, FR-25/ADR-014 — person,\nplace, weather, menu photos absent a dedicated integration). `url` is the\nimage itself; `source_url`/`source_domain` are the page it was found on and\nits chip label (e.g. \"wikipedia.org\"), computed once server-side so the\nclient never parses an untrusted URL to render trusted-looking text. `alt`\nis required alt text (docs/12 §8 accessibility) — there is no constructor\npath that produces an image without it.",

@@ -8,7 +8,7 @@
 
 use jarvis_contracts::approvals::{ApprovalCardDto, DataEgressDto, RiskLevelDto};
 use jarvis_contracts::cards::{
-    HeadlineItemDto, HudCardDto, MediaGridItemDto, MiniStatDto, SourcedImageDto,
+    HeadlineItemDto, HudCardDto, MediaGridItemDto, MiniStatDto, SourceItemDto, SourcedImageDto,
 };
 use serde_json::json;
 
@@ -92,6 +92,20 @@ fn every_card() -> Vec<HudCardDto> {
                 egress: DataEgressDto::External,
             },
         },
+        HudCardDto::Sources {
+            id: "card-9".into(),
+            title: "References".into(),
+            items: vec![SourceItemDto {
+                title: "Ramen — Wikipedia".into(),
+                url: "https://en.wikipedia.org/wiki/Ramen".into(),
+                domain: "en.wikipedia.org".into(),
+            }],
+        },
+        HudCardDto::Gallery {
+            id: "card-10".into(),
+            title: "Pictures of ramen".into(),
+            images: vec![photo()],
+        },
         HudCardDto::Status {
             id: "card-7".into(),
             message: "Queued — provider recovering".into(),
@@ -125,14 +139,124 @@ fn card_type_tags_are_dotted_and_disjoint() {
             "card.approval",
             "card.entity",
             "card.error",
+            "card.gallery",
             "card.headlines",
             "card.media_grid",
             "card.now_playing",
             "card.place",
+            "card.sources",
             "card.status",
             "card.value_readout",
         ]
     );
+}
+
+// --- Deep-dive cards (F3b.6, FR-27/ADR-017) ------------------------------
+
+#[test]
+fn sources_card_carries_a_title_domain_and_link_for_every_page() {
+    // docs/12 §2.3: "a compact list of pages consulted — title + domain + link
+    // each". `domain` is computed server-side so the client never derives
+    // trusted-looking text from an untrusted URL.
+    let value = serde_json::to_value(HudCardDto::Sources {
+        id: "card-9".into(),
+        title: "References".into(),
+        items: vec![SourceItemDto {
+            title: "Ramen — Wikipedia".into(),
+            url: "https://en.wikipedia.org/wiki/Ramen".into(),
+            domain: "en.wikipedia.org".into(),
+        }],
+    })
+    .unwrap();
+    assert_eq!(
+        value,
+        json!({
+            "type": "card.sources",
+            "id": "card-9",
+            "title": "References",
+            "items": [{
+                "title": "Ramen — Wikipedia",
+                "url": "https://en.wikipedia.org/wiki/Ramen",
+                "domain": "en.wikipedia.org",
+            }],
+        })
+    );
+}
+
+#[test]
+fn a_source_item_cannot_omit_its_domain_or_url() {
+    // Same stance as `SourcedImageDto`: attribution is required, so a payload
+    // missing it is a decode error rather than an unlabelled reference.
+    for missing in [
+        json!({ "title": "Ramen", "url": "https://en.wikipedia.org/wiki/Ramen" }),
+        json!({ "title": "Ramen", "domain": "en.wikipedia.org" }),
+    ] {
+        assert!(serde_json::from_value::<SourceItemDto>(missing).is_err());
+    }
+}
+
+#[test]
+fn every_gallery_tile_carries_its_own_attribution() {
+    // ADR-017: images may come from different pages, so "one shared source link
+    // is not acceptable". The wire type makes sharing impossible — the gallery
+    // holds full `SourcedImageDto`s and has no card-level source field at all.
+    let a = SourcedImageDto {
+        url: "https://cdn.example/one.jpg".into(),
+        source_url: "https://a.example/page".into(),
+        source_domain: "a.example".into(),
+        alt: "A bowl of shoyu ramen".into(),
+    };
+    let b = SourcedImageDto {
+        url: "https://cdn.example/two.jpg".into(),
+        source_url: "https://b.example/other".into(),
+        source_domain: "b.example".into(),
+        alt: "A bowl of miso ramen".into(),
+    };
+    let value = serde_json::to_value(HudCardDto::Gallery {
+        id: "card-10".into(),
+        title: "Pictures of ramen".into(),
+        images: vec![a, b],
+    })
+    .unwrap();
+    assert_eq!(value["images"][0]["sourceDomain"], "a.example");
+    assert_eq!(value["images"][1]["sourceDomain"], "b.example");
+    // No card-level attribution field exists to fall back on.
+    assert!(value.get("sourceUrl").is_none());
+    assert!(value.get("sourceDomain").is_none());
+}
+
+#[test]
+fn a_gallery_image_missing_its_alt_text_fails_the_whole_card() {
+    let bad = json!({
+        "type": "card.gallery",
+        "id": "card-10",
+        "title": "Pictures",
+        "images": [{
+            "url": "https://cdn.example/one.jpg",
+            "sourceUrl": "https://a.example/page",
+            "sourceDomain": "a.example",
+        }],
+    });
+    assert!(serde_json::from_value::<HudCardDto>(bad).is_err());
+}
+
+#[test]
+fn no_card_variant_carries_page_body_text() {
+    // ADR-017 §3 / docs/12 §2.5: reading a source is a browser handoff — the
+    // HUD never re-renders full page content. This asserts the *wire* has no
+    // field to put it in: no variant has a body/content/html/text field, so
+    // there is nothing for a producer to fill with a fetched page.
+    for card in every_card() {
+        let value = serde_json::to_value(&card).unwrap();
+        let object = value.as_object().expect("cards serialize as objects");
+        for forbidden in ["body", "content", "html", "text", "pageText", "fullText"] {
+            assert!(
+                !object.contains_key(forbidden),
+                "{} must not carry a `{forbidden}` field",
+                card.card_type()
+            );
+        }
+    }
 }
 
 #[test]

@@ -1,0 +1,30 @@
+/* Gallery card (docs/12 §2.3): a small image grid, capped server-side at 6–8.
+ * Each tile keeps room for its own source chip — the badge is part of the tile,
+ * not an overlay that can be cropped away (ADR-017). */
+
+.gallery-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8vmin;
+}
+
+.gallery-title {
+  margin: 0;
+  font-size: clamp(14px, 2vmin, 18px);
+  color: var(--ink);
+}
+
+.gallery-grid {
+  display: grid;
+  /* Same responsive rhythm as the canvas itself (docs/12 §2.3), one step down
+     because tiles are thumbnails rather than panels. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 120px), 1fr));
+  gap: 1vmin;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gallery-tile {
+  min-inline-size: 0;
+}

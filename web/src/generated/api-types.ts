@@ -380,6 +380,20 @@ export type HudCardDto =
       [k: string]: unknown;
     }
   | {
+      id: string;
+      items: SourceItemDto[];
+      title: string;
+      type: "card.sources";
+      [k: string]: unknown;
+    }
+  | {
+      id: string;
+      images: SourcedImageDto[];
+      title: string;
+      type: "card.gallery";
+      [k: string]: unknown;
+    }
+  | {
       card: ApprovalCardDto;
       type: "card.approval";
       [k: string]: unknown;
@@ -845,6 +859,34 @@ export interface MediaGridItemDto {
   name: string;
   photo?: SourcedImageDto | null;
   price?: string | null;
+  [k: string]: unknown;
+}
+/**
+ * One page consulted during a deep dive, as the sources card lists it
+ * (docs/12 §2.3: "title + domain + link each"; FR-27/ADR-017).
+ *
+ * `domain` is the chip label and is computed **server-side** from the parsed
+ * host (`jarvis_domain::deepdive::display_domain`), never by the client from
+ * `url` — a `https://wikipedia.org@evil.example/` link must not be able to
+ * present itself as `wikipedia.org`. Like [`SourcedImageDto`], every field is
+ * required: there is no way to list a reference without saying where it goes.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "SourceItemDto".
+ */
+export interface SourceItemDto {
+  /**
+   * Display domain for the chip, e.g. "en.wikipedia.org".
+   */
+  domain: string;
+  /**
+   * The page's title as consulted — plain text, never markup.
+   */
+  title: string;
+  /**
+   * The link target; always `http(s)` (validated server-side).
+   */
+  url: string;
   [k: string]: unknown;
 }
 /**

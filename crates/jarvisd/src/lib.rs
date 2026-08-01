@@ -6,6 +6,7 @@ pub mod api;
 pub mod approvals;
 pub mod artifacts;
 pub mod auth;
+pub mod cards;
 pub mod config;
 pub mod display;
 pub mod location;

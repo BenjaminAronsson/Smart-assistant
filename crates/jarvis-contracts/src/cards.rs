@@ -14,10 +14,17 @@
 //! value readout, place, entity/person, media/menu grid, headlines/digest,
 //! now-playing (data only — live playback control stays on the media bar until
 //! M5), approval (wire-reused from [`crate::approvals::ApprovalCardDto`], never
-//! re-modeled), status/queued, and error. Timer/list/sources/gallery/map/
-//! product/agenda cards are later features (F3b.5/6/7/8) and are deliberately
-//! absent — adding one is an additive enum variant, never a change to this
-//! one's shape.
+//! re-modeled), status/queued, and error. Timer/list/map/product/agenda cards
+//! are later features (F3b.5/7/8) and are deliberately absent — adding one is
+//! an additive enum variant, never a change to this one's shape.
+//!
+//! F3b.6 added the two deep-dive types that way: [`HudCardDto::Sources`] (the
+//! bibliography for "show me the references") and [`HudCardDto::Gallery`]
+//! (images, **each tile individually attributed** — ADR-017). Note what neither
+//! of them has: a field for page *body* text. Reading a source is a browser
+//! handoff (FR-15, ADR-017 §3), so the HUD has nowhere to re-render a fetched
+//! page even if a producer wanted to — a scope and a copyright boundary made
+//! structural rather than remembered.
 //!
 //! **Source-chip is structurally unavoidable** (docs/12 §2.3, FR-25/ADR-014).
 //! [`SourcedImageDto`] is the *only* way any card carries an image, and its
@@ -91,6 +98,25 @@ pub struct HeadlineItemDto {
     /// optional"); when present it still carries its own attribution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thumbnail: Option<SourcedImageDto>,
+}
+
+/// One page consulted during a deep dive, as the sources card lists it
+/// (docs/12 §2.3: "title + domain + link each"; FR-27/ADR-017).
+///
+/// `domain` is the chip label and is computed **server-side** from the parsed
+/// host (`jarvis_domain::deepdive::display_domain`), never by the client from
+/// `url` — a `https://wikipedia.org@evil.example/` link must not be able to
+/// present itself as `wikipedia.org`. Like [`SourcedImageDto`], every field is
+/// required: there is no way to list a reference without saying where it goes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceItemDto {
+    /// The page's title as consulted — plain text, never markup.
+    pub title: String,
+    /// The link target; always `http(s)` (validated server-side).
+    pub url: String,
+    /// Display domain for the chip, e.g. "en.wikipedia.org".
+    pub domain: String,
 }
 
 /// Registered HUD card types (docs/12 §2.3). The `type` discriminator is
@@ -186,6 +212,29 @@ pub enum HudCardDto {
         art_url: Option<String>,
         source_app: String,
     },
+    /// The pages a deep dive consulted (docs/12 §2.3/§2.5, FR-27/ADR-017) —
+    /// what "show me the references" materializes. A bibliography, not a
+    /// reader: each item is a title, a domain chip and a link, and opening one
+    /// is a browser handoff (ADR-017 §3), never page content rendered here.
+    #[serde(rename = "card.sources")]
+    Sources {
+        id: String,
+        title: String,
+        items: Vec<SourceItemDto>,
+    },
+    /// A small image grid (docs/12 §2.3, FR-27/ADR-017), capped at
+    /// `jarvis_domain::deepdive::GALLERY_IMAGE_CAP` by the producer.
+    ///
+    /// **Per-tile attribution is structural**: the images are full
+    /// [`SourcedImageDto`]s and this variant has no card-level source field, so
+    /// there is no way to express "one source for all of these" — which ADR-017
+    /// forbids, because a gallery's images routinely come from different pages.
+    #[serde(rename = "card.gallery")]
+    Gallery {
+        id: String,
+        title: String,
+        images: Vec<SourcedImageDto>,
+    },
     /// The approval surface, wire-reused verbatim (docs/06 §3) — never
     /// re-modeled as a distinct card shape, so there is exactly one type that
     /// carries `exactEffect`/`proposedArguments` on the wire.
@@ -218,6 +267,8 @@ impl HudCardDto {
             Self::MediaGrid { .. } => "card.media_grid",
             Self::Headlines { .. } => "card.headlines",
             Self::NowPlaying { .. } => "card.now_playing",
+            Self::Sources { .. } => "card.sources",
+            Self::Gallery { .. } => "card.gallery",
             Self::Approval { .. } => "card.approval",
             Self::Status { .. } => "card.status",
             Self::Error { .. } => "card.error",
