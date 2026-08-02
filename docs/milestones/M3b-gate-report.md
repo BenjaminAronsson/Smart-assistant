@@ -43,7 +43,7 @@ continuity across turns; a timer fires and a list round-trips into an artifact."
 | `cargo xtask golden` | ✅ **18 scenarios** — golden 1–7, 4 M3a acceptance, 12 M3b acceptance |
 | `npm run lint` (web) | ✅ all files pass |
 | `npm run build` (web) | ✅ bundle generated, within budget (§3) |
-| `npm test` (web) | ⚠️ **NOT RUNNABLE ON THIS HOST** — no Chrome binary (§5 D-M3b-1). Runs in CI, which sets `CHROME_BIN` (`.github/workflows/ci.yml:76`). |
+| `npm test` (web) | ✅ **232/232 pass** — a working `chrome-headless-shell` was obtained partway through this gate (§5, formerly D-M3b-2); this is a real browser run, not a `tsc --noEmit` stand-in. Includes `conversation.spec.ts` (the S5 session-scoping regression), executed for the first time. |
 
 M3b golden scenarios:
 
@@ -161,6 +161,13 @@ the existing list-promote precedent; and `promote` holds the global `threads` mu
 the blob/artifact-store awaits, which is acceptable contention for a single owner but would
 need revisiting if the lock ever becomes contended.
 
+**One more finding, from actually running the web suite for the first time (not a review
+pass — a real test execution):**
+
+| # | Severity | Finding | Resolution |
+|---|---|---|---|
+| T1 | should-fix (found to be a **genuine production race**, not just a test artifact) | `MapCard` loaded coverage via a bare `async` method writing into a plain `signal()`. `provideHttpClientTesting()` sets `REQUESTS_CONTRIBUTE_TO_STABILITY` false, and in production `HttpClient`'s own pending-task entry clears the instant the Observable completes — **before** `firstValueFrom`'s promise settles, before the `await` in `ApiService.getMapCoverage()` returns, and before `MapCard.loadCoverage()`'s own `await` finally writes the signal. `ApplicationRef`/`whenStable()` is driven purely by `PendingTasksInternal`, so the app could be considered "stable" — and anything gated on that (a screenshot harness, SSR hydration, a future E2E suite) could act — while the map card was still genuinely mid-load. All 7 `map-card.spec.ts` tests failed on the suite's first-ever real-browser run this milestone, which is what surfaced it. | Migrated `MapCard` from the bare-async/signal pattern to Angular's `resource()`, which holds its own `PendingTasks` entry open until the resolved value is actually written (in a `finally`, after the write). Fixes the underlying race, not just the test symptom. `map-card.spec.ts`'s choreography updated to match (`detectChanges()` alone opens the request; `whenStable()` is trustworthy only *after* `flush()`), documented as a new idiom since no other spec in the codebase yet uses `resource()`. |
+
 ### 4.2 Properties independently confirmed to hold
 
 - **Invariant 6 (append-only audit in the same transaction)** holds in
@@ -189,12 +196,12 @@ need revisiting if the lock ever becomes contended.
 | # | Deviation | Rationale / mitigation |
 |---|---|---|
 | **D-M3b-1** | **The HUD screenshot set was not produced.** Exit-evidence item 1 is NOT met. | No browser binary exists on the build host and every source is blocked by network policy: `storage.googleapis.com`, `cdn.playwright.dev` and `download.mozilla.org` all return 403, and apt offers only snap-transitional stubs. Nothing was faked or hand-drawn. **This is an environment limitation, not a code gap** — CI itself sets `CHROME_BIN` and does run the browser-gated specs. `docs/milestones/M3b-acceptance.md` §3.3 lists the nine frames, how to reach each and the exact commands. **Recommend: accept as a carry-forward with the screenshots produced on a browser-capable host before the M4 gate — or reject and hold M3b open until they exist.** |
-| **D-M3b-2** | Web unit tests (`npm test`) could not be executed on this host for the same reason. | They are written, not skipped or weakened, and they run in CI. The F3b.4 panel-lifecycle specs in particular are *covered*, just not runnable here. |
+| **D-M3b-2** | ✅ **RESOLVED.** Web unit tests could not be executed on this host at gate draft time. | A working `chrome-headless-shell` was obtained during this gate (§4.1 T1's discovery path). `npm test` now runs for real: **232/232 pass**, including the F3b.4 panel-lifecycle specs and the never-before-run `conversation.spec.ts`. Running the suite for real, rather than relying on `tsc --noEmit`, is what surfaced T1 — a genuine production race, not merely a coverage gap. |
 | **D-M3b-3** | The visual half of the contrast audit is outstanding. | The numeric audit is done and automated (§1 item 1b). What remains is visual confirmation over rendered wallpapers with scrim + backdrop-blur. Same browser prerequisite. |
 | **D-M3b-4** | Deep-dive findings arrive via an explicit endpoint rather than being extracted from tool results. | The orchestrator exposes no tool-result observation seam and `ToolResult` is opaque rendered text; plumbing one is a separate feature. The recorders' guards are what make accepting client-supplied findings safe. |
 | **D-M3b-5** | `is_web_url` now requires ASCII-graphic, so a source URL with a raw non-ASCII path (`…/wiki/Café` un-percent-encoded) is **refused** rather than merely rendered unlinked. | Real fetched URLs are percent-encoded or punycoded, and CLAUDE.md's tie-break prefers the stricter reading. Documented relaxation path exists if the owner disagrees. |
 | **D-M3b-6** | `artifact-canvas.scss:124` paints the "sensitive" label amber (`--c-wait`), arguably against docs/12 §2.1 amber-exclusivity — it is a warning, not a request for a decision. | It sits on the artifact canvas, not the HUD face, so the §9 grep is scoped to exclude it. Flagged rather than silently allowlisted or unilaterally restyled. **Owner's call.** |
-| **D-M3b-7** | `web/src/app/conversation.spec.ts` (the W5 session-scoping regression test) has never been executed — same browser prerequisite as D-M3b-2. It does type-check clean against the real generated DTOs and the real component (`tsc --noEmit`), and is written to fail properly (drives the private message handler through a narrow interface cast, skips `detectChanges()` so `ngOnInit` never opens a real socket), but nothing has asserted its assertions actually pass. | Needs a run in CI before this deviation can be closed. |
+| **D-M3b-7** | ✅ **RESOLVED.** `web/src/app/conversation.spec.ts` (the W5 session-scoping regression test) had never been executed. | Ran with the real browser as part of D-M3b-2's resolution: passes (5/5), confirming the W5 fix (session-scoped `hud.canvas` handling) actually holds, not just that it type-checks. |
 
 ---
 
