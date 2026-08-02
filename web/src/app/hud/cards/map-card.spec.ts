@@ -40,10 +40,23 @@ describe('MapCard (F3b.5, docs/12 §3, ADR-013)', () => {
 
   afterEach(() => http.verify());
 
+  // Choreography note: every test below does exactly one `fixture.detectChanges()`
+  // (never `await fixture.whenStable()`) between `setup()` and the coverage
+  // `flush()`. `MapCard`'s coverage lookup is a `resource()`
+  // (docs on `MapCard` itself), and `resource()` deliberately holds a
+  // `PendingTasks` entry open for the whole in-flight load — that's what
+  // makes `whenStable()` a safe, non-racy signal *after* the response is
+  // flushed (see below), but it also means awaiting `whenStable()` *before*
+  // the flush would deadlock: nothing ever completes the pending task until
+  // the mocked request is flushed, and nothing flushes it while the test is
+  // stuck awaiting stability. `detectChanges()` alone is sufficient to run
+  // the resource's load effect and open the `HttpTestingController` request
+  // (Angular runs pending effects as part of `ApplicationRef.tick()`, which
+  // zoneless `detectChanges()` calls directly), so it's all that's needed
+  // pre-flush.
   it('shows a loading placeholder before the coverage lookup resolves', async () => {
     setup(card());
     fixture.detectChanges();
-    await fixture.whenStable();
     expect(fixture.nativeElement.getAttribute('data-map-mode')).toBe('loading');
     expect(el.querySelector('.map-placeholder')).not.toBeNull();
     http.expectOne('/api/v1/map/coverage').flush({
@@ -60,7 +73,6 @@ describe('MapCard (F3b.5, docs/12 §3, ADR-013)', () => {
   it('renders the local GL view inline when the destination is inside the archive bounds', async () => {
     setup(card());
     fixture.detectChanges();
-    await fixture.whenStable();
     http.expectOne('/api/v1/map/coverage').flush({
       bounds: SF_BOUNDS,
       minZoom: 0,
@@ -82,7 +94,6 @@ describe('MapCard (F3b.5, docs/12 §3, ADR-013)', () => {
   it('falls back to online raster when the archive does not cover the destination and the network is up', async () => {
     setup(card({ destination: OUT_OF_REGION_DESTINATION }));
     fixture.detectChanges();
-    await fixture.whenStable();
     http.expectOne('/api/v1/map/coverage').flush({
       bounds: SF_BOUNDS,
       minZoom: 0,
@@ -102,7 +113,6 @@ describe('MapCard (F3b.5, docs/12 §3, ADR-013)', () => {
   it('falls back to coordinates-only, never blank, when out of coverage and offline', async () => {
     setup(card({ destination: OUT_OF_REGION_DESTINATION }));
     fixture.detectChanges();
-    await fixture.whenStable();
     window.dispatchEvent(new Event('offline'));
     http.expectOne('/api/v1/map/coverage').flush({
       bounds: SF_BOUNDS,
@@ -131,7 +141,6 @@ describe('MapCard (F3b.5, docs/12 §3, ADR-013)', () => {
       }),
     );
     fixture.detectChanges();
-    await fixture.whenStable();
     window.dispatchEvent(new Event('offline'));
     http.expectOne('/api/v1/map/coverage').flush(null, { status: 404, statusText: 'Not Found' });
     await fixture.whenStable();
@@ -144,7 +153,6 @@ describe('MapCard (F3b.5, docs/12 §3, ADR-013)', () => {
   it('treats a failed coverage lookup as not-covered rather than assuming local coverage', async () => {
     setup(card());
     fixture.detectChanges();
-    await fixture.whenStable();
     http
       .expectOne('/api/v1/map/coverage')
       .flush('boom', { status: 503, statusText: 'Service Unavailable' });
@@ -159,7 +167,6 @@ describe('MapCard (F3b.5, docs/12 §3, ADR-013)', () => {
   it('"open large" toggles the expanded overlay and both the button and Escape close it', async () => {
     setup(card());
     fixture.detectChanges();
-    await fixture.whenStable();
     http.expectOne('/api/v1/map/coverage').flush({
       bounds: SF_BOUNDS,
       minZoom: 0,
@@ -198,7 +205,6 @@ describe('MapCard (F3b.5, docs/12 §3, ADR-013)', () => {
     // than duplicating MapGlView's own rendering.
     setup(card());
     fixture.detectChanges();
-    await fixture.whenStable();
     http.expectOne('/api/v1/map/coverage').flush({
       bounds: SF_BOUNDS,
       minZoom: 0,
@@ -216,7 +222,6 @@ describe('MapCard (F3b.5, docs/12 §3, ADR-013)', () => {
   it('renders distance and walk time as tabular-nums footer text when present', async () => {
     setup(card({ distance: '1.2 mi', walkTime: '24 min' }));
     fixture.detectChanges();
-    await fixture.whenStable();
     http.expectOne('/api/v1/map/coverage').flush(null, { status: 404, statusText: 'Not Found' });
     await fixture.whenStable();
     fixture.detectChanges();

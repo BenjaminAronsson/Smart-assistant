@@ -5,6 +5,7 @@ import {
   computed,
   inject,
   input,
+  resource,
   signal,
 } from '@angular/core';
 import type { HudCardDto, MapCoverageResponse, MapTileFormatDto } from '../../../generated/api-types';
@@ -41,15 +42,6 @@ interface TileConfig {
   attribution: string;
 }
 
-type CoverageState =
-  | { status: 'loading' }
-  | { status: 'available'; data: MapCoverageResponse }
-  /** `GET /api/v1/map/coverage` 404'd — no archive configured (docs/09 §1). */
-  | { status: 'unconfigured' }
-  /** The request itself failed — treated the same as "not covered" by the
-   * fallback decision, never assumed to be in-region (docs/12 §3). */
-  | { status: 'error' };
-
 /**
  * Map card (F3b.5, docs/12 §3, ADR-013): destination pin, current-location
  * dot, route polyline, and the coverage fallback that keeps this card from
@@ -73,6 +65,25 @@ type CoverageState =
  * coordination need — nothing here posts, nothing needs a pending/error
  * state threaded from a host — so routing it through `HudStateService` would
  * add a layer for no behavioral gain.
+ *
+ * The coverage lookup is loaded through `resource()` (`coverageResource`
+ * below), not a bare `async` method writing into a plain `signal()`. That
+ * used to be the shape here, and it was a real bug under zoneless CD, not
+ * just a test-harness quirk: `HttpClient` registers a `PendingTasks` entry
+ * for the in-flight request and clears it synchronously when
+ * `HttpTestingController.flush()` (or a real response) completes the
+ * Observable — but `firstValueFrom`'s promise settling, `ApiService`'s own
+ * `await`/`try`/`catch`, and this component's `await` each add a further
+ * microtask hop *after* that task is already cleared. `ApplicationRef`
+ * (which both `ComponentFixture.whenStable()` and real zoneless scheduling
+ * consult) considered the app stable again before `coverageState.set(...)`
+ * ever ran, so a CD pass — or a test's `await fixture.whenStable()` — could
+ * observe the card still in `'loading'` even though the HTTP round-trip had
+ * already completed. `resource()` closes that gap by holding its own
+ * `PendingTasks` entry open until *its* internal state (and thus
+ * `value()`/`status()`) has actually been written — see `ResourceImpl`'s
+ * `loadEffect` in `@angular/core`, which resolves the pending task in a
+ * `finally` after `this.state.set(...)`, not before.
  */
 @Component({
   selector: 'app-map-card',
@@ -91,19 +102,30 @@ export class MapCard {
   private readonly api = inject(ApiService);
   private readonly destroyRef = inject(DestroyRef);
 
-  private readonly coverageState = signal<CoverageState>({ status: 'loading' });
+  /**
+   * The coverage lookup, as a `resource()` rather than a bare
+   * `async`-function-into-a-`signal()` (see the class doc comment above for
+   * why the latter is unsafe under zoneless CD). Fires once on construction
+   * — no reactive `params`, since coverage doesn't depend on `card()` — and
+   * settles to `'resolved'` with `value() === null` for "no archive
+   * configured" (`ApiService.getMapCoverage()` turns the 404 into `null`) or
+   * `'error'` for a genuine lookup failure.
+   */
+  private readonly coverageResource = resource<MapCoverageResponse | null, unknown>({
+    loader: () => this.api.getMapCoverage(),
+  });
   private readonly online = signal(typeof navigator === 'undefined' ? true : navigator.onLine);
   protected readonly expanded = signal(false);
 
   protected readonly mode = computed<MapRenderMode | 'loading'>(() => {
-    const state = this.coverageState();
-    if (state.status === 'loading') return 'loading';
+    const status = this.coverageResource.status();
+    if (status === 'idle' || status === 'loading' || status === 'reloading') return 'loading';
     const result: MapCoverageResult =
-      state.status === 'available'
-        ? { kind: 'available', bounds: state.data.bounds }
-        : state.status === 'unconfigured'
-          ? { kind: 'unconfigured' }
-          : { kind: 'unknown' };
+      status === 'error'
+        ? { kind: 'unknown' }
+        : this.coverageResource.value()
+          ? { kind: 'available', bounds: this.coverageResource.value()!.bounds }
+          : { kind: 'unconfigured' };
     return decideMapRenderMode(result, this.card().destination, this.online());
   });
 
@@ -112,9 +134,8 @@ export class MapCard {
   protected readonly activeTileConfig = computed<TileConfig | null>(() => {
     const mode = this.mode();
     if (mode === 'local') {
-      const state = this.coverageState();
-      if (state.status !== 'available') return null;
-      const data = state.data;
+      const data = this.coverageResource.value();
+      if (!data) return null;
       return {
         mode: 'local',
         tileUrlTemplate: data.tileUrlTemplate,
@@ -149,8 +170,6 @@ export class MapCard {
   });
 
   constructor() {
-    this.loadCoverage();
-
     const onOnline = () => this.online.set(true);
     const onOffline = () => this.online.set(false);
     const onKeydown = (event: KeyboardEvent) => {
@@ -173,16 +192,5 @@ export class MapCard {
 
   protected setExpanded(value: boolean): void {
     this.expanded.set(value);
-  }
-
-  private async loadCoverage(): Promise<void> {
-    try {
-      const coverage = await this.api.getMapCoverage();
-      this.coverageState.set(
-        coverage ? { status: 'available', data: coverage } : { status: 'unconfigured' },
-      );
-    } catch {
-      this.coverageState.set({ status: 'error' });
-    }
   }
 }
