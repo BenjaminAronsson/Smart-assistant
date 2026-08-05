@@ -1,11 +1,30 @@
 # M3b "HUD face, deep dive, personal utilities" — Gate Report
 
-**Status: READY FOR OWNER REVIEW — NOT YET SIGNED OFF.** Prepared 2026-08-01 · Milestone
-loop docs/11 §2. All review passes complete (§4); awaiting owner decision on the deviations
-in §5, principally D-M3b-1 (the screenshot set, the one unmet exit-evidence item).
+**Status: READY FOR OWNER REVIEW — NOT YET SIGNED OFF.** Prepared 2026-08-01, updated
+2026-08-05 (screenshot set produced, one new defect found-fixed-reviewed-merged along the
+way — see below). Milestone loop docs/11 §2. All review passes complete (§4), including
+rust-reviewer + security-auditor on the new fix (no BLOCKING findings, both converged on
+the same should-fix which is now closed — §4.0); all five exit-evidence items are now met
+(§1); awaiting owner decision on the remaining deviations in §5.
 
-Scope since the M3a sign-off: **18 commits** on `integration/m3b` (HEAD `5d8bd89`), not yet
-merged to `main`.
+Scope since the M3a sign-off: **18 commits** on `integration/m3b` through `3e61598`
+(gate report/docs update), plus `fix/m3b-ws-browser-auth` (3 commits — the fix, a
+review-driven follow-up, and a wire-contract doc note), **merged into `integration/m3b`
+2026-08-05** (`c45c69e`), produced while completing this gate's one outstanding item.
+None of this is merged to `main` yet.
+
+**2026-08-05 update, in one paragraph:** this session ran on a host with a real browser
+binary and unrestricted loopback network — the first time anyone had actually opened the
+real Angular HUD against a real, live `jarvisd` in a real browser, on this branch or any
+prior one. Doing that immediately surfaced that the HUD's WebSocket could not
+authenticate at all from a real browser (browsers cannot set the `Authorization` header
+the auth middleware required on the handshake; every existing test used a Rust WS client
+that can). That is a previously-undiscovered, milestone-relevant defect — in production,
+no card, approval, or timer notification could ever have reached a real browser client
+over `/ws/v1`. It is fixed, tested, reviewed (rust-reviewer + security-auditor, no
+BLOCKING findings), and **merged into `integration/m3b`** (see §4.0 and §5 D-M3b-1). With
+that fixed, the nine-frame HUD screenshot set (the milestone's one previously-unmet
+exit-evidence item) was produced for real, closing D-M3b-1 and D-M3b-3.
 
 **`jarvis-domain` and `jarvis-application` `Cargo.toml` are byte-identical to `main`** —
 the whole milestone added pure types and ports only (invariant 3 holds at the dependency
@@ -21,7 +40,7 @@ continuity across turns; a timer fires and a list round-trips into an artifact."
 
 | # | Exit-evidence item | Result | Evidence |
 |---|---|---|---|
-| 1 | **HUD screenshot set** | ❌ **NOT MET** | No browser binary exists on the build host and every source is blocked by network policy (see §5 D-M3b-1). Nothing was faked. The exact procedure and commands are written up in `docs/milestones/M3b-acceptance.md` §3.3 for completion the moment a browser is available. |
+| 1 | **HUD screenshot set** | ✅ **MET (2026-08-05)** | Nine frames captured on a browser-capable host against a real `jarvisd` (this branch) + real Postgres + real Chromium — see `docs/milestones/M3b-acceptance.md` §3.3 for exactly how each was reached, and §5 D-M3b-1 for what changed. Producing frame 3 first required fixing a real defect this pass discovered: the HUD's WebSocket could not authenticate from any real browser at all (§4.0, finding "W-browser" — fixed, reviewed, merged). |
 | 1b | **Contrast audit** (docs/12 §9, same bullet) | ✅ MET (numerically) | `both_bundled_wallpapers_pass_the_wcag_aa_contrast_audit` parses the glass/ink tokens out of `backgrounds.ts` + `styles.scss` (not restated, so drift breaks the parse), composites over each wallpaper's worst-case pixel and asserts AA: **bright-haze 16.36:1 body / 10.33:1 secondary; deep-dusk 7.97:1 / 5.04:1** (AA = 4.5:1). Visual confirmation over rendered wallpapers with scrim + backdrop-blur still needs a browser. |
 | 2 | **UX acceptance scenarios** | ✅ MET | 12 named scenarios in `cargo xtask golden`, over live Postgres + the real CAS/audit chain/outbox. See §2. |
 | 3 | **Deep-dive thread keeps continuity across turns** | ✅ MET | `f3b6_a_follow_up_extends_the_canvas_a_new_topic_shelves_it_and_a_thread_promotes_to_one_growing_document`: a follow-up — and `"open the second one"` — returns `Extend` and retires nothing; a genuine topic change returns `Shelve` and hands the old thread back. Gallery tiles carry their **own** `sourceUrl`/`sourceDomain`/`alt` from their own pages (`a.example` vs `b.example`), per ADR-017. |
@@ -30,20 +49,26 @@ continuity across turns; a timer fires and a list round-trips into an artifact."
 
 ---
 
-## 2. Gate runs (`integration/m3b` @ `f001bd0`)
+## 2. Gate runs
+
+Original pass on `integration/m3b` @ `f001bd0` (below), **re-run in full 2026-08-05** on
+`integration/m3b` + `fix/m3b-ws-browser-auth` together, on a browser-capable host, for
+the first time including the real-browser web suite rather than a `tsc --noEmit`
+stand-in for it. Every command passed clean; no new failures, no regressions from the
+`W-browser`/NG0203 fix. Updated counts (2026-08-05) in **bold** where they changed.
 
 | Gate | Result |
 |---|---|
 | `cargo fmt --check` | ✅ clean |
 | `cargo clippy --workspace --all-targets -- -D warnings` | ✅ clean |
-| `cargo test --workspace` | ✅ **852 passed, 0 failed, 1 ignored** (the ignored one is pre-existing on `main`: `map_api.rs:629`, needs a real PMTiles extract) |
+| `cargo test --workspace` | ✅ **863 passed** (was 852; +11 = the two new `ws_stream.rs` browser-handshake tests plus 9 more from intervening work), 0 failed, 1 ignored (pre-existing on `main`: `map_api.rs:629`, needs a real PMTiles extract) |
 | `cargo xtask arch-test` | ✅ 9 crates, dependency rules hold |
 | `cargo xtask codegen --check` | ✅ generated outputs up to date |
 | `cargo sqlx prepare --check --workspace` | ✅ passes (the "potentially unused queries" warning is pre-existing on `main`) |
 | `cargo xtask golden` | ✅ **18 scenarios** — golden 1–7, 4 M3a acceptance, 12 M3b acceptance |
 | `npm run lint` (web) | ✅ all files pass |
 | `npm run build` (web) | ✅ bundle generated, within budget (§3) |
-| `npm test` (web) | ✅ **232/232 pass** — a working `chrome-headless-shell` was obtained partway through this gate (§5, formerly D-M3b-2); this is a real browser run, not a `tsc --noEmit` stand-in. Includes `conversation.spec.ts` (the S5 session-scoping regression), executed for the first time. |
+| `npm test` (web) | ✅ **232/232 pass**, unchanged, re-confirmed 2026-08-05 on real Chromium 150. Includes `conversation.spec.ts` (the S5 session-scoping regression). This count does not move with the `W-browser`/NG0203 fix because Karma's `TestBed` uses a mocked `WebSocket` and constructs components inside a real injection context — neither bug is reachable from *any* Karma spec, which is exactly why a live browser+backend run was needed to find them at all (§4.0). |
 
 M3b golden scenarios:
 
@@ -117,6 +142,47 @@ delta) with stable ids, so a missed event self-heals.
 
 The re-audit's six should-fix findings are below, all closed and verified before this
 report was finalized.
+
+### 4.0 Browser-verification pass (2026-08-05) — one new finding
+
+Producing the HUD screenshot set (D-M3b-1) required, for the first time on this branch,
+actually running the real Angular HUD against a real `jarvisd` in a real browser. This
+surfaced one defect neither the three review passes below nor any existing test could
+have caught, because it is specific to what a *browser* — as opposed to any Rust test
+client — is capable of:
+
+| # | Severity | Finding | Resolution |
+|---|---|---|---|
+| **W-browser** | **BLOCKING → fixed, reviewed, merged** | The HUD's WebSocket (`/ws/v1`) could not authenticate from any real browser. `require_device` (`crates/jarvisd/src/auth.rs`) read only the `Authorization` header, but a browser's native `WebSocket` constructor has no way to set arbitrary request headers on the handshake. Every existing WS test (`crates/jarvisd/tests/ws_stream.rs`) used `tokio_tungstenite`, a Rust client unaffected by that browser restriction — so the suite proved WS auth works, while proving nothing about whether a browser could ever use it. In production this meant **no `hud.canvas` card, no approval interrupt, and no timer/list notification could ever reach a real browser client** — the entire real-time half of the HUD experience this milestone builds. | `require_device` falls back to a device token offered as a WS subprotocol behind a `jarvis.device.v1` sentinel (a browser sets this via `new WebSocket(url, ['jarvis.device.v1', token])`), scoped to genuine WS handshakes only (`Upgrade: websocket` + `Sec-WebSocket-Key` present) so it cannot authenticate any REST route; `ws::ws_upgrade` echoes back only the sentinel, never the token. Client-side, `ApiService.openSocket()` centralizes the construction so `conversation.ts`/`media.service.ts` can't drift on it. Separately, `web/src/proxy.conf.json` had no `/ws` entry, so `ng serve`'s own dev proxy never forwarded the WebSocket upgrade to `jarvisd` at all — added; and docs/05 §6.2 now documents the two-channel auth story. Five tests cover it: a real browser-shaped handshake succeeds and only the sentinel is echoed; no credentials anywhere still 401s; the sentinel with a bogus token behind it still 401s (proves the token is *validated*, not just present); the fallback does not authenticate a plain REST request even with a valid token offered (proves the WS-only scope); the pre-existing non-browser-client path is unaffected. **rust-reviewer + security-auditor both reviewed the branch: no BLOCKING findings from either.** Both independently converged on the same root concern in the first commit — the fallback had no handshake-scope guard and echoed the raw token — which is exactly what the second commit above closes; the review transcripts are the audit trail, not restated here. Branch `fix/m3b-ws-browser-auth` (3 commits), **merged into `integration/m3b`** at `c45c69e`. |
+| — | minor | `Conversation.ngOnInit` called Angular's `effect()` outside an injection context (`NG0203` at runtime — harmless in production since it only guarded an interval cleanup, but a real logged error on every session view, undetectable by Karma's `TestBed`-driven tests, which construct components inside an injection context by design). Also, per rust-reviewer, doubly wrong: `effect()` ignores a returned cleanup closure (cleanup needs the `onCleanup` parameter), so the interval was leaking on every navigation regardless. | Replaced with a plain field + `ngOnDestroy`, matching the existing WS-teardown pattern one line above it. Same commit as `W-browser`. |
+
+Two properties worth naming explicitly: this is a **transport-compatibility** defect, not
+a broken invariant — `require_device` still validates the same token against the same
+identity store either way, invariant 1 (no code path bypasses `policy::evaluate`) is
+untouched, and the fallback is inert for every route except `/ws/v1` — that guarantee is
+now structural (a handshake-shape check), not just an assumption about client behaviour,
+per the review. And it is the same *category* of discovery as T1 below (a
+defect only a real browser run against a real backend could surface) — found by the same
+methodology, on the same milestone, for the same underlying reason: no build environment
+with both a browser binary and network access existed until this pass.
+
+**Deferred, not silently dropped — two should-fix items from the reviews, both explicitly
+informational/non-blocking in the security-auditor's own report:**
+
+- **No `Origin` allowlist on the `/ws/v1` upgrade.** WebSocket handshakes are exempt from
+  same-origin policy, and this change is what first makes a browser able to reach the
+  route at all — so a cross-origin page can now attempt the handshake. It cannot succeed
+  without the token, which it cannot read out of another origin's `localStorage` (no
+  cookie is involved, so there is no ambient authority to ride), and security-auditor
+  filed this under "verified clean / informational, not a finding" rather than
+  should-fix. Cheap to add later (an `Origin` allowlist check in `ws_upgrade`); explicitly
+  **not done** this pass to keep the fix scoped to what the reviews actually required.
+  **Owner: confirm deferring this is acceptable, or ask for it before signing.**
+- **`docs/06-security.md` has no line noting `sec-websocket-protocol` is a secret-bearing
+  header for redaction purposes**, even though the token is not currently logged anywhere
+  (security-auditor traced every tracing/logging call site and confirmed this). A
+  one-line documentation note for the next person who adds header logging; not filed as
+  its own follow-up.
 
 ### 4.1 Findings raised and fixed during this milestone
 
@@ -195,9 +261,9 @@ pass — a real test execution):**
 
 | # | Deviation | Rationale / mitigation |
 |---|---|---|
-| **D-M3b-1** | **The HUD screenshot set was not produced.** Exit-evidence item 1 is NOT met. | No browser binary exists on the build host and every source is blocked by network policy: `storage.googleapis.com`, `cdn.playwright.dev` and `download.mozilla.org` all return 403, and apt offers only snap-transitional stubs. Nothing was faked or hand-drawn. **This is an environment limitation, not a code gap** — CI itself sets `CHROME_BIN` and does run the browser-gated specs. `docs/milestones/M3b-acceptance.md` §3.3 lists the nine frames, how to reach each and the exact commands. **Recommend: accept as a carry-forward with the screenshots produced on a browser-capable host before the M4 gate — or reject and hold M3b open until they exist.** |
+| **D-M3b-1** | ✅ **RESOLVED 2026-08-05.** The HUD screenshot set is produced; exit-evidence item 1 is met. | Produced on a browser-capable host (real Chromium + real `jarvisd` from this branch + real Postgres) — see `docs/milestones/M3b-acceptance.md` §3.3 for exactly how each of the nine frames was reached. Getting to frame 3 first required fixing a real, previously-undiscovered defect: the HUD's WebSocket could not authenticate from any real browser at all, because the only auth path (`Authorization` header) is one browsers cannot set on a WS handshake — see the finding in §4.0. **Fixed, reviewed (rust-reviewer + security-auditor, no BLOCKING findings), and merged into `integration/m3b`** (`fix/m3b-ws-browser-auth`, 3 commits, at `c45c69e`). Two states in the screenshot set (`listening`, and all three backgrounds) still have no production trigger in the client — driven directly via `HudStateService` from the browser console, documented as such in the acceptance doc; this is a real gap (voice is M5; background config-to-client wiring is a small unfiled follow-up), not a screenshot shortcut. |
 | **D-M3b-2** | ✅ **RESOLVED.** Web unit tests could not be executed on this host at gate draft time. | A working `chrome-headless-shell` was obtained during this gate (§4.1 T1's discovery path). `npm test` now runs for real: **232/232 pass**, including the F3b.4 panel-lifecycle specs and the never-before-run `conversation.spec.ts`. Running the suite for real, rather than relying on `tsc --noEmit`, is what surfaced T1 — a genuine production race, not merely a coverage gap. |
-| **D-M3b-3** | The visual half of the contrast audit is outstanding. | The numeric audit is done and automated (§1 item 1b). What remains is visual confirmation over rendered wallpapers with scrim + backdrop-blur. Same browser prerequisite. |
+| **D-M3b-3** | ✅ **RESOLVED 2026-08-05.** The visual half of the contrast audit is done. | Confirmed as a side effect of producing the screenshot set: frames 7 and 8 show the caption panel and list card legible over each worst-case wallpaper, scrim and backdrop-blur included, matching the numeric audit (§1 item 1b). |
 | **D-M3b-4** | Deep-dive findings arrive via an explicit endpoint rather than being extracted from tool results. | The orchestrator exposes no tool-result observation seam and `ToolResult` is opaque rendered text; plumbing one is a separate feature. The recorders' guards are what make accepting client-supplied findings safe. |
 | **D-M3b-5** | `is_web_url` now requires ASCII-graphic, so a source URL with a raw non-ASCII path (`…/wiki/Café` un-percent-encoded) is **refused** rather than merely rendered unlinked. | Real fetched URLs are percent-encoded or punycoded, and CLAUDE.md's tie-break prefers the stricter reading. Documented relaxation path exists if the owner disagrees. |
 | **D-M3b-6** | `artifact-canvas.scss:124` paints the "sensitive" label amber (`--c-wait`), arguably against docs/12 §2.1 amber-exclusivity — it is a warning, not a request for a decision. | It sits on the artifact canvas, not the HUD face, so the §9 grep is scoped to exclude it. Flagged rather than silently allowlisted or unilaterally restyled. **Owner's call.** |
@@ -207,7 +273,11 @@ pass — a real test execution):**
 
 ## 6. Open risks / carry-forwards
 
-1. **The screenshot set (D-M3b-1)** is the only unmet exit-evidence item.
+1. ✅ **The screenshot set (D-M3b-1)** — resolved 2026-08-05; see §1 and §4.0. Two states
+   in the set (`listening`, backgrounds) still have no production trigger in the client —
+   real gaps (voice is M5; background config-to-client wiring is unfiled), not screenshot
+   shortcuts. Worth filing as a small follow-up so the next person doesn't rediscover it
+   by hand.
 2. **`HudCardDto` variants with no producer.** Nine of the twelve card types still have no
    server-side producer — they are types the HUD *can* render when a feature builds one.
    Documented in the `cards.rs` module doc rather than left implicit.
@@ -235,34 +305,48 @@ pass — a real test execution):**
 
 ## 7. Recommendation
 
-**Approve-with-deviations**, conditional on the owner's decisions in §5 (D-M3b-1 …
-D-M3b-7) — this is a recommendation, not a sign-off; only the owner can accept the
-deviations and sign the gate (docs/11 §3, "human-only decisions").
+**Approve-with-deviations** — this is a recommendation, not a sign-off; only the owner can
+accept the deviations and sign the gate (docs/11 §3, "human-only decisions").
 
 Grounds:
 
-- All exit evidence except the HUD screenshot set (§1 item 1) is met, most of it by
-  executable golden-trace scenarios rather than narrative claims.
-- Every BLOCKING finding raised across four independent review passes (rust-reviewer,
-  security-auditor ×2, contract-keeper) was fixed and re-verified, including the two that
-  mattered most: untrusted web content could not inject markdown structure into a durable
-  artifact (B1), and the paraphrase-not-scrape guarantee was made structural rather than
-  advisory (B2). The feature that carried the most risk (F3b.6) went through **two**
-  security passes precisely because the first one flagged its own wiring as the moment the
-  risk would become live — and the second pass confirmed it didn't.
-- The full CI loop is green on `integration/m3b` @ `f001bd0` and every commit after it:
-  fmt, clippy `-D warnings`, 852+ tests, arch-test (9 crates), codegen, `sqlx prepare
-  --check`, 18 golden scenarios, web lint and build.
+- **All five exit-evidence items are now met** (§1), the screenshot set included, all by
+  executable golden-trace scenarios or a real browser run rather than narrative claims.
+- Every BLOCKING finding raised across the four review passes on the merged M3b work
+  (rust-reviewer, security-auditor ×2, contract-keeper) was fixed and re-verified,
+  including the two that mattered most: untrusted web content could not inject markdown
+  structure into a durable artifact (B1), and the paraphrase-not-scrape guarantee was made
+  structural rather than advisory (B2). The feature that carried the most risk (F3b.6)
+  went through **two** security passes precisely because the first one flagged its own
+  wiring as the moment the risk would become live — and the second pass confirmed it
+  didn't.
+- **A fifth, later pass — actually running the product in a real browser — found one more
+  BLOCKING defect** (§4.0, `W-browser`): the HUD's WebSocket could not authenticate from
+  any real browser at all, so no card/approval/timer notification could ever have reached
+  one. **This is fixed, tested (five tests drive the handshake exactly as a browser
+  does), reviewed by both rust-reviewer and security-auditor (no BLOCKING findings from
+  either; both converged on the same should-fix, which the second commit on the branch
+  closes), and merged into `integration/m3b`** (`fix/m3b-ws-browser-auth`, 3 commits, at
+  `c45c69e`).
+- The full gate loop was **re-run in full 2026-08-05**, on a browser-capable host, with
+  `fix/m3b-ws-browser-auth` applied: fmt, clippy `-D warnings`, 863 tests (0 failed, 1
+  pre-existing ignore), arch-test (9 crates), codegen, `sqlx prepare --check`, 18 golden
+  scenarios, web lint, web build, and — for the first time run against a real backend
+  rather than mocks — the real-browser Angular suite, **232/232**, zero `NG0*` errors,
+  zero console errors. Nothing regressed; nothing new surfaced beyond what `W-browser`
+  itself already explains (§2, §4.0). Re-run again, standalone, after the review-driven
+  follow-up commit: fmt/clippy/build/test/arch-test/codegen/sqlx-check/golden/lint all
+  clean; the two new negative tests (bogus token, REST-scope) pass alongside the original
+  two.
 - perf-warden found no budget breaches at the 8 GB target; every new resident allocation is
-  bounded, event-driven, or transient.
-- The one unmet item (D-M3b-1, the screenshot set) is an environment limitation — no
-  browser binary is reachable from this build host — not a code or design gap, and the
-  exact procedure to complete it is written up and ready to run the moment one exists.
+  bounded, event-driven, or transient. (Not re-run against `W-browser`'s tiny diff; nothing
+  in it is resident-memory-relevant.)
 
-The only decision that should give the owner real pause is **D-M3b-1**: whether to accept
-the screenshot set as a carry-forward to a browser-capable host, or hold M3b open until it
-exists. Every other deviation is either a documented, reversible judgement call (D-M3b-5,
-D-M3b-6) or downstream of the same browser limitation (D-M3b-2, D-M3b-3, D-M3b-7).
+Every deviation left in §5 is either a documented, reversible judgement call (D-M3b-5,
+D-M3b-6), an explicitly deferred should-fix the security-auditor itself called
+informational rather than blocking (§4.0: the WS `Origin` allowlist), or fully resolved
+(D-M3b-1 through D-M3b-4, D-M3b-7). None should give the owner real pause the way the
+original D-M3b-1 (missing exit evidence) did.
 
 **Not done as part of this gate, by design:** merging `integration/m3b` into `main`,
 tagging, and updating `docs/08-roadmap.md`/`docs/milestones/M3-features.md` checkboxes.

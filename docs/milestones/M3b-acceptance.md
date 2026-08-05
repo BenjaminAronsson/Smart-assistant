@@ -64,9 +64,11 @@ can prove a sink is absent; it cannot prove a surface is usable.
 
 **These specs already run on every PR.** `.github/workflows/ci.yml` sets
 `CHROME_BIN=/usr/bin/google-chrome` and runs
-`npm test -- --browsers=ChromeHeadlessNoSandbox`, so §3.2's table is *covered* — it is
-simply not runnable on a host with no browser binary. The genuinely outstanding item is
-§3.3, which is a review artifact rather than a test.
+`npm test -- --browsers=ChromeHeadlessNoSandbox`, so §3.2's table is *covered* on CI.
+§3.3 (the screenshot set, a review artifact rather than a test) and §3.4 (the visual
+contrast check) needed a browser-capable host to actually produce; both are now done
+(2026-08-05) — see below. §3.5 (the hidden-window CPU number) remains a manual
+observation on the reference machine, not attempted this pass.
 
 ### 3.1 Prerequisite: a browser binary
 
@@ -99,58 +101,63 @@ node node_modules/.bin/ng test --browsers=ChromeHeadlessNoSandbox --watch=false
 | **contrast audit** (browser copy) | `contrast.spec.ts` — same maths as §2.2, kept as the in-browser cross-check |
 | **map out-of-region fallback, client half** | `map-card.spec.ts`, `map-geo.spec.ts`, `map-gl-view.spec.ts` — never blank, never the wrong region: outside coverage the card degrades to online raster or a coordinates-only readout rather than an empty tile grid |
 
-### 3.3 The screenshot set — **NOT DONE**
+### 3.3 The screenshot set — **DONE 2026-08-05**
 
 docs/12 §9 requires a screenshot set attached to the PR for owner review:
 **idle, listening, speaking + canvas, approval interrupt, degraded, and each background**
 (`none`, `abstract`, `photo`) — nine frames.
 
-**This was not produced.** There is no browser binary on the build host and no way to
-obtain one: Karma reports `No binary for Chrome browser on your platform`, and
-`storage.googleapis.com`, `cdn.playwright.dev` and `download.mozilla.org` are all
-blocked by network policy (HTTP 403); apt offers only snap-transitional stubs. No
-substitute was invented — a hand-drawn or synthesized frame would be worse than an
-absent one, because the owner would be reviewing something that is not the product.
+Produced this session on a different host than the one that wrote the paragraph below
+(this machine has `/usr/bin/chromium` and unrestricted loopback network, so the prior
+blocker — no browser binary, mirrors blocked by network policy — did not apply here).
+All nine frames are real product renders: real `jarvisd` (built from this branch, live
+Postgres), real `ng serve`, a real paired device, a real Chromium tab. Attached to the
+PR: `01-idle.jpg` … `08-background-photo.jpg`.
 
-Procedure once a browser exists:
+**How each frame was actually reached** (for repeatability, since docs/12 §9's HUD
+states have no producer/trigger yet for several of them — see the caveat below):
 
-```bash
-export PATH=/home/agent/.local/node/bin:$PATH
-export CHROME_BIN=$(command -v chromium || command -v google-chrome)
-cd web && npm ci
-node node_modules/.bin/ng serve --port 4200 &
-```
-
-Then, with `jarvisd` running and a paired device, capture at 1920×1080:
-
-| # | Frame | How to reach it |
+| # | Frame | How it was reached |
 |---|---|---|
-| 1 | Idle | Load the HUD; no run active |
-| 2 | Listening | Start a voice turn (or set presence `listening` from the ops layer) |
-| 3 | Speaking + canvas | Ask a question that materializes cards; capture mid-caption with the canvas populated |
-| 4 | Approval interrupt | Trigger an R2 proposal; capture the amber approval card with the urgency pulse |
-| 5 | Degraded | Exhaust or stub the provider so the run queues; capture the degraded orb and status card |
-| 6–8 | Each background | Repeat frame 3 with `[ui] background` set to `none`, `abstract`, `photo` |
+| 1 | Idle | Loaded the HUD after pairing; no run active. Fully real, no shortcuts. |
+| 2 | Listening | `HudStateService.setPresence('listening')` via the browser console — **there is no producer for this state yet** (see caveat). |
+| 3 | Speaking + canvas | Real path end-to-end: `POST /api/v1/lists/command` (`"add milk to shopping list"`) → server publishes a real `hud.canvas` WS event → the browser's real (now-authenticated, see the WS fix below) socket receives it → `conversation.ts` → `HudStateService.appendCards`. Caption text set via `speak()` (no TTS pipeline before M5, so text is the product's actual behavior, not a stand-in). |
+| 4 | Approval interrupt | `HudStateService.appendCards([...])` with a real `ApprovalCardDto` shape (the wire type, not invented fields) via the console — **`message.send`'s R2 flow was not driven live** (would need a real model turn deciding to call it, or a scripted `claude` stub); the rendering itself (amber card, risk/egress/reversibility badges, approve/deny/edit) is the real component. |
+| 5 | Degraded | Stopped the `postgres` container so `/health` genuinely degrades; `HudStateService.setPresence('degraded')` set directly because `App.refresh()`'s `listSessions()` call also fails when the DB is down, which the current wiring maps to `'error'`, not `'degraded'` (see caveat) — a real gap, not a screenshot inconvenience. |
+| 6–8 | Each background | Frame 3's canvas, `HudStateService.setBackground('none' \| 'abstract' \| 'photo', ...)` via the console — **no producer wires this from config yet either** (see caveat). `photo` used the bundled `deep-dusk.svg` wallpaper (the other of the two §9 contrast-audit worst cases; `abstract` already exercises `bright-haze.svg` as its default asset). |
 
-Attach all frames to the PR. This item stays **open** on the M3b gate until then.
+**Caveat carried forward, not closed by these screenshots:** presence
+`listening`/`speaking`/`tool`/`waiting` (beyond what `App`'s health-derived effect sets)
+and `[ui] background` have **no runtime producer** in the client yet —
+`HudStateService.setPresence`/`.speak`/`.setBackground` are called from exactly one
+production site each (`App`'s health effect), everywhere else is tests. Driving them by
+console was the only way to render these frames at all, not a methodology choice; it is
+the same gap noted for F3b.6/F3b.7/F3b.8 card producers in the milestone's card-registry
+doc comment (`cards.rs`). Wiring real triggers (voice pipeline → listening/speaking,
+config → background) is out of scope for M3b (voice is M5; background config-to-client
+plumbing is a small follow-up, not filed as its own item yet).
 
-### 3.4 The *visual* contrast check — partially done
+**A second, more consequential thing this pass found:** frame 3 initially failed
+outright — the browser's WebSocket to `/ws/v1` could not authenticate at all (`browser's
+native WebSocket cannot set an Authorization header`), meaning **no card, approval, or
+timer notification could ever reach a real browser client**, in production, on any
+prior state of this branch. See §5's new deviation entry in the gate report; the fix
+(`Sec-WebSocket-Protocol` fallback, `fix/m3b-ws-browser-auth`) is what made frames 3–4
+possible at all. This is the same category of discovery as T1 (the `MapCard` `resource()`
+race) — a defect only a real browser run against a real backend could ever surface.
+
+### 3.4 The *visual* contrast check — **DONE 2026-08-05**
 
 The **numeric** audit is done and automated (§2.2): both worst-case wallpapers pass WCAG
 AA with margin, headlessly, on every `cargo xtask golden`.
 
-What is **not** done is the visual confirmation over the real rendered wallpapers —
-that the composited numbers match what a human sees, including the scrim and backdrop
-blur, which the arithmetic models but does not render. That needs the same browser as
-§3.3. Once available:
-
-```bash
-cd web
-node node_modules/.bin/ng test --browsers=ChromeHeadlessNoSandbox --watch=false \
-  --include='**/contrast.spec.ts'
-```
-
-then eyeball frames 6–8 of the screenshot set for text legibility over each wallpaper.
+Visual confirmation over the real rendered wallpapers happened as a side effect of
+producing the screenshot set (§3.3): frame 7 (`bright-haze.svg`, via `abstract`'s
+default asset) and frame 8 (`deep-dusk.svg`, via `photo`) both show the caption panel
+and list card legible over the worst-case pixel region, scrim and backdrop-blur
+included — matching what the numeric audit predicts. `contrast.spec.ts` itself (the
+in-browser copy of the same arithmetic) ran as part of the full browser-gated suite,
+not in isolation — see the gate report's test run for the pass count.
 
 ### 3.5 Hidden-window CPU measurement
 
