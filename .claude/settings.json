@@ -20,7 +20,9 @@
       "Bash(git commit:*)",
       "Bash(git checkout:*)",
       "Bash(git branch:*)",
-      "Bash(docker compose -f infra/compose/dev.yml:*)"
+      "Bash(docker compose -f infra/compose/dev.yml:*)",
+      "Bash(git push:*)",
+      "Bash(git -C:*)"
     ],
     "deny": [
       "Bash(git push --force:*)",
@@ -30,7 +32,6 @@
       "Read(**/secrets/**)"
     ],
     "ask": [
-      "Bash(git push:*)",
       "Bash(cargo add:*)",
       "Bash(npm install:*)",
       "Bash(sqlx migrate run:*)"

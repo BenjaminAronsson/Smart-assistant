@@ -13,6 +13,7 @@ pub mod ids;
 pub mod lists;
 pub mod location;
 pub mod markdown;
+pub mod math;
 pub mod media;
 pub mod policy;
 pub mod run;
