@@ -7,7 +7,7 @@
 
 use axum::Json;
 use axum::extract::{Request, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::Response;
 use jarvis_application::ports::IdentityStore;
@@ -185,15 +185,25 @@ pub async fn pair(
     }))
 }
 
+/// Sentinel offered as the first WS subprotocol so a browser can carry the
+/// device token to `/ws/v1` (see [`ws_subprotocol_token`]). Never a real
+/// subprotocol negotiation — its only job is to mark "the next offered
+/// protocol is a bearer token," so the fallback below can be unambiguous
+/// about what it's looking at, and so `ws::ws_upgrade` only ever needs to
+/// echo the sentinel back, never the token itself.
+pub const WS_DEVICE_TOKEN_PROTOCOL: &str = "jarvis.device.v1";
+
 /// Bearer middleware: every route behind it requires a valid, unrevoked
 /// device token; fails closed with 401 auth.invalid_token (docs/05 §6).
 ///
-/// Falls back to `Sec-WebSocket-Protocol` when `Authorization` is absent —
-/// only `/ws/v1` ever populates that header (a browser's native `WebSocket`
-/// constructor cannot set arbitrary request headers, so the device token
-/// travels as the offered subprotocol instead; `ws::ws_upgrade` echoes it
-/// back to complete the handshake). REST clients never send this header, so
-/// the fallback is inert for every other route behind this middleware.
+/// Falls back to [`ws_subprotocol_token`] when `Authorization` is absent (or
+/// unparseable) **and the request is itself a WebSocket handshake** — a
+/// browser's native `WebSocket` constructor cannot set arbitrary request
+/// headers, so a browser client has no way to send `Authorization` at all.
+/// The handshake check keeps this fallback inert on every REST route: it is
+/// not enough for a request to merely carry a `Sec-WebSocket-Protocol`
+/// header, it must also carry `Upgrade: websocket` + `Sec-WebSocket-Key`,
+/// which no REST client (browser or otherwise) has a reason to send.
 pub async fn require_device(
     State(auth): State<AuthState>,
     mut request: Request,
@@ -204,12 +214,7 @@ pub async fn require_device(
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .or_else(|| {
-            request
-                .headers()
-                .get(header::SEC_WEBSOCKET_PROTOCOL)
-                .and_then(|v| v.to_str().ok())
-        });
+        .or_else(|| ws_subprotocol_token(request.headers()));
     let Some(token) = token else {
         return unauthorized();
     };
@@ -246,6 +251,34 @@ fn unauthorized() -> Response {
         "missing, invalid, or revoked device token",
         None,
     )
+}
+
+/// Extract a device token offered as a WS subprotocol, if this request is
+/// genuinely a WebSocket handshake AND the first offered protocol is the
+/// [`WS_DEVICE_TOKEN_PROTOCOL`] sentinel (so a browser opens the socket with
+/// `new WebSocket(url, [WS_DEVICE_TOKEN_PROTOCOL, token])`).
+///
+/// Mirrors axum's own `Sec-WebSocket-Protocol` parsing exactly (every header
+/// instance, comma-split, ASCII-trimmed) so this can never disagree with
+/// what `ws::ws_upgrade` sees when it later decides what to echo back.
+fn ws_subprotocol_token(headers: &HeaderMap) -> Option<&str> {
+    let is_ws_handshake = headers.contains_key(header::SEC_WEBSOCKET_KEY)
+        && headers
+            .get(header::UPGRADE)
+            .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"websocket"));
+    if !is_ws_handshake {
+        return None;
+    }
+    let mut offered = headers
+        .get_all(header::SEC_WEBSOCKET_PROTOCOL)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(str::trim);
+    if offered.next()? != WS_DEVICE_TOKEN_PROTOCOL {
+        return None;
+    }
+    offered.next()
 }
 
 fn generate_pairing_code() -> String {

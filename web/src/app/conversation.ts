@@ -145,10 +145,7 @@ export class Conversation implements OnInit, OnDestroy {
   private connectWebSocket(): void {
     if (!this.sessionId) return;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/v1`;
-    const token = this.api.deviceToken();
-    this.ws = token !== null ? new WebSocket(wsUrl, [token]) : new WebSocket(wsUrl);
+    this.ws = this.api.openSocket('/ws/v1');
 
     this.ws.onmessage = (event) => {
       try {

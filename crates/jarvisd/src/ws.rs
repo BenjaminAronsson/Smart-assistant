@@ -20,8 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use async_trait::async_trait;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
-use axum::http::HeaderMap;
-use axum::http::header::SEC_WEBSOCKET_PROTOCOL;
+use axum::http::HeaderValue;
 use axum::response::Response;
 use jarvis_application::orchestrator::{RunEventSink, RunUpdate};
 use jarvis_application::ports::{DisplayDirectiveSink, RepositoryError};
@@ -341,34 +340,41 @@ pub struct WsState {
 ///
 /// A browser's native `WebSocket` constructor cannot set an `Authorization`
 /// header on the handshake request, so `require_device` accepts the device
-/// token via `Sec-WebSocket-Protocol` as a fallback for this route (the
-/// client passes it as the `protocols` argument: `new WebSocket(url,
-/// [token])`). The handshake only *completes* if the server selects one of
-/// the offered subprotocols, so it must be echoed back here — by the time
-/// this handler runs, whatever value it carried has already been validated
-/// as the bearer token (or the middleware would have failed closed).
+/// token as a WS subprotocol instead, behind the `WS_DEVICE_TOKEN_PROTOCOL`
+/// sentinel (`crate::auth::ws_subprotocol_token`): a browser opens the
+/// socket with `new WebSocket(url, [WS_DEVICE_TOKEN_PROTOCOL, token])`. The
+/// handshake only *completes* if the server selects one of the offered
+/// subprotocols, so the sentinel — and only the sentinel, never the token —
+/// is echoed back here to complete it. Echoing the token itself would put a
+/// bearer secret in a response header no log/proxy redaction list expects
+/// (unlike `Authorization`); the sentinel carries no authority on its own.
 pub async fn ws_upgrade(
     State(state): State<WsState>,
     Query(params): Query<WsParams>,
-    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
     // Absent `since` = live-only from now; `since=0` = replay everything (outbox
     // ids start at 1 and the filter is `id > since`); a negative value clamps to
     // a full replay rather than being rejected.
     let since = params.since.map(|s| s.max(0));
-    let offered_protocol = headers
-        .get(SEC_WEBSOCKET_PROTOCOL)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
+    // `requested_protocols()` is a `BTreeSet` internally (sorted, not
+    // offer-order), so this is a presence check only — the sentinel's
+    // *position* (must be offered first) is enforced order-sensitively in
+    // `auth::ws_subprotocol_token`, which reads the raw header directly
+    // rather than through this extractor.
+    let offered_token_protocol = ws
+        .requested_protocols()
+        .any(|p| p.as_bytes() == crate::auth::WS_DEVICE_TOKEN_PROTOCOL.as_bytes());
     // M1 accepts NO inbound commands over the socket (run control is REST), so
     // tighten the default 64 MiB ceiling to a small cap — a client has no
     // legitimate large inbound payload (DoS hardening, security-auditor F1.5).
     let mut ws = ws
         .max_message_size(MAX_INBOUND_FRAME_BYTES)
         .max_frame_size(MAX_INBOUND_FRAME_BYTES);
-    if let Some(protocol) = offered_protocol {
-        ws = ws.protocols([protocol]);
+    if offered_token_protocol {
+        ws.set_selected_protocol(HeaderValue::from_static(
+            crate::auth::WS_DEVICE_TOKEN_PROTOCOL,
+        ));
     }
     ws.on_upgrade(move |socket| handle_socket(socket, state, since))
 }

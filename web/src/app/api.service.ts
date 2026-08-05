@@ -22,6 +22,14 @@ import type {
 const TOKEN_KEY = 'jarvis.deviceToken';
 
 /**
+ * Sentinel offered as the first WS subprotocol so `jarvisd::auth::
+ * ws_subprotocol_token` can unambiguously tell "the next offered protocol is
+ * a bearer token" from an ordinary subprotocol negotiation attempt. Must
+ * match `jarvisd::auth::WS_DEVICE_TOKEN_PROTOCOL` exactly.
+ */
+const WS_DEVICE_TOKEN_PROTOCOL = 'jarvis.device.v1';
+
+/**
  * Thin typed client over the jarvisd REST surface (docs/05 §1). All wire
  * shapes come from src/generated — never hand-written (ws-contracts skill).
  * The device token lives in localStorage for the M0 shell; keyring-backed
@@ -40,16 +48,19 @@ export class ApiService {
   }
 
   /**
-   * The paired device token, for the one caller that cannot use
-   * {@link authHeaders}: opening `/ws/v1`. A browser's native `WebSocket`
-   * constructor has no way to set an `Authorization` header, so the token
-   * travels as the offered subprotocol instead (`new WebSocket(url,
-   * [token])`) — `jarvisd::auth::require_device` accepts that as a fallback
-   * for this route only, and `ws::ws_upgrade` echoes it back to complete the
-   * handshake.
+   * Open an authenticated WebSocket at `path` (e.g. `/ws/v1`). A browser's
+   * native `WebSocket` constructor has no way to set an `Authorization`
+   * header on the handshake, so the device token travels as an offered
+   * subprotocol instead, behind the {@link WS_DEVICE_TOKEN_PROTOCOL}
+   * sentinel — `jarvisd::auth::ws_subprotocol_token` accepts that as a
+   * fallback (only for a genuine WS handshake), and `ws::ws_upgrade` echoes
+   * just the sentinel back to complete it, never the token itself.
    */
-  deviceToken(): string | null {
-    return localStorage.getItem(TOKEN_KEY);
+  openSocket(path: string): WebSocket {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = `${protocol}//${window.location.host}${path}`;
+    const token = localStorage.getItem(TOKEN_KEY);
+    return token !== null ? new WebSocket(url, [WS_DEVICE_TOKEN_PROTOCOL, token]) : new WebSocket(url);
   }
 
   async pair(pairingCode: string, deviceName: string): Promise<PairResponse> {
