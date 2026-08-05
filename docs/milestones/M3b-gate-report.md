@@ -1,17 +1,19 @@
 # M3b "HUD face, deep dive, personal utilities" — Gate Report
 
-**Status: READY FOR OWNER REVIEW — NOT YET SIGNED OFF.** Prepared 2026-08-01, updated
+**Status: ✅ SIGNED OFF 2026-08-05 (owner-approved).** Prepared 2026-08-01, updated
 2026-08-05 (screenshot set produced, one new defect found-fixed-reviewed-merged along the
 way — see below). Milestone loop docs/11 §2. All review passes complete (§4), including
 rust-reviewer + security-auditor on the new fix (no BLOCKING findings, both converged on
-the same should-fix which is now closed — §4.0); all five exit-evidence items are now met
-(§1); awaiting owner decision on the remaining deviations in §5.
+the same should-fix which is now closed — §4.0); all five exit-evidence items are met
+(§1). **Owner accepted all deviations in §5 as recommended**, including D-M3b-5 (stricter
+`is_web_url`, kept as-is) and D-M3b-6 (the artifact-canvas amber label, kept as-is — it
+sits outside the HUD-face §9 grep's scope). Proceeding to merge `integration/m3b` into
+`main` and tag.
 
 Scope since the M3a sign-off: **18 commits** on `integration/m3b` through `3e61598`
 (gate report/docs update), plus `fix/m3b-ws-browser-auth` (3 commits — the fix, a
 review-driven follow-up, and a wire-contract doc note), **merged into `integration/m3b`
 2026-08-05** (`c45c69e`), produced while completing this gate's one outstanding item.
-None of this is merged to `main` yet.
 
 **2026-08-05 update, in one paragraph:** this session ran on a host with a real browser
 binary and unrestricted loopback network — the first time anyone had actually opened the
@@ -265,8 +267,8 @@ pass — a real test execution):**
 | **D-M3b-2** | ✅ **RESOLVED.** Web unit tests could not be executed on this host at gate draft time. | A working `chrome-headless-shell` was obtained during this gate (§4.1 T1's discovery path). `npm test` now runs for real: **232/232 pass**, including the F3b.4 panel-lifecycle specs and the never-before-run `conversation.spec.ts`. Running the suite for real, rather than relying on `tsc --noEmit`, is what surfaced T1 — a genuine production race, not merely a coverage gap. |
 | **D-M3b-3** | ✅ **RESOLVED 2026-08-05.** The visual half of the contrast audit is done. | Confirmed as a side effect of producing the screenshot set: frames 7 and 8 show the caption panel and list card legible over each worst-case wallpaper, scrim and backdrop-blur included, matching the numeric audit (§1 item 1b). |
 | **D-M3b-4** | Deep-dive findings arrive via an explicit endpoint rather than being extracted from tool results. | The orchestrator exposes no tool-result observation seam and `ToolResult` is opaque rendered text; plumbing one is a separate feature. The recorders' guards are what make accepting client-supplied findings safe. |
-| **D-M3b-5** | `is_web_url` now requires ASCII-graphic, so a source URL with a raw non-ASCII path (`…/wiki/Café` un-percent-encoded) is **refused** rather than merely rendered unlinked. | Real fetched URLs are percent-encoded or punycoded, and CLAUDE.md's tie-break prefers the stricter reading. Documented relaxation path exists if the owner disagrees. |
-| **D-M3b-6** | `artifact-canvas.scss:124` paints the "sensitive" label amber (`--c-wait`), arguably against docs/12 §2.1 amber-exclusivity — it is a warning, not a request for a decision. | It sits on the artifact canvas, not the HUD face, so the §9 grep is scoped to exclude it. Flagged rather than silently allowlisted or unilaterally restyled. **Owner's call.** |
+| **D-M3b-5** | ✅ **ACCEPTED 2026-08-05 (owner).** `is_web_url` now requires ASCII-graphic, so a source URL with a raw non-ASCII path (`…/wiki/Café` un-percent-encoded) is **refused** rather than merely rendered unlinked. | Real fetched URLs are percent-encoded or punycoded, and CLAUDE.md's tie-break prefers the stricter reading. Owner accepted the stricter behavior as recommended; the documented relaxation path stays available if it turns out to bite in practice. |
+| **D-M3b-6** | ✅ **ACCEPTED 2026-08-05 (owner).** `artifact-canvas.scss:124` paints the "sensitive" label amber (`--c-wait`), arguably against docs/12 §2.1 amber-exclusivity — it is a warning, not a request for a decision. | It sits on the artifact canvas, not the HUD face, so the §9 grep is scoped to exclude it. Owner accepted as-is rather than restyling or filing a follow-up. |
 | **D-M3b-7** | ✅ **RESOLVED.** `web/src/app/conversation.spec.ts` (the W5 session-scoping regression test) had never been executed. | Ran with the real browser as part of D-M3b-2's resolution: passes (5/5), confirming the W5 fix (session-scoped `hud.canvas` handling) actually holds, not just that it type-checks. |
 
 ---
@@ -303,10 +305,12 @@ pass — a real test execution):**
 
 ---
 
-## 7. Recommendation
+## 7. Recommendation → Sign-off
 
-**Approve-with-deviations** — this is a recommendation, not a sign-off; only the owner can
-accept the deviations and sign the gate (docs/11 §3, "human-only decisions").
+**Approve-with-deviations, and signed off by the owner 2026-08-05.** Only the owner can
+accept deviations and sign the gate (docs/11 §3, "human-only decisions") — recorded here
+as done: all deviations in §5 accepted as recommended, including D-M3b-5 (stricter
+`is_web_url`, kept) and D-M3b-6 (the artifact-canvas amber label, kept as-is).
 
 Grounds:
 
@@ -342,12 +346,12 @@ Grounds:
   bounded, event-driven, or transient. (Not re-run against `W-browser`'s tiny diff; nothing
   in it is resident-memory-relevant.)
 
-Every deviation left in §5 is either a documented, reversible judgement call (D-M3b-5,
-D-M3b-6), an explicitly deferred should-fix the security-auditor itself called
-informational rather than blocking (§4.0: the WS `Origin` allowlist), or fully resolved
-(D-M3b-1 through D-M3b-4, D-M3b-7). None should give the owner real pause the way the
-original D-M3b-1 (missing exit evidence) did.
+Every deviation in §5 is now either accepted by the owner as a documented, reversible
+judgement call (D-M3b-5, D-M3b-6), an explicitly deferred should-fix the security-auditor
+itself called informational rather than blocking (§4.0: the WS `Origin` allowlist), or
+fully resolved (D-M3b-1 through D-M3b-4, D-M3b-7).
 
-**Not done as part of this gate, by design:** merging `integration/m3b` into `main`,
-tagging, and updating `docs/08-roadmap.md`/`docs/milestones/M3-features.md` checkboxes.
+**Next, following this sign-off:** merging `integration/m3b` into `main`, tagging
+`m3b-complete`, and updating `docs/08-roadmap.md`/`docs/milestones/M3-features.md`
+checkboxes.
 Those follow the owner's decision on the deviations above, per the M3a precedent.
