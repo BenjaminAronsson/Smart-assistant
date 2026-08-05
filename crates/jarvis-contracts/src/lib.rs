@@ -20,6 +20,7 @@ pub mod health;
 pub mod lists;
 pub mod maps;
 pub mod media;
+pub mod memories;
 pub mod messages;
 pub mod providers;
 pub mod runs;

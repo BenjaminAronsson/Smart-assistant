@@ -14,6 +14,7 @@ pub mod lists;
 pub mod location;
 pub mod maps;
 pub mod media;
+pub mod memories;
 pub mod observability;
 pub mod pmtiles;
 pub mod problem;

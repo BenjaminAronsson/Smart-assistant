@@ -43,7 +43,9 @@ impl ModelProvider for DeterministicFirstProvider {
             return self.inner.run(request, cancel).await;
         };
 
-        let answer = render_math_answer(&command);
+        let Some(answer) = render_math_answer(&command) else {
+            return self.inner.run(request, cancel).await;
+        };
         Ok(Box::pin(OneShotStream::new([
             ModelEvent::TextDelta(answer),
             ModelEvent::Done(crate::model::FinishReason::Stop),
@@ -51,12 +53,17 @@ impl ModelProvider for DeterministicFirstProvider {
     }
 }
 
-fn render_math_answer(command: &MathCommand) -> String {
-    let result = command.evaluate();
+fn render_math_answer(command: &MathCommand) -> Option<String> {
+    let result = command.evaluate()?;
     let value = jarvis_domain::math::format_number(result.value);
     match result.unit {
-        Some(unit) => format!("{} = {} {}", result.expression, value, unit.symbol()),
-        None => format!("{} = {}", result.expression, value),
+        Some(unit) => Some(format!(
+            "{} = {} {}",
+            result.expression,
+            value,
+            unit.symbol()
+        )),
+        None => Some(format!("{} = {}", result.expression, value)),
     }
 }
 
@@ -86,11 +93,45 @@ impl Stream for OneShotStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ModelProvider;
+    use crate::testing::FakeModel;
 
     #[test]
     fn local_math_answer_has_no_provider_specific_formatting() {
         let command = parse_math_command("15% of 230").expect("fixture parses");
-        let answer = render_math_answer(&command);
+        let answer = render_math_answer(&command).unwrap();
         assert_eq!(answer, "15% of 230 = 34.5");
+    }
+
+    #[tokio::test]
+    async fn recognized_math_does_not_open_the_inner_provider() {
+        let inner = std::sync::Arc::new(FakeModel::streaming(["should not run"]));
+        let provider = DeterministicFirstProvider::new(inner.clone());
+        let _stream = provider
+            .run(
+                ModelRequest {
+                    prompt: "15% of 230".to_owned(),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(!inner.opened());
+    }
+
+    #[tokio::test]
+    async fn unrecognized_input_delegates_to_the_inner_provider() {
+        let inner = std::sync::Arc::new(FakeModel::streaming(["delegated"]));
+        let provider = DeterministicFirstProvider::new(inner.clone());
+        let _stream = provider
+            .run(
+                ModelRequest {
+                    prompt: "tell me a story".to_owned(),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(inner.opened());
     }
 }

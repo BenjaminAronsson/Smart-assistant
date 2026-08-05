@@ -15,6 +15,7 @@ pub mod location;
 pub mod markdown;
 pub mod math;
 pub mod media;
+pub mod memory;
 pub mod policy;
 pub mod run;
 pub mod secrecy;

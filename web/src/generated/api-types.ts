@@ -300,6 +300,8 @@ export type ErrorCode =
       | "tool.result_invalid"
       | "artifact.too_large"
       | "degraded.queued"
+      | "memory.secret_rejected"
+      | "memory.invalid"
     )
   | "artifact.integrity_failed"
   | "media.nothing_playing"
@@ -476,6 +478,32 @@ export type MapTileFormatDto = ("png" | "jpeg" | "webp" | "avif") | "mvt";
  * via the `definition` "PlaybackStatusDto".
  */
 export type PlaybackStatusDto = "playing" | "paused" | "stopped";
+/**
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MemoryLayerDto".
+ */
+export type MemoryLayerDto = "working" | "episodic" | "semantic" | "procedural";
+/**
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "RetentionDto".
+ */
+export type RetentionDto =
+  | ("until_forgotten" | "session")
+  | {
+      expires_at: string;
+    };
+/**
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MemoryScopeDto".
+ */
+export type MemoryScopeDto =
+  | "user"
+  | {
+      session: string;
+    }
+  | {
+      project: string;
+    };
 /**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "SessionStatus".
@@ -1440,6 +1468,42 @@ export interface MediaStateResponse {
   [k: string]: unknown;
 }
 /**
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MemoryDto".
+ */
+export interface MemoryDto {
+  confidence: number;
+  createdAt: string;
+  id: UlidString;
+  layer: MemoryLayerDto;
+  pinned: boolean;
+  retention: RetentionDto;
+  scope: MemoryScopeDto;
+  sensitivity: string;
+  source: MemorySourceDto;
+  text: string;
+  updatedAt: string;
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MemorySourceDto".
+ */
+export interface MemorySourceDto {
+  id?: string | null;
+  kind: string;
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MemoryListResponse".
+ */
+export interface MemoryListResponse {
+  memories: MemoryDto[];
+  nextCursor?: string | null;
+  [k: string]: unknown;
+}
+/**
  * `POST /api/v1/artifacts/{id}/open` (FR-09/10): request that an artifact be
  * rendered on a selected display. `display` names a monitor connector; when
  * omitted, the server falls back to the display profile's `ArtifactCanvas`
@@ -1494,6 +1558,16 @@ export interface PairResponse {
    * Device scopes, e.g. `ui`, `display-agent`, `voice-capture` (docs/05 §6).
    */
   scopes: string[];
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "PatchMemoryRequest".
+ */
+export interface PatchMemoryRequest {
+  pinned?: boolean | null;
+  retention?: RetentionDto | null;
+  text?: string | null;
   [k: string]: unknown;
 }
 /**

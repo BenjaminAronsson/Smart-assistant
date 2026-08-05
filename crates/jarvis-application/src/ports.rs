@@ -8,6 +8,7 @@ use jarvis_domain::conversations::{Message, Session};
 use jarvis_domain::grants::Sha256;
 use jarvis_domain::ids::{ArtifactId, ListId, ListItemId, RunId, SessionId, TimerId};
 use jarvis_domain::lists::{ItemList, ListItem, ListName};
+use jarvis_domain::memory::{Memory, MemoryLayer};
 use jarvis_domain::run::Run;
 use jarvis_domain::timers::{Timer, TimerState};
 use std::time::SystemTime;
@@ -22,6 +23,40 @@ pub enum RepositoryError {
     IdempotencyConflict,
     #[error("storage failure: {0}")]
     Storage(String),
+}
+
+/// Durable memory persistence (FR-16, docs/02 §7). Implementations own the
+/// database transaction and must co-transact the supplied audit event for
+/// every mutation. User identity is an explicit argument on every read/write
+/// so a route cannot accidentally turn an owner-scoped collection into a
+/// global one.
+#[async_trait::async_trait]
+pub trait MemoryStore: Send + Sync {
+    async fn create(&self, memory: &Memory, audit: &AuditEvent) -> Result<(), RepositoryError>;
+    async fn get(
+        &self,
+        user_id: &jarvis_domain::ids::UserId,
+        id: &jarvis_domain::ids::MemoryId,
+    ) -> Result<Option<Memory>, RepositoryError>;
+    async fn list(
+        &self,
+        user_id: &jarvis_domain::ids::UserId,
+        layer: Option<MemoryLayer>,
+        query: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<Memory>, RepositoryError>;
+    /// Replace mutable metadata/text. The implementation must invalidate any
+    /// old embedding in the same transaction; re-embedding is a later,
+    /// deferrable job and stale vectors must never be used.
+    async fn replace(&self, memory: &Memory, audit: &AuditEvent) -> Result<(), RepositoryError>;
+    /// Forget is idempotent. `Ok(false)` means the scoped item was already
+    /// absent; no audit row is written for a change that did not happen.
+    async fn forget(
+        &self,
+        user_id: &jarvis_domain::ids::UserId,
+        id: &jarvis_domain::ids::MemoryId,
+        audit: &AuditEvent,
+    ) -> Result<bool, RepositoryError>;
 }
 
 /// Result of an idempotent create (docs/05 §2, NFR-13).

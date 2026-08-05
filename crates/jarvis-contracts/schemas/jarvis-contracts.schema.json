@@ -746,7 +746,9 @@
             "tool.timeout",
             "tool.result_invalid",
             "artifact.too_large",
-            "degraded.queued"
+            "degraded.queued",
+            "memory.secret_rejected",
+            "memory.invalid"
           ],
           "type": "string"
         },
@@ -1913,6 +1915,138 @@
       ],
       "type": "object"
     },
+    "MemoryDto": {
+      "properties": {
+        "confidence": {
+          "format": "float",
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "layer": {
+          "$ref": "#/definitions/MemoryLayerDto"
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "retention": {
+          "$ref": "#/definitions/RetentionDto"
+        },
+        "scope": {
+          "$ref": "#/definitions/MemoryScopeDto"
+        },
+        "sensitivity": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/definitions/MemorySourceDto"
+        },
+        "text": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "layer",
+        "text",
+        "source",
+        "scope",
+        "retention",
+        "confidence",
+        "sensitivity",
+        "pinned",
+        "createdAt",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "MemoryLayerDto": {
+      "enum": [
+        "working",
+        "episodic",
+        "semantic",
+        "procedural"
+      ],
+      "type": "string"
+    },
+    "MemoryListResponse": {
+      "properties": {
+        "memories": {
+          "items": {
+            "$ref": "#/definitions/MemoryDto"
+          },
+          "type": "array"
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "memories"
+      ],
+      "type": "object"
+    },
+    "MemoryScopeDto": {
+      "oneOf": [
+        {
+          "enum": [
+            "user"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "session": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "project": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "MemorySourceDto": {
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
     "MessageDto": {
       "properties": {
         "content": {
@@ -2043,6 +2177,33 @@
         "deviceToken",
         "scopes"
       ],
+      "type": "object"
+    },
+    "PatchMemoryRequest": {
+      "properties": {
+        "pinned": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "retention": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RetentionDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
       "type": "object"
     },
     "PlaybackStatusDto": {
@@ -2228,6 +2389,29 @@
         }
       },
       "type": "object"
+    },
+    "RetentionDto": {
+      "oneOf": [
+        {
+          "enum": [
+            "until_forgotten",
+            "session"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "expires_at": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "expires_at"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "RiskLevelDto": {
       "description": "Wire projection of [`jarvis_domain::policy::RiskLevel`] (docs/06 §3). An\napproval card only ever carries `R2`/`R3` — `R0`/`R1` auto-authorize and `R4`\nis rejected outright — but the projection is total (no `_`) so a new tier\nforces a decision here rather than silently mapping.",

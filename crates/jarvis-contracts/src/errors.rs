@@ -104,6 +104,10 @@ pub enum ErrorCode {
     /// mint a versioned artifact that says nothing.
     #[serde(rename = "deepdive.nothing_to_promote")]
     DeepDiveNothingToPromote,
+    #[serde(rename = "memory.secret_rejected")]
+    MemorySecretRejected,
+    #[serde(rename = "memory.invalid")]
+    MemoryInvalid,
 }
 
 /// RFC 9457 problem details body plus the stable machine `code` (docs/05 §2).

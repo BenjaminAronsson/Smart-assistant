@@ -76,8 +76,8 @@ pub struct MathResult {
 }
 
 impl MathCommand {
-    pub fn evaluate(&self) -> MathResult {
-        match *self {
+    pub fn evaluate(&self) -> Option<MathResult> {
+        let result = match *self {
             Self::Percentage { percent, of } => MathResult {
                 expression: format_number(percent) + "% of " + &format_number(of),
                 value: percent * of / 100.0,
@@ -93,7 +93,8 @@ impl MathCommand {
                 value: value * from.metres() / to.metres(),
                 unit: Some(to),
             },
-        }
+        };
+        result.value.is_finite().then_some(result)
     }
 }
 
@@ -155,7 +156,10 @@ mod tests {
 
     #[test]
     fn percentage_is_deterministic() {
-        let answer = parse_math_command("15% of 230").unwrap().evaluate();
+        let answer = parse_math_command("15% of 230")
+            .unwrap()
+            .evaluate()
+            .unwrap();
         assert_eq!(answer.expression, "15% of 230");
         assert_eq!(format_number(answer.value), "34.5");
         assert_eq!(answer.unit, None);
@@ -165,7 +169,8 @@ mod tests {
     fn conversion_accepts_spoken_plural_units() {
         let answer = parse_math_command("convert 5 miles to km")
             .unwrap()
-            .evaluate();
+            .evaluate()
+            .unwrap();
         assert_eq!(answer.unit, Some(Unit::Kilometre));
         assert_eq!(format_number(answer.value), "8.05");
     }
@@ -175,5 +180,19 @@ mod tests {
         assert!(parse_math_command("what is fifteen percent of two hundred and thirty").is_none());
         assert!(parse_math_command(&"1".repeat(MAX_UTTERANCE_BYTES + 1)).is_none());
         assert!(parse_math_command("NaN% of 1").is_none());
+    }
+
+    #[test]
+    fn arithmetic_overflow_is_not_rendered_as_an_answer() {
+        assert!(
+            parse_math_command("1e308% of 1e308")
+                .and_then(|command| command.evaluate())
+                .is_none()
+        );
+        assert!(
+            parse_math_command("convert 1e308 km to in")
+                .and_then(|command| command.evaluate())
+                .is_none()
+        );
     }
 }

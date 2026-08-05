@@ -231,14 +231,21 @@ impl RunEngine {
         let session_id = run.session_id.clone();
         let span = tracing::info_span!("run", run_id = %run_id, session_id = %session_id);
 
-        // Single-flight queue (F1.6): acquire permit before invoking model,
-        // hold it through the entire run so only one model invocation happens at a time.
-        let _permit = match self.model_permit.acquire().await {
-            Ok(p) => p,
-            Err(_) => {
-                // Semaphore closed (only on shutdown).
-                tracing::warn!("run started after model permit closed");
-                return;
+        // Single-flight queue (F1.6): reasoning-provider runs acquire the
+        // permit before invoking the model. A recognized deterministic M4
+        // command is local work, so it must not wait behind (or serialize)
+        // an unrelated Claude process; it still traverses the normal
+        // orchestrator/checkpoint/event path below.
+        let _permit = if deterministic_local_request(&input.text) {
+            None
+        } else {
+            match self.model_permit.acquire().await {
+                Ok(p) => Some(p),
+                Err(_) => {
+                    // Semaphore closed (only on shutdown).
+                    tracing::warn!("run started after model permit closed");
+                    return;
+                }
             }
         };
 
@@ -339,6 +346,12 @@ impl RunEngine {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+}
+
+fn deterministic_local_request(text: &str) -> bool {
+    jarvis_domain::math::parse_math_command(text)
+        .and_then(|command| command.evaluate())
+        .is_some()
 }
 
 /// A [`RunEventSink`] that both broadcasts (through the hub) and records the

@@ -57,6 +57,11 @@ const REQUIRED_DEFINITIONS: &[&str] = &[
     "ListCommandResponse",
     "ListEffectDto",
     "PromoteListResponse",
+    // Memory surface (FR-16).
+    "MemoryDto",
+    "MemorySourceDto",
+    "MemoryListResponse",
+    "PatchMemoryRequest",
     // Deep-dive surface (F3b.6, FR-27, ADR-017).
     "HudCanvasDto",
     "CanvasActionDto",

@@ -125,6 +125,12 @@ ulid_id!(
     ListItemId
 );
 ulid_id!(
+    /// One owner-approved or system-created memory item (FR-16, docs/02 §7).
+    /// Embeddings and provenance rows refer to this stable id and are removed
+    /// with it by the forget operation.
+    MemoryId
+);
+ulid_id!(
     /// A single pending human-approval request (F2.5, docs/06 §3). Minted at the
     /// approval-gate boundary (host owns randomness) so the WS `approval.requested`
     /// event and the `POST /runs/{id}/approvals/{approval_id}` decision can be

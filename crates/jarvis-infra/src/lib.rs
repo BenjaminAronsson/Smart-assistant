@@ -13,6 +13,7 @@ pub mod events;
 pub mod grants;
 pub mod identity;
 pub mod lists;
+pub mod memory;
 pub mod messages;
 pub mod runs;
 pub mod sessions;

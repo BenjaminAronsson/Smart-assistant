@@ -112,6 +112,12 @@ pub fn export() -> Value {
     generator.subschema_for::<crate::lists::ListCommandRequest>();
     generator.subschema_for::<crate::lists::ListCommandResponse>();
     generator.subschema_for::<crate::lists::PromoteListResponse>();
+    // Memory review/edit/forget surface (FR-16, docs/02 §7). Memory records
+    // are authenticated REST reads/writes and are not referenced by a WS
+    // event, so register each root explicitly for schema/codegen coverage.
+    generator.subschema_for::<crate::memories::MemoryDto>();
+    generator.subschema_for::<crate::memories::MemoryListResponse>();
+    generator.subschema_for::<crate::memories::PatchMemoryRequest>();
 
     let definitions: Value =
         serde_json::to_value(generator.definitions()).expect("schemas are valid JSON");

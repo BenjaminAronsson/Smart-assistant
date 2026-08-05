@@ -338,7 +338,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         None
     };
 
-    let state = jarvisd::api::AppState::with_database(pool, auth);
+    let state = jarvisd::api::AppState::with_database(pool.clone(), auth);
     let app = jarvisd::api::router_with(
         state,
         jarvisd::api::Wiring {
@@ -353,6 +353,9 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             maps,
             timers: timer_api,
             lists: list_api,
+            memories: Some(jarvisd::memories::MemoryApi::new(
+                Arc::new(jarvis_infra::memory::PgMemoryStore::new(pool.clone())),
+            )),
             deepdive: Some(deepdive),
             web_assets: config.server.web_assets.clone(),
         },
