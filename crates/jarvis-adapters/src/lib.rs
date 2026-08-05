@@ -5,6 +5,7 @@
 pub mod browser;
 pub mod claude_cli;
 pub mod coding;
+pub mod embeddings;
 pub mod mcp_host;
 pub mod media_mpris;
 pub mod timer_alert;

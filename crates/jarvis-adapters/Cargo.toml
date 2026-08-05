@@ -44,6 +44,12 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # (docs/09 §5) and one executor instead of two. `blocking-api` stays off: this
 # adapter is async-only.
 zbus = { version = "5", default-features = false, features = ["tokio"] }
+# CPU-only memory embeddings (M4, docs/03 §3). Keep the model/download surface
+# explicit: no image models or native-TLS default feature set in the daemon.
+fastembed = { version = "=5.17.4", default-features = false, features = [
+    "hf-hub-rustls-tls",
+    "ort-download-binaries-rustls-tls",
+] }
 
 [dev-dependencies]
 # Async unit tests (`#[tokio::test]`) for the tool executors; the current-thread

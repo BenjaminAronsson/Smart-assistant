@@ -59,6 +59,50 @@ pub trait MemoryStore: Send + Sync {
     ) -> Result<bool, RepositoryError>;
 }
 
+/// Provider-neutral semantic retrieval. The embedding vector is deliberately
+/// an owned slice at this boundary; fastembed/pgvector types do not cross the
+/// pure application crate. Implementations must apply the owner/layer filters
+/// before ranking and return a bounded result set.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryHit {
+    pub memory: Memory,
+    pub similarity: f32,
+}
+
+#[async_trait::async_trait]
+pub trait MemoryRetriever: Send + Sync {
+    async fn retrieve(
+        &self,
+        user_id: &jarvis_domain::ids::UserId,
+        layer: Option<MemoryLayer>,
+        embedding: &[f32],
+        limit: u32,
+    ) -> Result<Vec<MemoryHit>, RepositoryError>;
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum EmbeddingError {
+    #[error("embedding provider is unavailable")]
+    Unavailable,
+    #[error("embedding request was cancelled")]
+    Cancelled,
+    #[error("embedding vector has invalid dimensions")]
+    InvalidDimensions,
+    #[error("embedding provider failed")]
+    Failed,
+}
+
+#[async_trait::async_trait]
+pub trait EmbeddingProvider: Send + Sync {
+    fn model_id(&self) -> &str;
+    fn dimensions(&self) -> usize;
+    async fn embed(
+        &self,
+        text: &str,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Vec<f32>, EmbeddingError>;
+}
+
 /// Result of an idempotent create (docs/05 §2, NFR-13).
 #[derive(Debug, Clone, PartialEq)]
 pub enum CreateOutcome {

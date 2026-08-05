@@ -7,7 +7,7 @@
 //! same transaction.
 
 use async_trait::async_trait;
-use jarvis_application::ports::{MemoryStore, RepositoryError};
+use jarvis_application::ports::{MemoryHit, MemoryRetriever, MemoryStore, RepositoryError};
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::ids::{MemoryId, MessageId, RunId, UserId};
 use jarvis_domain::location::Sensitivity;
@@ -225,6 +225,14 @@ impl MemoryStore for PgMemoryStore {
         .execute(&mut *tx)
         .await
         .map_err(|e| storage("memory create source", e))?;
+        if let Some(expires_at) = expires_at {
+            sqlx::query("INSERT INTO memory.retention_jobs (memory_id,expires_at) VALUES ($1,$2)")
+                .bind(memory.id.as_str())
+                .bind(expires_at)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| storage("memory create retention", e))?;
+        }
         crate::audit::append(&mut tx, audit)
             .await
             .map_err(|e| RepositoryError::Storage(format!("memory create audit: {e}")))?;
@@ -238,7 +246,7 @@ impl MemoryStore for PgMemoryStore {
         user_id: &UserId,
         id: &MemoryId,
     ) -> Result<Option<Memory>, RepositoryError> {
-        let row = sqlx::query(&format!("{SELECT} WHERE m.user_id = $1 AND m.id = $2"))
+        let row = sqlx::query(&format!("{SELECT} WHERE m.user_id = $1 AND m.id = $2 AND (m.expires_at IS NULL OR m.expires_at > now())"))
             .bind(user_id.as_str())
             .bind(id.as_str())
             .fetch_optional(&self.pool)
@@ -254,14 +262,16 @@ impl MemoryStore for PgMemoryStore {
         query: Option<&str>,
         limit: u32,
     ) -> Result<Vec<Memory>, RepositoryError> {
-        let mut sql = format!("{SELECT} WHERE m.user_id = $1");
+        let mut sql = format!(
+            "{SELECT} WHERE m.user_id = $1 AND (m.expires_at IS NULL OR m.expires_at > now())"
+        );
         let mut next = 2;
         if selected_layer.is_some() {
             sql.push_str(&format!(" AND m.layer = ${next}"));
             next += 1;
         }
         if query.is_some() {
-            sql.push_str(&format!(" AND m.text ILIKE ${next}"));
+            sql.push_str(&format!(" AND m.text ILIKE ${next} ESCAPE '\\\\'"));
             next += 1;
         }
         sql.push_str(&format!(
@@ -272,7 +282,11 @@ impl MemoryStore for PgMemoryStore {
             request = request.bind(layer_name(value));
         }
         if let Some(value) = query {
-            request = request.bind(format!("%{value}%"));
+            let escaped = value
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            request = request.bind(format!("%{escaped}%"));
         }
         let limit = i64::from(limit.clamp(1, 100));
         request = request.bind(limit);
@@ -318,6 +332,19 @@ impl MemoryStore for PgMemoryStore {
             .execute(&mut *tx)
             .await
             .map_err(|e| storage("memory replace embedding", e))?;
+        sqlx::query("DELETE FROM memory.retention_jobs WHERE memory_id = $1")
+            .bind(memory.id.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| storage("memory replace retention delete", e))?;
+        if let Some(expires_at) = expires_at {
+            sqlx::query("INSERT INTO memory.retention_jobs (memory_id,expires_at) VALUES ($1,$2)")
+                .bind(memory.id.as_str())
+                .bind(expires_at)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| storage("memory replace retention", e))?;
+        }
         crate::audit::append(&mut tx, audit)
             .await
             .map_err(|e| RepositoryError::Storage(format!("memory replace audit: {e}")))?;
@@ -356,5 +383,67 @@ impl MemoryStore for PgMemoryStore {
             .await
             .map_err(|e| storage("memory forget commit", e))?;
         Ok(true)
+    }
+}
+
+fn vector_literal(values: &[f32]) -> Result<String, RepositoryError> {
+    if values.len() != 384 || values.iter().any(|value| !value.is_finite()) {
+        return Err(RepositoryError::Storage(
+            "invalid embedding dimensions".to_owned(),
+        ));
+    }
+    Ok(format!(
+        "[{}]",
+        values
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    ))
+}
+
+#[async_trait]
+impl MemoryRetriever for PgMemoryStore {
+    async fn retrieve(
+        &self,
+        user_id: &UserId,
+        selected_layer: Option<MemoryLayer>,
+        embedding: &[f32],
+        limit: u32,
+    ) -> Result<Vec<MemoryHit>, RepositoryError> {
+        let vector = vector_literal(embedding)?;
+        let mut sql = "SELECT m.id, m.user_id, m.layer, m.text, m.confidence, m.sensitivity, m.scope_kind, m.scope_value, m.retention_kind, m.expires_at, m.pinned, m.created_at, m.updated_at, s.source_kind, s.source_id, 1 - (e.embedding <=> $1::vector) AS similarity FROM memory.memories m JOIN memory.memory_sources s ON s.memory_id = m.id JOIN memory.embeddings e ON e.memory_id = m.id WHERE m.user_id = $2 AND (m.expires_at IS NULL OR m.expires_at > now())".to_owned();
+        if selected_layer.is_some() {
+            sql.push_str(" AND m.layer = $3");
+        }
+        let limit_position = if selected_layer.is_some() { 4 } else { 3 };
+        sql.push_str(&format!(
+            " ORDER BY e.embedding <=> $1::vector, m.id ASC LIMIT ${limit_position}"
+        ));
+        let mut request = sqlx::query(&sql).bind(vector).bind(user_id.as_str());
+        if let Some(value) = selected_layer {
+            request = request.bind(layer_name(value));
+        }
+        request = request.bind(i64::from(limit.clamp(1, 20)));
+        let rows = request
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| storage("memory retrieve", e))?;
+        rows.iter()
+            .map(|row| {
+                let similarity = row
+                    .try_get::<f64, _>("similarity")
+                    .map_err(|e| storage("memory similarity", e))?;
+                if !similarity.is_finite() {
+                    return Err(RepositoryError::Storage(
+                        "invalid memory similarity".to_owned(),
+                    ));
+                }
+                Ok(MemoryHit {
+                    memory: rebuild(row)?,
+                    similarity: similarity as f32,
+                })
+            })
+            .collect()
     }
 }

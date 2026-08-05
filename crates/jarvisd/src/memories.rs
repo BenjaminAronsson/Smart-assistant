@@ -27,6 +27,8 @@ use time::format_description::well_known::Rfc3339;
 use crate::auth::DeviceContext;
 use crate::problem::problem;
 
+const MAX_QUERY_BYTES: usize = 128;
+
 #[derive(Clone)]
 pub struct MemoryApi {
     store: Arc<dyn MemoryStore>,
@@ -143,6 +145,11 @@ pub async fn list(
     Extension(device): Extension<DeviceContext>,
     Query(query): Query<MemoryQuery>,
 ) -> Result<Json<MemoryListResponse>, Response> {
+    if let Some(query) = &query.query
+        && (query.trim().len() < 2 || query.len() > MAX_QUERY_BYTES)
+    {
+        return Err(bad_request("memory query must be 2 to 128 bytes"));
+    }
     let memories = api
         .store
         .list(

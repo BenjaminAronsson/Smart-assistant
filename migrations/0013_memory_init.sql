@@ -62,3 +62,7 @@ CREATE TABLE memory.retention_jobs (
     expires_at  TIMESTAMPTZ NOT NULL,
     processed_at TIMESTAMPTZ
 );
+
+CREATE INDEX memory_retention_jobs_due_idx
+    ON memory.retention_jobs (expires_at, memory_id)
+    WHERE processed_at IS NULL;

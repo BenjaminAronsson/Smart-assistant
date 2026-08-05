@@ -403,6 +403,62 @@ pub struct ObservabilityConfig {
 pub struct ProvidersConfig {
     #[serde(rename = "claude-cli")]
     pub claude_cli: ClaudeCliConfig,
+    #[serde(default)]
+    pub embeddings: EmbeddingsConfig,
+}
+
+/// `[providers.embeddings]` (M4, docs/09 §1/§5). The model is CPU-only and
+/// loaded lazily by the adapter; these values are references/bounds, never
+/// prompt content or secrets.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmbeddingsConfig {
+    #[serde(default = "default_embedding_model")]
+    pub model: String,
+    #[serde(default = "default_embedding_cache_dir")]
+    pub cache_dir: PathBuf,
+    #[serde(default = "default_embedding_idle_unload_secs")]
+    pub idle_unload_secs: u64,
+    #[serde(default = "default_embedding_threads")]
+    pub intra_threads: usize,
+}
+
+fn default_embedding_model() -> String {
+    "bge-small-en-v1.5".to_owned()
+}
+
+fn default_embedding_cache_dir() -> PathBuf {
+    PathBuf::from("/var/lib/jarvis/models")
+}
+
+fn default_embedding_idle_unload_secs() -> u64 {
+    600
+}
+
+fn default_embedding_threads() -> usize {
+    2
+}
+
+impl Default for EmbeddingsConfig {
+    fn default() -> Self {
+        Self {
+            model: default_embedding_model(),
+            cache_dir: default_embedding_cache_dir(),
+            idle_unload_secs: default_embedding_idle_unload_secs(),
+            intra_threads: default_embedding_threads(),
+        }
+    }
+}
+
+impl EmbeddingsConfig {
+    pub fn to_adapter(&self) -> jarvis_adapters::embeddings::FastEmbedConfig {
+        jarvis_adapters::embeddings::FastEmbedConfig {
+            model: self.model.clone(),
+            cache_dir: self.cache_dir.clone(),
+            intra_threads: self.intra_threads,
+            idle_unload_secs: self.idle_unload_secs,
+        }
+    }
 }
 
 /// `[providers.claude-cli]` (docs/09 §1, ADR-004). The reasoning-profile CLI
@@ -461,6 +517,7 @@ impl Default for Config {
                     reasoning_disable_builtin_tools: true,
                     idle_timeout_secs: 60,
                 },
+                embeddings: EmbeddingsConfig::default(),
             },
             integrations: IntegrationsConfig::default(),
             location: LocationConfig::default(),

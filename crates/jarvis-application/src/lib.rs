@@ -7,6 +7,7 @@ pub mod deterministic;
 pub mod health;
 pub mod lists;
 pub mod location;
+pub mod memory;
 pub mod model;
 pub mod orchestrator;
 pub mod policy;
