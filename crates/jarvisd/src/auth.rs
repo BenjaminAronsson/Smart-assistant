@@ -187,6 +187,13 @@ pub async fn pair(
 
 /// Bearer middleware: every route behind it requires a valid, unrevoked
 /// device token; fails closed with 401 auth.invalid_token (docs/05 §6).
+///
+/// Falls back to `Sec-WebSocket-Protocol` when `Authorization` is absent —
+/// only `/ws/v1` ever populates that header (a browser's native `WebSocket`
+/// constructor cannot set arbitrary request headers, so the device token
+/// travels as the offered subprotocol instead; `ws::ws_upgrade` echoes it
+/// back to complete the handshake). REST clients never send this header, so
+/// the fallback is inert for every other route behind this middleware.
 pub async fn require_device(
     State(auth): State<AuthState>,
     mut request: Request,
@@ -196,7 +203,13 @@ pub async fn require_device(
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .or_else(|| {
+            request
+                .headers()
+                .get(header::SEC_WEBSOCKET_PROTOCOL)
+                .and_then(|v| v.to_str().ok())
+        });
     let Some(token) = token else {
         return unauthorized();
     };

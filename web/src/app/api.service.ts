@@ -39,6 +39,19 @@ export class ApiService {
     return localStorage.getItem(TOKEN_KEY) !== null;
   }
 
+  /**
+   * The paired device token, for the one caller that cannot use
+   * {@link authHeaders}: opening `/ws/v1`. A browser's native `WebSocket`
+   * constructor has no way to set an `Authorization` header, so the token
+   * travels as the offered subprotocol instead (`new WebSocket(url,
+   * [token])`) — `jarvisd::auth::require_device` accepts that as a fallback
+   * for this route only, and `ws::ws_upgrade` echoes it back to complete the
+   * handshake.
+   */
+  deviceToken(): string | null {
+    return localStorage.getItem(TOKEN_KEY);
+  }
+
   async pair(pairingCode: string, deviceName: string): Promise<PairResponse> {
     const request: PairRequest = { pairingCode, deviceName };
     const response = await firstValueFrom(

@@ -327,3 +327,48 @@ async fn get_run(harness: &Harness, run_id: &str) -> serde_json::Value {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()
 }
+
+/// A browser's native `WebSocket` constructor has no way to set an
+/// `Authorization` header on the handshake request — `new WebSocket(url,
+/// [token])` (the `Sec-WebSocket-Protocol` header) is the only channel it
+/// has. Every other test in this file authenticates with `Authorization`
+/// because `tokio_tungstenite`, unlike a browser, is free to set arbitrary
+/// headers — which is exactly how this compatibility gap survived
+/// undetected. This test drives the handshake the way a real browser does,
+/// with no `Authorization` header at all, and asserts the server selects the
+/// offered subprotocol (the browser aborts the connection if it doesn't).
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_browser_authenticates_the_socket_via_the_offered_subprotocol(pool: PgPool) {
+    let harness = start(pool, FakeModel::streaming(["hi"])).await;
+
+    let url = format!("ws://{}/ws/v1", harness.addr);
+    let mut request = url.into_client_request().unwrap();
+    request
+        .headers_mut()
+        .insert("Sec-WebSocket-Protocol", harness.token.parse().unwrap());
+
+    let (_socket, response) = connect_async(request).await.expect("ws upgrade");
+    assert_eq!(
+        response
+            .headers()
+            .get("Sec-WebSocket-Protocol")
+            .expect("server must select a protocol or the browser rejects the handshake"),
+        harness.token.as_str(),
+    );
+}
+
+/// A handshake offering neither credential fails closed, same as any other
+/// route behind `require_device`.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_socket_with_no_credentials_anywhere_is_rejected(pool: PgPool) {
+    let harness = start(pool, FakeModel::streaming(["hi"])).await;
+
+    let url = format!("ws://{}/ws/v1", harness.addr);
+    let request = url.into_client_request().unwrap();
+    match connect_async(request).await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        other => panic!("expected the upgrade to be rejected with 401, got {other:?}"),
+    }
+}

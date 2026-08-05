@@ -5,7 +5,6 @@ import {
   inject,
   signal,
   ChangeDetectionStrategy,
-  effect,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -73,6 +72,7 @@ export class Conversation implements OnInit, OnDestroy {
   private sessionId: string | null = null;
   private ws: WebSocket | null = null;
   private resyncCursor = 0;
+  private providerInterval: ReturnType<typeof setInterval> | null = null;
 
   ngOnInit(): void {
     this.sessionId = this.route.snapshot.paramMap.get('id');
@@ -86,20 +86,21 @@ export class Conversation implements OnInit, OnDestroy {
     void this.loadProviders();
     this.connectWebSocket();
 
-    // Refresh providers periodically (F1.7: health polling)
-    const providerInterval = setInterval(() => {
+    // Refresh providers periodically (F1.7: health polling); cleared on
+    // destroy below. (`effect()` requires an injection context, which a
+    // plain lifecycle method is not — a bare `setInterval`/`ngOnDestroy`
+    // pair, matching the WS teardown just below, needs none.)
+    this.providerInterval = setInterval(() => {
       void this.loadProviders();
     }, 10000);
-
-    // Cleanup on destroy
-    effect(() => {
-      return () => clearInterval(providerInterval);
-    });
   }
 
   ngOnDestroy(): void {
     if (this.ws) {
       this.ws.close();
+    }
+    if (this.providerInterval !== null) {
+      clearInterval(this.providerInterval);
     }
   }
 
@@ -146,7 +147,8 @@ export class Conversation implements OnInit, OnDestroy {
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws/v1`;
-    this.ws = new WebSocket(wsUrl);
+    const token = this.api.deviceToken();
+    this.ws = token !== null ? new WebSocket(wsUrl, [token]) : new WebSocket(wsUrl);
 
     this.ws.onmessage = (event) => {
       try {
