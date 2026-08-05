@@ -5,7 +5,6 @@ import {
   inject,
   signal,
   ChangeDetectionStrategy,
-  effect,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -14,6 +13,7 @@ import type {
   SessionDto,
   DomainEvent,
   EventEnvelope,
+  HudCanvasDto,
   TimelineItem,
   MessageDto,
   ProviderState,
@@ -24,6 +24,7 @@ import type {
 } from '../generated/api-types';
 import { ApiService } from './api.service';
 import { ApprovalTray } from './approval-tray';
+import { HudStateService } from './hud/hud-state.service';
 
 /** Cap on the live streaming preview buffer (NIT 4). The durable message that
  * arrives on completion is authoritative, so trimming the transient preview to
@@ -46,6 +47,9 @@ const MAX_STREAMING_CHARS = 100_000;
 export class Conversation implements OnInit, OnDestroy {
   private readonly api = inject(ApiService);
   private readonly route = inject(ActivatedRoute);
+  /** The materialization canvas (docs/12 §2.3). The deep-dive router's
+   * `hud.canvas` instruction is applied to it below (F3b.6). */
+  private readonly hud = inject(HudStateService);
 
   protected readonly session = signal<SessionDto | null>(null);
   protected readonly timeline = signal<TimelineItem[]>([]);
@@ -68,6 +72,7 @@ export class Conversation implements OnInit, OnDestroy {
   private sessionId: string | null = null;
   private ws: WebSocket | null = null;
   private resyncCursor = 0;
+  private providerInterval: ReturnType<typeof setInterval> | null = null;
 
   ngOnInit(): void {
     this.sessionId = this.route.snapshot.paramMap.get('id');
@@ -81,20 +86,21 @@ export class Conversation implements OnInit, OnDestroy {
     void this.loadProviders();
     this.connectWebSocket();
 
-    // Refresh providers periodically (F1.7: health polling)
-    const providerInterval = setInterval(() => {
+    // Refresh providers periodically (F1.7: health polling); cleared on
+    // destroy below. (`effect()` requires an injection context, which a
+    // plain lifecycle method is not — a bare `setInterval`/`ngOnDestroy`
+    // pair, matching the WS teardown just below, needs none.)
+    this.providerInterval = setInterval(() => {
       void this.loadProviders();
     }, 10000);
-
-    // Cleanup on destroy
-    effect(() => {
-      return () => clearInterval(providerInterval);
-    });
   }
 
   ngOnDestroy(): void {
     if (this.ws) {
       this.ws.close();
+    }
+    if (this.providerInterval !== null) {
+      clearInterval(this.providerInterval);
     }
   }
 
@@ -139,9 +145,7 @@ export class Conversation implements OnInit, OnDestroy {
   private connectWebSocket(): void {
     if (!this.sessionId) return;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/v1`;
-    this.ws = new WebSocket(wsUrl);
+    this.ws = this.api.openSocket('/ws/v1');
 
     this.ws.onmessage = (event) => {
       try {
@@ -186,6 +190,18 @@ export class Conversation implements OnInit, OnDestroy {
       return;
     }
 
+    // Transient canvas instruction (F3b.6, FR-27/ADR-017): the server decided
+    // continuation-vs-new-topic and says what this turn does to the canvas.
+    // The decision is never re-derived here — there is one classifier, and it
+    // is the one the human can correct by voice ("new topic").
+    if (env.type === 'hud.canvas') {
+      const canvas = (env.payload as { canvas?: HudCanvasDto }).canvas;
+      if (canvas && this.canvasIsForThisView(canvas)) {
+        this.hud.routeTurn(canvas.action, canvas.label, canvas.cards ?? []);
+      }
+      return;
+    }
+
     const event = {
       ...(env.payload as Record<string, unknown>),
       type: env.type,
@@ -218,6 +234,25 @@ export class Conversation implements OnInit, OnDestroy {
         this.removePendingApproval(event.approvalId);
         break;
     }
+  }
+
+  /**
+   * Whether a canvas instruction belongs to the conversation this view is
+   * showing (F3b.6).
+   *
+   * The WS fan-out is **global** — one broadcast reaches every authenticated
+   * device and every open conversation — so `sessionId` in the payload is the
+   * only thing scoping a canvas instruction to a conversation. Ignoring it let
+   * session B's sources and gallery cards render on session A's canvas, and a
+   * `shelve` from B shelve A's panels.
+   *
+   * A `null`/absent `sessionId` is *not* an unscoped leak: it is the documented
+   * "applies anywhere" case (a list card from the deterministic list grammar,
+   * FR-34, which has no session at all), so it must pass. Only a canvas that
+   * names a *different* conversation is dropped.
+   */
+  private canvasIsForThisView(canvas: HudCanvasDto): boolean {
+    return !canvas.sessionId || canvas.sessionId === this.sessionId;
   }
 
   /** A human decided an approval; block the card and POST the decision. The card

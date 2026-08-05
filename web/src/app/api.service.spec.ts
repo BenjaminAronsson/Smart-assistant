@@ -60,4 +60,35 @@ describe('ApiService', () => {
     });
     await creating;
   });
+
+  describe('getMapCoverage (F3b.5, docs/12 §3)', () => {
+    it('returns the coverage response when an archive is configured', async () => {
+      const coverage = api.getMapCoverage();
+      const request = http.expectOne('/api/v1/map/coverage');
+      request.flush({
+        bounds: { minLon: -1, minLat: -1, maxLon: 1, maxLat: 1 },
+        minZoom: 0,
+        maxZoom: 14,
+        center: { lon: 0, lat: 0, zoom: 10 },
+        tileUrlTemplate: '/api/v1/map/tiles/{z}/{x}/{y}',
+        tileFormat: 'mvt',
+        attribution: '© OpenStreetMap contributors',
+      });
+      expect((await coverage)?.tileFormat).toBe('mvt');
+    });
+
+    it('resolves to null on a 404 — no archive configured is absent, not an error', async () => {
+      const coverage = api.getMapCoverage();
+      const request = http.expectOne('/api/v1/map/coverage');
+      request.flush('not found', { status: 404, statusText: 'Not Found' });
+      expect(await coverage).toBeNull();
+    });
+
+    it('rethrows any other failure — a 5xx is not "no archive"', async () => {
+      const coverage = api.getMapCoverage();
+      const request = http.expectOne('/api/v1/map/coverage');
+      request.flush('boom', { status: 503, statusText: 'Service Unavailable' });
+      await expectAsync(coverage).toBeRejected();
+    });
+  });
 });

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM lists.items\n            WHERE id = $1 AND list_id = $2\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6c4cc9b023d972c0a6708eac8900903dc85e1f76120a1698fe060ba98efa6da5"
+}

@@ -1,0 +1,63 @@
+<section class="map-card" [attr.aria-label]="card().label">
+  <h3 class="map-title">{{ card().label }}</h3>
+  @if (card().destinationLabel; as label) {
+    <p class="map-destination-label">{{ label }}</p>
+  }
+
+  @if (activeTileConfig(); as cfg) {
+    <div class="map-gl-wrap" [class.expanded]="expanded()">
+      @defer (on immediate) {
+        <app-map-gl-view
+          [mode]="cfg.mode"
+          [tileUrlTemplate]="cfg.tileUrlTemplate"
+          [tileFormat]="cfg.tileFormat"
+          [minZoom]="cfg.minZoom"
+          [maxZoom]="cfg.maxZoom"
+          [attribution]="cfg.attribution"
+          [destination]="card().destination"
+          [currentLocation]="card().currentLocation ?? null"
+          [route]="card().route ?? []"
+        />
+      } @placeholder {
+        <div class="map-placeholder" aria-hidden="true"></div>
+      }
+      <!-- Outside the @defer block on purpose: expanded() must stay closable
+           (button + the component's global Escape handler) even while the GL
+           chunk is still loading, never gated behind it. -->
+      @if (expanded()) {
+        <button type="button" class="map-overlay-close" (click)="setExpanded(false)">
+          &times; Close large map
+        </button>
+      }
+    </div>
+    <button
+      type="button"
+      class="open-large"
+      (click)="setExpanded(true)"
+      [attr.aria-label]="'Open ' + card().label + ' large'"
+    >
+      Open large
+    </button>
+  } @else if (mode() === 'coords') {
+    <div class="coords-only">
+      <p class="coords-line">{{ coordsText() }}</p>
+      @if (bearingText(); as bearing) {
+        <p class="bearing-line">{{ bearing }}</p>
+      }
+      <p class="coords-note">No interactive map available for this location right now.</p>
+    </div>
+  } @else {
+    <div class="map-placeholder" aria-hidden="true"></div>
+  }
+
+  @if (card().distance || card().walkTime) {
+    <p class="map-footer">
+      @if (card().distance; as distance) {
+        <span class="map-distance">{{ distance }}</span>
+      }
+      @if (card().walkTime; as walkTime) {
+        <span class="map-walktime">{{ walkTime }}</span>
+      }
+    </p>
+  }
+</section>

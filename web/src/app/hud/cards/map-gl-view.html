@@ -1,0 +1,12 @@
+<!-- Decorative relative to the card: MapCard already renders the destination
+     label, coordinates, distance and walk time as plain text alongside this
+     view (docs/12 §8 — every visual fact has a text equivalent), so the GL
+     canvas itself is hidden from assistive tech rather than attempting to
+     describe live pan/zoom state through ARIA. -->
+<div #mapContainer class="map-gl-container" aria-hidden="true"></div>
+
+<!-- S4: plain Angular text interpolation, not MapLibre's own
+     AttributionControl (which would feed this server-supplied string to an
+     `innerHTML` sink). Permanently visible, not dismissible/collapsible
+     (docs/12 §3: OSM attribution is never hidden). -->
+<p class="map-attribution">{{ attribution() }}</p>

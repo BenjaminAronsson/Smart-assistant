@@ -115,6 +115,12 @@ pub struct Wiring {
     /// a 404 on coverage as "no local map" and takes the docs/12 §3 fallback).
     pub maps: Option<crate::maps::MapApi>,
     pub timers: Option<crate::timers::TimerApi>,
+    /// Lists and quick notes (F3b.8, FR-34, ADR-024).
+    pub lists: Option<crate::lists::ListApi>,
+    /// Deep-dive threads (F3b.6, FR-27, ADR-017). The same handle is given to
+    /// [`crate::runs::RunApi`], which routes the turn on the message path; this
+    /// mounts the findings and promotion entry points.
+    pub deepdive: Option<crate::deepdive::DeepDiveApi>,
     pub web_assets: Option<std::path::PathBuf>,
 }
 
@@ -135,6 +141,8 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
         media,
         maps,
         timers,
+        lists,
+        deepdive,
         web_assets,
     } = wiring;
     // Health and pair are unauthenticated by design but loopback-only:
@@ -223,6 +231,48 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
                     .route(
                         "/api/v1/timers/{id}/action",
                         axum::routing::post(crate::timers::act),
+                    )
+                    .with_state(api),
+            );
+        }
+        if let Some(api) = lists {
+            protected = protected.merge(
+                Router::new()
+                    .route(
+                        "/api/v1/lists",
+                        get(crate::lists::index).post(crate::lists::create),
+                    )
+                    .route("/api/v1/lists/{id}", get(crate::lists::get))
+                    .route(
+                        "/api/v1/lists/{id}/items",
+                        axum::routing::post(crate::lists::add_item),
+                    )
+                    .route(
+                        "/api/v1/lists/{id}/items/{item_id}",
+                        axum::routing::patch(crate::lists::check_item)
+                            .delete(crate::lists::remove_item),
+                    )
+                    .route(
+                        "/api/v1/lists/command",
+                        axum::routing::post(crate::lists::command),
+                    )
+                    .route(
+                        "/api/v1/lists/{id}/promote",
+                        axum::routing::post(crate::lists::promote),
+                    )
+                    .with_state(api),
+            );
+        }
+        if let Some(api) = deepdive {
+            protected = protected.merge(
+                Router::new()
+                    .route(
+                        "/api/v1/sessions/{id}/deepdive/findings",
+                        axum::routing::post(crate::deepdive::record_findings),
+                    )
+                    .route(
+                        "/api/v1/sessions/{id}/deepdive/promote",
+                        axum::routing::post(crate::deepdive::promote),
                     )
                     .with_state(api),
             );

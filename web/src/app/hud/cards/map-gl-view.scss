@@ -1,0 +1,59 @@
+/* MapLibre's own control CSS is NOT imported here — it lives in
+ * `src/styles.scss`. Two reasons, both hard:
+ *
+ * 1. It would not work. This component uses Angular's default emulated
+ *    encapsulation, so every selector in this file is rewritten to match a
+ *    `_ngcontent-*` attribute. MapLibre builds its controls imperatively at
+ *    runtime, and those elements never carry that attribute — so a vendor
+ *    stylesheet scoped here styles nothing.
+ * 2. At 70 kB it is 8x the `anyComponentStyle` error budget in angular.json,
+ *    which exists to catch exactly this: bulk CSS smuggled in as a component
+ *    style. The budget is not the problem; the placement was.
+ *
+ * The expensive half of MapLibre — the ~955 kB of JS — is still lazy, loaded
+ * by `map-gl-view.ts`'s dynamic `import('maplibre-gl')` behind MapCard's
+ * `@defer`. Only the stylesheet is eager, and it gzips to roughly 10 kB. */
+
+:host {
+  display: block;
+  position: relative;
+  inline-size: 100%;
+  /* docs/12 §7: by aspect-ratio, not a fixed pixel height, so the same card
+   * holds from a 1080p laptop to a 4K TV to portrait mobile. */
+  aspect-ratio: 16 / 10;
+  border-radius: 0.8vmin;
+  overflow: hidden;
+}
+
+.map-gl-container {
+  inline-size: 100%;
+  block-size: 100%;
+}
+
+/* S4: plain-text attribution overlay (see map-gl-view.html). Positioned like
+ * MapLibre's own bottom-right attribution control so it reads the same way,
+ * but there is no toggle/close affordance anywhere in this markup — it
+ * cannot be dismissed or collapsed (docs/12 §3). A translucent backing keeps
+ * it legible over arbitrary tile imagery in both color schemes. */
+.map-attribution {
+  position: absolute;
+  inset-block-end: 0;
+  inset-inline-end: 0;
+  z-index: 1;
+  margin: 0;
+  padding: 0.2vmin 0.8vmin;
+  max-inline-size: 100%;
+  background: rgb(255 255 255 / 0.72);
+  color: #222;
+  font-size: clamp(9px, 1.1vmin, 11px);
+  line-height: 1.4;
+  overflow-wrap: break-word;
+  pointer-events: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  .map-attribution {
+    background: rgb(20 20 20 / 0.72);
+    color: #eee;
+  }
+}

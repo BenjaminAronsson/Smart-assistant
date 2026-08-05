@@ -6,18 +6,34 @@
 //! client is allowed to interpolate as markup — every renderer treats every
 //! field as plain text (docs/12 §9 "card grammar only").
 //!
-//! F3b.2 ships the grammar and its Angular renderers with **no server-side
-//! producer** — no WS event carries a [`HudCardDto`] yet, the same
-//! no-producer-less-replayable-event precedent as `crate::artifacts` (see that
-//! module's doc comment). The first producer is the deep-dive work (F3b.6).
+//! F3b.2 shipped the grammar and its Angular renderers with **no server-side
+//! producer** — the same no-producer-less-replayable-event precedent as
+//! `crate::artifacts` (see that module's doc comment). That is no longer the
+//! case: F3b.6 wired the producer, and every card below reaches the client
+//! inside [`crate::deepdive::HudCanvasDto`], the payload of the transient
+//! `hud.canvas` event. Two of them are produced today —
+//! [`HudCardDto::Sources`]/[`HudCardDto::Gallery`] from a live deep-dive thread
+//! (`jarvisd::deepdive`), and [`HudCardDto::List`] from the deterministic list
+//! grammar (`jarvisd::lists`). The rest of the v1 set is still awaiting the
+//! feature that materializes it; a variant with no producer is a card type the
+//! HUD can render the day something builds one, not a contract defect.
 //! The v1 set is exactly the types F3b.2 owns per docs/milestones/M3-features.md:
 //! value readout, place, entity/person, media/menu grid, headlines/digest,
 //! now-playing (data only — live playback control stays on the media bar until
 //! M5), approval (wire-reused from [`crate::approvals::ApprovalCardDto`], never
-//! re-modeled), status/queued, and error. Timer/list/sources/gallery/map/
-//! product/agenda cards are later features (F3b.5/6/7/8) and are deliberately
-//! absent — adding one is an additive enum variant, never a change to this
-//! one's shape.
+//! re-modeled), status/queued, and error. Timer/product/agenda cards are later
+//! features and are deliberately absent — adding one is an additive enum
+//! variant, never a change to this one's shape.
+//!
+//! Three later features took exactly that route: F3b.5 added the map card
+//! ([`HudCardDto::Map`], below); F3b.6 the two deep-dive types,
+//! [`HudCardDto::Sources`] (the bibliography for "show me the references") and
+//! [`HudCardDto::Gallery`] (images, **each tile individually attributed** —
+//! ADR-017); and F3b.8 the [`HudCardDto::List`] card (FR-34/ADR-024). Note what
+//! neither deep-dive type has: a field for page *body* text. Reading a source is
+//! a browser handoff (FR-15, ADR-017 §3), so the HUD has nowhere to re-render a
+//! fetched page even if a producer wanted to — a scope and a copyright boundary
+//! made structural rather than remembered.
 //!
 //! **Source-chip is structurally unavoidable** (docs/12 §2.3, FR-25/ADR-014).
 //! [`SourcedImageDto`] is the *only* way any card carries an image, and its
@@ -26,6 +42,15 @@
 //! also carrying its attribution and alt text in the same value. A card with no
 //! extractable image simply omits the `Option<SourcedImageDto>` field and
 //! renders text-only (docs/12 §2.3).
+//!
+//! **The map card carries no rendering-mode field** (F3b.5, docs/12 §3,
+//! ADR-013). Whether the client draws the local PMTiles extract, falls back to
+//! online OSM raster, or degrades to a coordinates-only readout is decided
+//! *client-side*, at render time, from `GET /api/v1/map/coverage` and current
+//! network state (`crate::maps::MapCoverageResponse`) — never baked into the
+//! card payload at production time. A card produced while the archive was
+//! reachable must still degrade correctly if the client renders it later
+//! offline, so the DTO carries only the destination/route facts.
 
 use crate::approvals::ApprovalCardDto;
 use schemars::JsonSchema;
@@ -91,6 +116,37 @@ pub struct HeadlineItemDto {
     /// optional"); when present it still carries its own attribution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thumbnail: Option<SourcedImageDto>,
+}
+
+/// A single WGS84 point in degrees (F3b.5, docs/12 §3): a destination pin, the
+/// current-location dot, or one vertex of a route polyline. Deliberately bare
+/// — no zoom, no bounds, no rendering hint. Those live on the coverage
+/// endpoint (`crate::maps::MapCoverageResponse`), which the client consults
+/// separately to decide *how* to render a point, never on the point itself.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MapPointDto {
+    pub lon: f64,
+    pub lat: f64,
+}
+
+/// One page consulted during a deep dive, as the sources card lists it
+/// (docs/12 §2.3: "title + domain + link each"; FR-27/ADR-017).
+///
+/// `domain` is the chip label and is computed **server-side** from the parsed
+/// host (`jarvis_domain::deepdive::display_domain`), never by the client from
+/// `url` — a `https://wikipedia.org@evil.example/` link must not be able to
+/// present itself as `wikipedia.org`. Like [`SourcedImageDto`], every field is
+/// required: there is no way to list a reference without saying where it goes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceItemDto {
+    /// The page's title as consulted — plain text, never markup.
+    pub title: String,
+    /// The link target; always `http(s)` (validated server-side).
+    pub url: String,
+    /// Display domain for the chip, e.g. "en.wikipedia.org".
+    pub domain: String,
 }
 
 /// Registered HUD card types (docs/12 §2.3). The `type` discriminator is
@@ -186,6 +242,72 @@ pub enum HudCardDto {
         art_url: Option<String>,
         source_app: String,
     },
+    /// A map result (F3b.5, docs/12 §3, ADR-013, FR-25): destination pin,
+    /// optional current-location dot, optional route polyline, and
+    /// pre-formatted distance/walk-time text. See the module doc comment for
+    /// why there is no rendering-mode field — local-vs-raster-vs-coordinates
+    /// is a client-side decision made from `crate::maps::MapCoverageResponse`
+    /// at render time, not something baked in here.
+    #[serde(rename = "card.map")]
+    Map {
+        id: String,
+        label: String,
+        destination: MapPointDto,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        destination_label: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        current_location: Option<MapPointDto>,
+        /// Route polyline vertices, in order. Empty when there is no route to
+        /// draw (a bare "where is X" query with no navigation intent).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        route: Vec<MapPointDto>,
+        /// Pre-formatted distance display text (e.g. "1.2 mi"), same
+        /// convention as every other card's display-text fields — the client
+        /// applies tabular-nums, it does not compute the value.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        distance: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        walk_time: Option<String>,
+    },
+    /// The pages a deep dive consulted (docs/12 §2.3/§2.5, FR-27/ADR-017) —
+    /// what "show me the references" materializes. A bibliography, not a
+    /// reader: each item is a title, a domain chip and a link, and opening one
+    /// is a browser handoff (ADR-017 §3), never page content rendered here.
+    #[serde(rename = "card.sources")]
+    Sources {
+        id: String,
+        title: String,
+        items: Vec<SourceItemDto>,
+    },
+    /// A small image grid (docs/12 §2.3, FR-27/ADR-017), capped at
+    /// `jarvis_domain::deepdive::GALLERY_IMAGE_CAP` by the producer.
+    ///
+    /// **Per-tile attribution is structural**: the images are full
+    /// [`SourcedImageDto`]s and this variant has no card-level source field, so
+    /// there is no way to express "one source for all of these" — which ADR-017
+    /// forbids, because a gallery's images routinely come from different pages.
+    #[serde(rename = "card.gallery")]
+    Gallery {
+        id: String,
+        title: String,
+        images: Vec<SourcedImageDto>,
+    },
+    /// A named list with its items (docs/12 §2.3, FR-34/ADR-024): the face of
+    /// "what's on the shopping list", with check-off by voice or tap. The list
+    /// itself is wire-reused from [`crate::lists::ListDto`] rather than
+    /// re-modeled, the same discipline as the approval variant below — there is
+    /// exactly one type that says what a list is on the wire.
+    ///
+    /// `listId` rides alongside the card's own `id` because the check-off tap
+    /// posts to `/api/v1/lists/{listId}/items/{itemId}`: a card id is a
+    /// presentation handle, never an address the client may derive a write from.
+    #[serde(rename = "card.list")]
+    List {
+        id: String,
+        #[schemars(with = "crate::schema::UlidString")]
+        list_id: jarvis_domain::ids::ListId,
+        list: crate::lists::ListDto,
+    },
     /// The approval surface, wire-reused verbatim (docs/06 §3) — never
     /// re-modeled as a distinct card shape, so there is exactly one type that
     /// carries `exactEffect`/`proposedArguments` on the wire.
@@ -218,6 +340,10 @@ impl HudCardDto {
             Self::MediaGrid { .. } => "card.media_grid",
             Self::Headlines { .. } => "card.headlines",
             Self::NowPlaying { .. } => "card.now_playing",
+            Self::Map { .. } => "card.map",
+            Self::Sources { .. } => "card.sources",
+            Self::Gallery { .. } => "card.gallery",
+            Self::List { .. } => "card.list",
             Self::Approval { .. } => "card.approval",
             Self::Status { .. } => "card.status",
             Self::Error { .. } => "card.error",

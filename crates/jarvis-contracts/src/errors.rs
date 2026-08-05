@@ -84,6 +84,26 @@ pub enum ErrorCode {
     /// `timer.invalid_transition`.
     #[serde(rename = "timer.stale")]
     TimerStale,
+    /// The list already holds the maximum number of items (F3b.8, ADR-024).
+    /// 409: the request was well-formed, so it is not `validation.failed`, and
+    /// retrying it unchanged will not help — the owner removes or checks off
+    /// something first, or promotes the list to an artifact, which is exactly
+    /// what promotion is for.
+    #[serde(rename = "list.full")]
+    ListFull,
+    /// The utterance is not unambiguously a list command, so the deterministic
+    /// grammar refused rather than guessing which list the owner meant
+    /// (F3b.8, ADR-024/ADR-016). 422: the body was valid, the *content* was not
+    /// resolvable here — the caller falls back to the normal run path.
+    #[serde(rename = "list.unrecognized_command")]
+    ListUnrecognizedCommand,
+    /// The deep-dive thread has accumulated nothing worth keeping, so there is
+    /// no Research Notes document to write (F3b.6, FR-27/ADR-017). 409: the
+    /// request was well-formed and retrying it unchanged will not help — the
+    /// thread has to consult something first. Promoting a bare heading would
+    /// mint a versioned artifact that says nothing.
+    #[serde(rename = "deepdive.nothing_to_promote")]
+    DeepDiveNothingToPromote,
 }
 
 /// RFC 9457 problem details body plus the stable machine `code` (docs/05 §2).

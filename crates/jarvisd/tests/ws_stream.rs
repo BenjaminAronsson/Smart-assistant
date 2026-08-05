@@ -79,6 +79,9 @@ async fn start(pool: PgPool, model: FakeModel) -> Harness {
         events.clone(),
         engine,
         approval_gate,
+        // This test is the streaming + resync path; the deep-dive router is
+        // exercised through the run surface in `runs_api.rs`.
+        None,
     );
     let ws = WsState {
         hub,
@@ -323,4 +326,118 @@ async fn get_run(harness: &Harness, run_id: &str) -> serde_json::Value {
         .unwrap();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+/// A browser's native `WebSocket` constructor has no way to set an
+/// `Authorization` header on the handshake request — `new WebSocket(url,
+/// [WS_DEVICE_TOKEN_PROTOCOL, token])` (the `Sec-WebSocket-Protocol` header)
+/// is the only channel it has. Every other test in this file authenticates
+/// with `Authorization` because `tokio_tungstenite`, unlike a browser, is
+/// free to set arbitrary headers — which is exactly how this compatibility
+/// gap survived undetected. This test drives the handshake the way a real
+/// browser does, with no `Authorization` header at all, and asserts the
+/// server selects the sentinel subprotocol (the browser aborts the
+/// connection if it doesn't) — and only the sentinel, never the token
+/// itself, so the bearer secret is not reflected into the response.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_browser_authenticates_the_socket_via_the_offered_subprotocol(pool: PgPool) {
+    let harness = start(pool, FakeModel::streaming(["hi"])).await;
+
+    let url = format!("ws://{}/ws/v1", harness.addr);
+    let mut request = url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        format!(
+            "{}, {}",
+            jarvisd::auth::WS_DEVICE_TOKEN_PROTOCOL,
+            harness.token
+        )
+        .parse()
+        .unwrap(),
+    );
+
+    let (_socket, response) = connect_async(request).await.expect("ws upgrade");
+    assert_eq!(
+        response
+            .headers()
+            .get("Sec-WebSocket-Protocol")
+            .expect("server must select a protocol or the browser rejects the handshake"),
+        jarvisd::auth::WS_DEVICE_TOKEN_PROTOCOL,
+        "only the sentinel is echoed back — never the token",
+    );
+}
+
+/// A handshake offering neither credential fails closed, same as any other
+/// route behind `require_device`.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_socket_with_no_credentials_anywhere_is_rejected(pool: PgPool) {
+    let harness = start(pool, FakeModel::streaming(["hi"])).await;
+
+    let url = format!("ws://{}/ws/v1", harness.addr);
+    let request = url.into_client_request().unwrap();
+    match connect_async(request).await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        other => panic!("expected the upgrade to be rejected with 401, got {other:?}"),
+    }
+}
+
+/// The subprotocol fallback validates the token — it is not enough to merely
+/// offer the sentinel; the value behind it must hash to a real, active
+/// device. Without this test, a middleware regression that treated
+/// *presence* of the sentinel as sufficient (skipping the token-hash lookup
+/// entirely) would pass every other test in this file.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_socket_offering_the_sentinel_with_a_bogus_token_is_rejected(pool: PgPool) {
+    let harness = start(pool, FakeModel::streaming(["hi"])).await;
+
+    let url = format!("ws://{}/ws/v1", harness.addr);
+    let mut request = url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        format!(
+            "{}, not-a-real-token",
+            jarvisd::auth::WS_DEVICE_TOKEN_PROTOCOL
+        )
+        .parse()
+        .unwrap(),
+    );
+    match connect_async(request).await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        other => panic!("expected the upgrade to be rejected with 401, got {other:?}"),
+    }
+}
+
+/// The `Sec-WebSocket-Protocol` fallback is scoped to genuine WebSocket
+/// handshakes — offering it on an ordinary REST request (no `Upgrade`/
+/// `Sec-WebSocket-Key`) must not authenticate anything, even with a valid
+/// token behind the sentinel. Without this test, a regression that dropped
+/// the handshake check from `ws_subprotocol_token` would silently widen
+/// every protected REST route's accepted credential surface.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn the_subprotocol_fallback_does_not_authenticate_a_plain_rest_request(pool: PgPool) {
+    let harness = start(pool, FakeModel::streaming(["hi"])).await;
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/sessions")
+                .header(
+                    "Sec-WebSocket-Protocol",
+                    format!(
+                        "{}, {}",
+                        jarvisd::auth::WS_DEVICE_TOKEN_PROTOCOL,
+                        harness.token
+                    ),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }

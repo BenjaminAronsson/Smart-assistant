@@ -8,12 +8,31 @@
 
 use jarvis_contracts::approvals::{ApprovalCardDto, DataEgressDto, RiskLevelDto};
 use jarvis_contracts::cards::{
-    HeadlineItemDto, HudCardDto, MediaGridItemDto, MiniStatDto, SourcedImageDto,
+    HeadlineItemDto, HudCardDto, MapPointDto, MediaGridItemDto, MiniStatDto, SourceItemDto,
+    SourcedImageDto,
 };
+use jarvis_contracts::lists::{ListDto, ListItemDto};
 use serde_json::json;
 
 const RUN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const APPROVAL: &str = "01BX5ZZKBKACTAV9WEVGEMMVS1";
+const LIST: &str = "01BX5ZZKBKACTAV9WEVGEMMVS2";
+const LIST_ITEM: &str = "01BX5ZZKBKACTAV9WEVGEMMVS3";
+
+fn shopping_list() -> ListDto {
+    ListDto {
+        id: LIST.parse().unwrap(),
+        name: "Shopping".into(),
+        items: vec![ListItemDto {
+            id: LIST_ITEM.parse().unwrap(),
+            text: "milk".into(),
+            checked: false,
+        }],
+        open_count: 1,
+        promoted_artifact_id: None,
+        promotion_offered: false,
+    }
+}
 
 fn photo() -> SourcedImageDto {
     SourcedImageDto {
@@ -69,7 +88,11 @@ fn every_card() -> Vec<HudCardDto> {
                 relative_time: "2h ago".into(),
                 source_url: "https://news.example/wc".into(),
                 source_domain: "news.example".into(),
-                thumbnail: None,
+                // Populated on purpose: a digest thumbnail is a web image like
+                // any other, so the attribution walk below must actually reach
+                // it. `headlines_item_omits_an_absent_thumbnail` covers the
+                // `None` shape separately.
+                thumbnail: Some(photo()),
             }],
         },
         HudCardDto::NowPlaying {
@@ -79,6 +102,31 @@ fn every_card() -> Vec<HudCardDto> {
             album: Some("Arrival".into()),
             art_url: Some("https://cdn.example/art.jpg".into()),
             source_app: "Spotify".into(),
+        },
+        HudCardDto::Map {
+            id: "card-11".into(),
+            label: "Ramen Nagi".into(),
+            destination: MapPointDto {
+                lon: -122.4194,
+                lat: 37.7749,
+            },
+            destination_label: Some("Ramen Nagi".into()),
+            current_location: Some(MapPointDto {
+                lon: -122.42,
+                lat: 37.77,
+            }),
+            route: vec![
+                MapPointDto {
+                    lon: -122.42,
+                    lat: 37.77,
+                },
+                MapPointDto {
+                    lon: -122.4194,
+                    lat: 37.7749,
+                },
+            ],
+            distance: Some("1.2 mi".into()),
+            walk_time: Some("24 min".into()),
         },
         HudCardDto::Approval {
             card: ApprovalCardDto {
@@ -91,6 +139,25 @@ fn every_card() -> Vec<HudCardDto> {
                 reversible: false,
                 egress: DataEgressDto::External,
             },
+        },
+        HudCardDto::Sources {
+            id: "card-9".into(),
+            title: "References".into(),
+            items: vec![SourceItemDto {
+                title: "Ramen — Wikipedia".into(),
+                url: "https://en.wikipedia.org/wiki/Ramen".into(),
+                domain: "en.wikipedia.org".into(),
+            }],
+        },
+        HudCardDto::Gallery {
+            id: "card-10".into(),
+            title: "Pictures of ramen".into(),
+            images: vec![photo()],
+        },
+        HudCardDto::List {
+            id: "card-12".into(),
+            list_id: LIST.parse().unwrap(),
+            list: shopping_list(),
         },
         HudCardDto::Status {
             id: "card-7".into(),
@@ -125,13 +192,249 @@ fn card_type_tags_are_dotted_and_disjoint() {
             "card.approval",
             "card.entity",
             "card.error",
+            "card.gallery",
             "card.headlines",
+            "card.list",
+            "card.map",
             "card.media_grid",
             "card.now_playing",
             "card.place",
+            "card.sources",
             "card.status",
             "card.value_readout",
         ]
+    );
+}
+
+// --- List card (F3b.8, FR-34/ADR-024) ------------------------------------
+
+#[test]
+fn list_card_carries_the_list_id_alongside_its_presentation_id() {
+    // The two ids are deliberately distinct (see the variant's doc comment):
+    // `id` is a presentation handle, `listId` is the address the check-off tap
+    // writes to. A client must never be able to derive the write target from
+    // the card id, so both have to survive the wire separately.
+    let card = HudCardDto::List {
+        id: "card-12".into(),
+        list_id: LIST.parse().unwrap(),
+        list: shopping_list(),
+    };
+    let value = serde_json::to_value(&card).unwrap();
+
+    assert_eq!(value["type"], "card.list");
+    assert_eq!(value["id"], "card-12");
+    assert_eq!(
+        value["listId"], LIST,
+        "listId is camelCase and is its own field"
+    );
+    assert_eq!(value["list"]["id"], LIST);
+    assert_eq!(value["list"]["name"], "Shopping");
+    assert_eq!(value["list"]["openCount"], 1, "openCount is camelCase");
+    assert_eq!(value["list"]["items"][0]["text"], "milk");
+    assert_eq!(value["list"]["items"][0]["checked"], false);
+    // Absent rather than null, so "never promoted" and "promoted to nothing"
+    // cannot be confused on the wire.
+    assert!(value["list"].get("promotedArtifactId").is_none());
+
+    let back: HudCardDto = serde_json::from_value(value).unwrap();
+    assert_eq!(back, card);
+}
+
+// --- Deep-dive cards (F3b.6, FR-27/ADR-017) ------------------------------
+
+#[test]
+fn sources_card_carries_a_title_domain_and_link_for_every_page() {
+    // docs/12 §2.3: "a compact list of pages consulted — title + domain + link
+    // each". `domain` is computed server-side so the client never derives
+    // trusted-looking text from an untrusted URL.
+    let value = serde_json::to_value(HudCardDto::Sources {
+        id: "card-9".into(),
+        title: "References".into(),
+        items: vec![SourceItemDto {
+            title: "Ramen — Wikipedia".into(),
+            url: "https://en.wikipedia.org/wiki/Ramen".into(),
+            domain: "en.wikipedia.org".into(),
+        }],
+    })
+    .unwrap();
+    assert_eq!(
+        value,
+        json!({
+            "type": "card.sources",
+            "id": "card-9",
+            "title": "References",
+            "items": [{
+                "title": "Ramen — Wikipedia",
+                "url": "https://en.wikipedia.org/wiki/Ramen",
+                "domain": "en.wikipedia.org",
+            }],
+        })
+    );
+}
+
+#[test]
+fn a_source_item_cannot_omit_its_domain_or_url() {
+    // Same stance as `SourcedImageDto`: attribution is required, so a payload
+    // missing it is a decode error rather than an unlabelled reference.
+    for missing in [
+        json!({ "title": "Ramen", "url": "https://en.wikipedia.org/wiki/Ramen" }),
+        json!({ "title": "Ramen", "domain": "en.wikipedia.org" }),
+    ] {
+        assert!(serde_json::from_value::<SourceItemDto>(missing).is_err());
+    }
+}
+
+#[test]
+fn every_gallery_tile_carries_its_own_attribution() {
+    // ADR-017: images may come from different pages, so "one shared source link
+    // is not acceptable". The wire type makes sharing impossible — the gallery
+    // holds full `SourcedImageDto`s and has no card-level source field at all.
+    let a = SourcedImageDto {
+        url: "https://cdn.example/one.jpg".into(),
+        source_url: "https://a.example/page".into(),
+        source_domain: "a.example".into(),
+        alt: "A bowl of shoyu ramen".into(),
+    };
+    let b = SourcedImageDto {
+        url: "https://cdn.example/two.jpg".into(),
+        source_url: "https://b.example/other".into(),
+        source_domain: "b.example".into(),
+        alt: "A bowl of miso ramen".into(),
+    };
+    let value = serde_json::to_value(HudCardDto::Gallery {
+        id: "card-10".into(),
+        title: "Pictures of ramen".into(),
+        images: vec![a, b],
+    })
+    .unwrap();
+    assert_eq!(value["images"][0]["sourceDomain"], "a.example");
+    assert_eq!(value["images"][1]["sourceDomain"], "b.example");
+    // No card-level attribution field exists to fall back on.
+    assert!(value.get("sourceUrl").is_none());
+    assert!(value.get("sourceDomain").is_none());
+}
+
+#[test]
+fn a_gallery_image_missing_its_alt_text_fails_the_whole_card() {
+    let bad = json!({
+        "type": "card.gallery",
+        "id": "card-10",
+        "title": "Pictures",
+        "images": [{
+            "url": "https://cdn.example/one.jpg",
+            "sourceUrl": "https://a.example/page",
+            "sourceDomain": "a.example",
+        }],
+    });
+    assert!(serde_json::from_value::<HudCardDto>(bad).is_err());
+}
+
+#[test]
+fn no_card_variant_carries_page_body_text() {
+    // ADR-017 §3 / docs/12 §2.5: reading a source is a browser handoff — the
+    // HUD never re-renders full page content. This asserts the *wire* has no
+    // field to put it in: no variant has a body/content/html/text field, so
+    // there is nothing for a producer to fill with a fetched page.
+    for card in every_card() {
+        let value = serde_json::to_value(&card).unwrap();
+        let object = value.as_object().expect("cards serialize as objects");
+        for forbidden in ["body", "content", "html", "text", "pageText", "fullText"] {
+            assert!(
+                !object.contains_key(forbidden),
+                "{} must not carry a `{forbidden}` field",
+                card.card_type()
+            );
+        }
+    }
+}
+
+#[test]
+fn headlines_item_omits_an_absent_thumbnail() {
+    // docs/12 §2.3: "no photos required, thumbnail optional". An item without
+    // one omits the key entirely rather than sending `null`, so a text-only
+    // digest costs nothing on the wire and the client has one shape to test.
+    let value = serde_json::to_value(HudCardDto::Headlines {
+        id: "card-5".into(),
+        title: "World Cup".into(),
+        items: vec![HeadlineItemDto {
+            title: "Final set for Sunday".into(),
+            summary: "Two sides confirmed after semifinal wins.".into(),
+            relative_time: "2h ago".into(),
+            source_url: "https://news.example/wc".into(),
+            source_domain: "news.example".into(),
+            thumbnail: None,
+        }],
+    })
+    .unwrap();
+    let item = &value["items"][0];
+    assert!(item.get("thumbnail").is_none());
+    // The item's own source link is never optional, thumbnail or not.
+    assert_eq!(item["sourceUrl"], "https://news.example/wc");
+    assert_eq!(item["sourceDomain"], "news.example");
+}
+
+#[test]
+fn every_web_sourced_image_on_any_card_carries_its_source_link() {
+    // docs/12 §9 acceptance, mechanised across the *whole* union rather than
+    // one variant at a time: walk every card's serialized form and require that
+    // anything image-shaped (`url` + `alt`) also carries `sourceUrl`,
+    // `sourceDomain` and non-empty alt text. A future variant that adds an image
+    // field as a bare URL string is caught here without anyone remembering to
+    // extend the test — which is the point, since the omission would be silent.
+    //
+    // `card.now_playing`'s `artUrl` is deliberately *not* image-shaped: it is the
+    // player's own album art, not third-party web content, and owes no chip
+    // (see the variant's doc comment). It has no `alt` sibling, so the walk
+    // skips it — and the moment someone gives it one, this test starts
+    // demanding attribution for it.
+    fn walk(value: &serde_json::Value, card_type: &str, found: &mut usize) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if let (Some(url), Some(alt)) = (
+                    map.get("url").and_then(|v| v.as_str()),
+                    map.get("alt").and_then(|v| v.as_str()),
+                ) {
+                    for field in ["sourceUrl", "sourceDomain"] {
+                        assert!(
+                            map.get(field)
+                                .and_then(|v| v.as_str())
+                                .is_some_and(|s| !s.trim().is_empty()),
+                            "{card_type}: image {url} carries no `{field}` — every \
+                             web-sourced image on a card shows its source link \
+                             (docs/12 §9, FR-25/ADR-014)"
+                        );
+                    }
+                    assert!(
+                        !alt.trim().is_empty(),
+                        "{card_type}: image {url} carries no alt text (docs/12 §8)"
+                    );
+                    *found += 1;
+                }
+                for nested in map.values() {
+                    walk(nested, card_type, found);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    walk(item, card_type, found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut found = 0usize;
+    for card in every_card() {
+        walk(
+            &serde_json::to_value(&card).unwrap(),
+            card.card_type(),
+            &mut found,
+        );
+    }
+    assert!(
+        found >= 5,
+        "the walk found only {found} images — `every_card()` must keep exercising \
+         every image-bearing variant, or this passes vacuously"
     );
 }
 
@@ -269,6 +572,79 @@ fn now_playing_art_is_a_plain_url_not_a_sourced_image() {
     let value = serde_json::to_value(&card).unwrap();
     assert_eq!(value["artUrl"], "https://cdn.example/art.jpg");
     assert!(value["artUrl"].is_string());
+}
+
+#[test]
+fn map_card_omits_absent_optional_fields_and_empty_route() {
+    // A bare "where is X" query with no navigation intent: no current
+    // location, no route, no routing facts — text-only besides the pin.
+    let value = serde_json::to_value(HudCardDto::Map {
+        id: "card-9".into(),
+        label: "Angkor Wat".into(),
+        destination: MapPointDto {
+            lon: 103.866667,
+            lat: 13.412500,
+        },
+        destination_label: None,
+        current_location: None,
+        route: vec![],
+        distance: None,
+        walk_time: None,
+    })
+    .unwrap();
+    assert_eq!(
+        value,
+        json!({
+            "type": "card.map",
+            "id": "card-9",
+            "label": "Angkor Wat",
+            "destination": { "lon": 103.866667, "lat": 13.4125 },
+        })
+    );
+    for absent in [
+        "destinationLabel",
+        "currentLocation",
+        "route",
+        "distance",
+        "walkTime",
+    ] {
+        assert!(
+            value.get(absent).is_none(),
+            "expected {absent} to be absent"
+        );
+    }
+}
+
+#[test]
+fn map_card_carries_route_and_current_location_camel_case() {
+    let card = HudCardDto::Map {
+        id: "card-9".into(),
+        label: "Ramen Nagi".into(),
+        destination: MapPointDto {
+            lon: -122.4194,
+            lat: 37.7749,
+        },
+        destination_label: Some("Ramen Nagi".into()),
+        current_location: Some(MapPointDto {
+            lon: -122.42,
+            lat: 37.77,
+        }),
+        route: vec![MapPointDto {
+            lon: -122.42,
+            lat: 37.77,
+        }],
+        distance: Some("1.2 mi".into()),
+        walk_time: Some("24 min".into()),
+    };
+    let value = serde_json::to_value(&card).unwrap();
+    assert_eq!(value["type"], "card.map");
+    assert_eq!(value["destinationLabel"], "Ramen Nagi");
+    assert_eq!(value["currentLocation"]["lat"], 37.77);
+    assert_eq!(value["route"][0]["lon"], -122.42);
+    assert_eq!(value["distance"], "1.2 mi");
+    assert_eq!(value["walkTime"], "24 min");
+    let back: HudCardDto = serde_json::from_value(value).unwrap();
+    assert_eq!(back, card);
 }
 
 #[test]

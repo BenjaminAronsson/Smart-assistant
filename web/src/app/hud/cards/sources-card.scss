@@ -1,0 +1,39 @@
+/* Sources card (docs/12 §2.3): a compact list of pages consulted — title +
+ * domain + link each. Compact on purpose; the full bibliography of a promoted
+ * thread lives in the Research Notes artifact, not on the HUD face. */
+
+.sources-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8vmin;
+}
+
+.sources-title {
+  margin: 0;
+  font-size: clamp(14px, 2vmin, 18px);
+  color: var(--ink);
+}
+
+.source-items {
+  display: flex;
+  flex-direction: column;
+  gap: 1vmin;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.source-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3vmin;
+  min-inline-size: 0;
+}
+
+.source-item-title {
+  margin: 0;
+  font-size: clamp(12px, 1.7vmin, 15px);
+  color: var(--ink);
+  /* A long page title must not push the chip out of the card. */
+  overflow-wrap: anywhere;
+}

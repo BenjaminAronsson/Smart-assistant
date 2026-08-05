@@ -1,4 +1,4 @@
-import { HttpClient, HttpHeaders } from '@angular/common/http';
+import { HttpClient, HttpErrorResponse, HttpHeaders } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import type {
@@ -16,9 +16,18 @@ import type {
   MediaCommandRequest,
   MediaCommandResponse,
   MediaStateResponse,
+  MapCoverageResponse,
 } from '../generated/api-types';
 
 const TOKEN_KEY = 'jarvis.deviceToken';
+
+/**
+ * Sentinel offered as the first WS subprotocol so `jarvisd::auth::
+ * ws_subprotocol_token` can unambiguously tell "the next offered protocol is
+ * a bearer token" from an ordinary subprotocol negotiation attempt. Must
+ * match `jarvisd::auth::WS_DEVICE_TOKEN_PROTOCOL` exactly.
+ */
+const WS_DEVICE_TOKEN_PROTOCOL = 'jarvis.device.v1';
 
 /**
  * Thin typed client over the jarvisd REST surface (docs/05 §1). All wire
@@ -36,6 +45,22 @@ export class ApiService {
 
   hasToken(): boolean {
     return localStorage.getItem(TOKEN_KEY) !== null;
+  }
+
+  /**
+   * Open an authenticated WebSocket at `path` (e.g. `/ws/v1`). A browser's
+   * native `WebSocket` constructor has no way to set an `Authorization`
+   * header on the handshake, so the device token travels as an offered
+   * subprotocol instead, behind the {@link WS_DEVICE_TOKEN_PROTOCOL}
+   * sentinel — `jarvisd::auth::ws_subprotocol_token` accepts that as a
+   * fallback (only for a genuine WS handshake), and `ws::ws_upgrade` echoes
+   * just the sentinel back to complete it, never the token itself.
+   */
+  openSocket(path: string): WebSocket {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = `${protocol}//${window.location.host}${path}`;
+    const token = localStorage.getItem(TOKEN_KEY);
+    return token !== null ? new WebSocket(url, [WS_DEVICE_TOKEN_PROTOCOL, token]) : new WebSocket(url);
   }
 
   async pair(pairingCode: string, deviceName: string): Promise<PairResponse> {
@@ -139,6 +164,30 @@ export class ApiService {
     return firstValueFrom(
       this.http.get<ProvidersResponse>('/api/v1/providers', { headers: this.authHeaders() }),
     );
+  }
+
+  /**
+   * The locally served PMTiles archive's coverage (F3b.5, docs/12 §3,
+   * ADR-013). `null` means "no local map configured" (jarvisd registers no
+   * map routes at all when `[maps] pmtiles_path` is unset, so this is a 404 —
+   * absent, not broken; docs/09 §1). Any other failure (network error, 5xx)
+   * rethrows, so the map card's fallback logic can tell "no archive" apart
+   * from "could not ask" and degrade to the safer of the two (coordinates-only)
+   * rather than assuming online raster is reachable.
+   */
+  async getMapCoverage(): Promise<MapCoverageResponse | null> {
+    try {
+      return await firstValueFrom(
+        this.http.get<MapCoverageResponse>('/api/v1/map/coverage', {
+          headers: this.authHeaders(),
+        }),
+      );
+    } catch (e) {
+      if (e instanceof HttpErrorResponse && e.status === 404) {
+        return null;
+      }
+      throw e;
+    }
   }
 
   private authHeaders(): HttpHeaders {

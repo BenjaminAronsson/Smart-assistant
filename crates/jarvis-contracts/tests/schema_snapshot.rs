@@ -46,6 +46,26 @@ const REQUIRED_DEFINITIONS: &[&str] = &[
     "CreateTimerRequest",
     "TimerActionRequest",
     "TimerActionResponse",
+    // List surface (F3b.8, FR-34, ADR-024).
+    "ListDto",
+    "ListItemDto",
+    "ListIndexResponse",
+    "CreateListRequest",
+    "AddListItemRequest",
+    "CheckListItemRequest",
+    "ListCommandRequest",
+    "ListCommandResponse",
+    "ListEffectDto",
+    "PromoteListResponse",
+    // Deep-dive surface (F3b.6, FR-27, ADR-017).
+    "HudCanvasDto",
+    "CanvasActionDto",
+    "SourceHandoffDto",
+    "DeepDiveFindingsRequest",
+    "SourceFindingDto",
+    "ImageFindingDto",
+    "DeepDiveFindingsResponse",
+    "PromoteNotesResponse",
 ];
 
 fn snapshot_path() -> std::path::PathBuf {

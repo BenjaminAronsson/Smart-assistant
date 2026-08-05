@@ -180,8 +180,14 @@ Single-owner, loopback-first — deliberately simple, upgraded at M7:
    device record + opaque device token (random 256-bit, stored hashed server-side, keyring
    client-side). The pair response body is `{ deviceId, deviceToken, scopes }` — the
    granted scope list (§6.3) is returned explicitly so clients never infer it.
-2. **Requests.** Every REST call and the WS upgrade carry `Authorization: Bearer <token>`.
-   Unauthenticated surface: `GET /api/v1/diagnostics/health` on loopback only.
+2. **Requests.** Every REST call carries `Authorization: Bearer <token>`. The `/ws/v1`
+   upgrade does too **for non-browser clients** (the desktop agent, tests) — but a
+   browser's native `WebSocket` constructor cannot set arbitrary request headers on a
+   handshake, so the Angular shell instead offers the token as a WS subprotocol behind a
+   `jarvis.device.v1` sentinel (`new WebSocket(url, ['jarvis.device.v1', token])`);
+   `jarvisd::auth::ws_subprotocol_token` accepts that as a fallback, scoped to genuine WS
+   handshakes only, and echoes back the sentinel (never the token) to complete the
+   negotiation. Unauthenticated surface: `GET /api/v1/diagnostics/health` on loopback only.
 3. **Scopes.** Tokens carry device scopes (e.g. `ui`, `display-agent`, `voice-capture`);
    the desktop agent and the Angular shell are separate devices with separate scopes.
 4. **Revocation.** Immediate per-device token revocation via settings; revoked tokens fail
@@ -222,3 +228,6 @@ and grows additively. HTTP mapping via RFC 9457 problem details.
 | `media.control_unsupported` | Player reports it cannot perform this control | 409 |
 | `timer.invalid_transition` | Verb illegal for the timer's state (snooze before it rang, cancel after) — FR-33 | 409 |
 | `timer.stale` | Timer changed between read and decision (fired, or another device answered); retryable after refresh | 409 |
+| `list.full` | The list is at its item bound; retrying unchanged will not help — the owner removes or checks something off, or promotes the list to an artifact (FR-34) | 409 |
+| `list.unrecognized_command` | The deterministic grammar refused rather than guessing which list the owner meant (FR-34, ADR-024/ADR-016); the body was valid, its *content* was not resolvable here, so the caller falls back to the normal run path | 422 |
+| `deepdive.nothing_to_promote` | The deep-dive thread has consulted nothing yet, so there is no Research Notes document to write (FR-27, ADR-017); promoting a bare heading would mint a versioned artifact that says nothing | 409 |

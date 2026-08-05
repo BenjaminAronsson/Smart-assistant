@@ -1,14 +1,24 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { provideHttpClient, withXhr } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import type { HudCardDto } from '../../../generated/api-types';
 import { HudCard } from './hud-card';
 
 describe('HudCard', () => {
   let fixture: ComponentFixture<HudCard>;
   let el: HTMLElement;
+  let http: HttpTestingController;
 
   function render(card: HudCardDto, index = 0, reducedMotion = false): void {
-    TestBed.configureTestingModule({ providers: [provideZonelessChangeDetection()] });
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        provideHttpClient(withXhr()),
+        provideHttpClientTesting(),
+      ],
+    });
+    http = TestBed.inject(HttpTestingController);
     fixture = TestBed.createComponent(HudCard);
     fixture.componentRef.setInput('card', card);
     fixture.componentRef.setInput('index', index);
@@ -16,6 +26,8 @@ describe('HudCard', () => {
     fixture.detectChanges();
     el = fixture.nativeElement as HTMLElement;
   }
+
+  afterEach(() => http.verify());
 
   it('renders the registered sub-component for a value-readout card', () => {
     render({
@@ -34,6 +46,18 @@ describe('HudCard', () => {
     expect(el.querySelector('app-place-card')).not.toBeNull();
   });
 
+  it('renders the registered sub-component for a map card (F3b.5)', () => {
+    render({
+      type: 'card.map',
+      id: 'card-9',
+      label: 'Ramen Nagi',
+      destination: { lon: -122.4194, lat: 37.7749 },
+    });
+    expect(el.querySelector('app-map-card')).not.toBeNull();
+    // MapCard fetches its own coverage — flush it so `http.verify()` is clean.
+    http.expectOne('/api/v1/map/coverage').flush(null, { status: 404, statusText: 'Not Found' });
+  });
+
   // docs/12 §2.3/§9 acceptance: card grammar only — an unregistered type
   // degrades to the error card, never raw content.
   it('degrades an unrecognized discriminant to the error card', () => {
@@ -49,11 +73,68 @@ describe('HudCard', () => {
       'app-media-grid-card',
       'app-headlines-card',
       'app-now-playing-card',
+      'app-map-card',
+      'app-sources-card',
+      'app-gallery-card',
+      'app-list-card',
       'app-approval-card',
       'app-status-card',
     ]) {
       expect(el.querySelector(selector)).toBeNull();
     }
+  });
+
+  it('renders the registered sub-component for a sources card', () => {
+    render({
+      type: 'card.sources',
+      id: 'card-9',
+      title: 'References',
+      items: [
+        { title: 'Ramen', url: 'https://en.wikipedia.org/wiki/Ramen', domain: 'en.wikipedia.org' },
+      ],
+    });
+    expect(el.querySelector('app-sources-card')).not.toBeNull();
+    expect(el.querySelector('app-error-card')).toBeNull();
+  });
+
+  it('renders the registered sub-component for a gallery card', () => {
+    render({
+      type: 'card.gallery',
+      id: 'card-10',
+      title: 'Pictures',
+      images: [
+        {
+          url: 'https://cdn.example/1.jpg',
+          sourceUrl: 'https://a.example/p',
+          sourceDomain: 'a.example',
+          alt: 'A bowl of ramen',
+        },
+      ],
+    });
+    expect(el.querySelector('app-gallery-card')).not.toBeNull();
+    expect(el.querySelector('app-error-card')).toBeNull();
+  });
+
+  it('renders the registered sub-component for a list card and forwards check-off intents', () => {
+    render({
+      type: 'card.list',
+      id: 'card-11',
+      listId: 'list-1',
+      list: {
+        id: 'list-1',
+        name: 'Shopping',
+        openCount: 1,
+        promotionOffered: false,
+        items: [{ id: 'item-1', text: 'Milk', checked: false }],
+      },
+    });
+    expect(el.querySelector('app-list-card')).not.toBeNull();
+    expect(el.querySelector('app-error-card')).toBeNull();
+
+    const emitted: unknown[] = [];
+    fixture.componentInstance.listCheckItem.subscribe((intent) => emitted.push(intent));
+    el.querySelector<HTMLButtonElement>('.list-item-toggle')?.click();
+    expect(emitted).toEqual([{ listId: 'list-1', itemId: 'item-1', checked: true }]);
   });
 
   it('renders a genuine error card the same way', () => {

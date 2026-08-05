@@ -73,11 +73,18 @@ pub fn export() -> Value {
     generator.subschema_for::<crate::media::MediaStateResponse>();
     generator.subschema_for::<crate::media::MediaCommandRequest>();
     generator.subschema_for::<crate::media::MediaCommandResponse>();
-    // HUD card grammar v1 (F3b.2, docs/12 §2.3). No producer wires this onto
-    // the wire yet (F3b.6 is the first), so `HudCardDto` rides no event — it
-    // must be its own root or it ships absent from the schema, same reasoning
-    // as `ApprovalDecisionDto` above.
+    // HUD card grammar v1 (F3b.2, docs/12 §2.3). Registered as its own root
+    // even though F3b.6's `hud.canvas` event now carries it, so the union stays
+    // a named type the shell imports directly for a single-card render.
     generator.subschema_for::<crate::cards::HudCardDto>();
+    // Deep-dive surface (F3b.6, FR-27, ADR-017). The canvas instruction rides
+    // inside the transient `hud.canvas` event, but the findings request and the
+    // promotion response are REST-only and referenced by no event — each must
+    // be its own root or it ships absent from the wire schema.
+    generator.subschema_for::<crate::deepdive::HudCanvasDto>();
+    generator.subschema_for::<crate::deepdive::DeepDiveFindingsRequest>();
+    generator.subschema_for::<crate::deepdive::DeepDiveFindingsResponse>();
+    generator.subschema_for::<crate::deepdive::PromoteNotesResponse>();
     // Map surface (F3b.5, FR-25, ADR-013). Coverage is a REST-only read the map
     // card makes before it draws anything — it rides in no event, so it must be
     // its own root. `MapBoundsDto` comes along by reference and is a named type
@@ -92,6 +99,19 @@ pub fn export() -> Value {
     generator.subschema_for::<crate::timers::CreateTimerRequest>();
     generator.subschema_for::<crate::timers::TimerActionRequest>();
     generator.subschema_for::<crate::timers::TimerActionResponse>();
+    // List surface (F3b.8, FR-34, ADR-024). `ListDto` rides inside
+    // `HudCardDto::List`, but the shell also reads the index over REST and the
+    // create/add/check/command/promote request+response types are referenced by
+    // no event — each must be its own root or it ships absent from the wire
+    // schema, same reasoning as the timer surface above.
+    generator.subschema_for::<crate::lists::ListDto>();
+    generator.subschema_for::<crate::lists::ListIndexResponse>();
+    generator.subschema_for::<crate::lists::CreateListRequest>();
+    generator.subschema_for::<crate::lists::AddListItemRequest>();
+    generator.subschema_for::<crate::lists::CheckListItemRequest>();
+    generator.subschema_for::<crate::lists::ListCommandRequest>();
+    generator.subschema_for::<crate::lists::ListCommandResponse>();
+    generator.subschema_for::<crate::lists::PromoteListResponse>();
 
     let definitions: Value =
         serde_json::to_value(generator.definitions()).expect("schemas are valid JSON");

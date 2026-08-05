@@ -29,7 +29,72 @@ pub struct Config {
     pub display: DisplayConfig,
     #[serde(default)]
     pub maps: MapsConfig,
+    #[serde(default)]
+    pub ui: UiConfig,
     pub timers: TimersConfig,
+    #[serde(default)]
+    pub lists: ListsConfig,
+}
+
+/// `[ui]` (docs/09 §1, docs/12 §4/§5/§6). HUD presentation and lifecycle knobs.
+///
+/// Every documented key is modelled, even where the behaviour currently lives
+/// client-side (`background`, `motion`, `panel_ttl_hours` are F3b.4/F3b.2
+/// settings the shell applies): `Config` is `deny_unknown_fields`, so a section
+/// that models only *some* of what docs/09 documents would reject an operator's
+/// perfectly correct config file. The section is entirely optional and every
+/// key has the documented default.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiConfig {
+    /// `none | abstract | photo` (docs/12 §5).
+    #[serde(default = "default_background")]
+    pub background: String,
+    /// Path to the wallpaper when `background = "photo"`.
+    #[serde(default)]
+    pub background_photo: String,
+    /// Panels self-expire silently after this many hours (FR-24, docs/12 §4).
+    /// Approvals are exempt.
+    #[serde(default = "default_panel_ttl_hours")]
+    pub panel_ttl_hours: u32,
+    /// Offer to keep a deep-dive thread as a Research Notes artifact after this
+    /// many follow-ups on one thread (FR-27, ADR-017, docs/12 §2.5). **Zero
+    /// disables the offer** rather than making it every turn — that is the
+    /// documented way to turn the feature off, so it is a supported value, not
+    /// a degenerate one.
+    #[serde(default = "default_deepdive_promote_after")]
+    pub deepdive_promote_after: u32,
+    /// `auto | reduced` (docs/12 §6; `auto` honours the OS setting and battery).
+    #[serde(default = "default_motion")]
+    pub motion: String,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            background: default_background(),
+            background_photo: String::new(),
+            panel_ttl_hours: default_panel_ttl_hours(),
+            deepdive_promote_after: default_deepdive_promote_after(),
+            motion: default_motion(),
+        }
+    }
+}
+
+fn default_background() -> String {
+    "none".to_owned()
+}
+
+fn default_panel_ttl_hours() -> u32 {
+    2
+}
+
+fn default_deepdive_promote_after() -> u32 {
+    3
+}
+
+fn default_motion() -> String {
+    "auto".to_owned()
 }
 
 /// `[maps]` (ADR-013, docs/09 §1, docs/12 §3). The locally served PMTiles
@@ -115,6 +180,30 @@ impl Default for TimersConfig {
             alert_command: default_alert_command(),
             alert_args: Vec::new(),
         }
+    }
+}
+
+/// `[lists]` (FR-34, ADR-024, docs/09 §1). Lists and quick notes are **on by
+/// default**, for the same reason timers are: the whole module reaches nothing
+/// outside this machine — it parses an utterance with a pure function and writes
+/// a local row. There is nothing here to gate.
+///
+/// Nothing else is configurable on purpose. The item bound, the name-key
+/// normalization and the promotion threshold are domain constants (ADR-024): a
+/// deployment that could retune them would be a deployment where the grammar's
+/// behaviour is not the same everywhere it is tested.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListsConfig {
+    /// Set false to run with no list surface at all: no routes, nothing
+    /// resident.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for ListsConfig {
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 
@@ -378,7 +467,9 @@ impl Default for Config {
             storage: StorageConfig::default(),
             display: DisplayConfig::default(),
             maps: MapsConfig::default(),
+            ui: UiConfig::default(),
             timers: TimersConfig::default(),
+            lists: ListsConfig::default(),
         }
     }
 }
@@ -498,6 +589,37 @@ mod tests {
         assert_eq!(cli.workdir, PathBuf::from("/var/lib/jarvis/claude-work"));
         assert!(cli.reasoning_disable_builtin_tools);
         assert_eq!(cli.idle_timeout_secs, 60);
+    }
+
+    #[test]
+    fn the_ui_section_defaults_to_the_documented_values() {
+        // docs/09 §1 `[ui]`.
+        let config = Config::from_figment(Figment::new()).expect("defaults are valid");
+        assert_eq!(config.ui.background, "none");
+        assert_eq!(config.ui.panel_ttl_hours, 2);
+        assert_eq!(config.ui.deepdive_promote_after, 3);
+        assert_eq!(config.ui.motion, "auto");
+    }
+
+    #[test]
+    fn the_documented_ui_block_is_accepted_verbatim() {
+        // `Config` denies unknown fields, so an operator pasting the block from
+        // docs/09 §1 must parse — every documented key is modelled.
+        let figment = Figment::new().merge(Toml::string(
+            r#"
+            [ui]
+            background = "photo"
+            background_photo = "/var/lib/jarvis/wall.jpg"
+            panel_ttl_hours = 4
+            deepdive_promote_after = 0
+            motion = "reduced"
+            "#,
+        ));
+        let config = Config::from_figment(figment).expect("the documented block parses");
+        assert_eq!(config.ui.background, "photo");
+        // Zero is the documented "never offer" setting, not an invalid value.
+        assert_eq!(config.ui.deepdive_promote_after, 0);
+        assert_eq!(config.ui.panel_ttl_hours, 4);
     }
 
     #[test]

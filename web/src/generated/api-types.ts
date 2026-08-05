@@ -77,6 +77,19 @@ export type ArtifactSensitivityDto = "normal" | "sensitive";
  */
 export type ArtifactSourceKindDto = "message" | "run" | "web";
 /**
+ * What this turn does to the materialization canvas (FR-24/FR-27, docs/12
+ * §2.5/§4) — the wire mirror of `jarvis_application::deepdive::CanvasAction`.
+ *
+ * Exhaustive and deliberately two-valued: a third answer would change the
+ * panel lifecycle, which is a spec decision. Note what it cannot express —
+ * anything about approvals. Pending approval cards are exempt from shelving
+ * (docs/12 §4, F3b.4), and no value here can retract one.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "CanvasActionDto".
+ */
+export type CanvasActionDto = "extend" | "shelve";
+/**
  * One WebSocket replaces v1's three hubs; `channel` discriminates (docs/05 §1).
  *
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
@@ -294,7 +307,10 @@ export type ErrorCode =
   | "media.player_gone"
   | "media.control_unsupported"
   | "timer.invalid_transition"
-  | "timer.stale";
+  | "timer.stale"
+  | "list.full"
+  | "list.unrecognized_command"
+  | "deepdive.nothing_to_promote";
 /**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "ServiceStatus".
@@ -380,6 +396,48 @@ export type HudCardDto =
       [k: string]: unknown;
     }
   | {
+      currentLocation?: MapPointDto | null;
+      destination: MapPointDto;
+      destinationLabel?: string | null;
+      /**
+       * Pre-formatted distance display text (e.g. "1.2 mi"), same
+       * convention as every other card's display-text fields — the client
+       * applies tabular-nums, it does not compute the value.
+       */
+      distance?: string | null;
+      id: string;
+      label: string;
+      /**
+       * Route polyline vertices, in order. Empty when there is no route to
+       * draw (a bare "where is X" query with no navigation intent).
+       */
+      route?: MapPointDto[];
+      type: "card.map";
+      walkTime?: string | null;
+      [k: string]: unknown;
+    }
+  | {
+      id: string;
+      items: SourceItemDto[];
+      title: string;
+      type: "card.sources";
+      [k: string]: unknown;
+    }
+  | {
+      id: string;
+      images: SourcedImageDto[];
+      title: string;
+      type: "card.gallery";
+      [k: string]: unknown;
+    }
+  | {
+      id: string;
+      list: ListDto;
+      listId: UlidString;
+      type: "card.list";
+      [k: string]: unknown;
+    }
+  | {
       card: ApprovalCardDto;
       type: "card.approval";
       [k: string]: unknown;
@@ -397,6 +455,13 @@ export type HudCardDto =
       type: "card.error";
       [k: string]: unknown;
     };
+/**
+ * What a grammar command did.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ListEffectDto".
+ */
+export type ListEffectDto = ("added" | "removed" | "checked_off") | "read";
 /**
  * What the archive's tiles are, so the client picks a vector or raster source.
  *
@@ -452,6 +517,11 @@ export type TransientEvent =
       state: MediaStateDto;
       type: "media.state";
       [k: string]: unknown;
+    }
+  | {
+      canvas: HudCanvasDto;
+      type: "hud.canvas";
+      [k: string]: unknown;
     };
 
 /**
@@ -467,6 +537,16 @@ export interface JarvisContracts {
 export interface AdapterHealth {
   detail?: string | null;
   state: AdapterState;
+  [k: string]: unknown;
+}
+/**
+ * `POST /api/v1/lists/{id}/items` — append one line.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "AddListItemRequest".
+ */
+export interface AddListItemRequest {
+  text: string;
   [k: string]: unknown;
 }
 /**
@@ -586,6 +666,31 @@ export interface ArtifactVersionsResponse {
   [k: string]: unknown;
 }
 /**
+ * `PATCH /api/v1/lists/{id}/items/{itemId}` — the card's check-off tap, and
+ * from M5 the voice path. Deliberately a whole-value set rather than a toggle:
+ * two devices tapping the same line converge on the same result instead of
+ * racing each other back and forth.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "CheckListItemRequest".
+ */
+export interface CheckListItemRequest {
+  checked: boolean;
+  [k: string]: unknown;
+}
+/**
+ * `POST /api/v1/lists` — create a named list, or return the existing one with
+ * the same normalized name (creation is idempotent on the name key, because
+ * "add milk to the shopping list" must work before a shopping list exists).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "CreateListRequest".
+ */
+export interface CreateListRequest {
+  name: string;
+  [k: string]: unknown;
+}
+/**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "CreateSessionRequest".
  */
@@ -618,6 +723,89 @@ export interface CreateTimerRequest {
    */
   name?: string | null;
   note?: string | null;
+  [k: string]: unknown;
+}
+/**
+ * `POST /api/v1/sessions/{id}/deepdive/findings` — what this turn learned.
+ *
+ * `facts` are **paraphrases Jarvis composed**, not fetched page text: the
+ * domain refuses anything over
+ * `jarvis_domain::deepdive::MAX_PARAPHRASE_CHARS` rather than truncating it,
+ * because a truncated scrape is still a scrape (ADR-017). Everything in this
+ * request is filed through the thread's guarded recorders; a rejected entry is
+ * reported in [`DeepDiveFindingsResponse::refused`] and simply does not exist
+ * in the thread.
+ *
+ * Each array carries **at most 64 entries** — a whole request over that is
+ * refused with `422 validation.failed` rather than partially filed, because the
+ * loop that consumes it holds a process-global lock and its length is how long
+ * every other conversation's turn waits. A turn files what it just consulted;
+ * 64 of each is far past anything real and well under the thread's own totals.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "DeepDiveFindingsRequest".
+ */
+export interface DeepDiveFindingsRequest {
+  facts?: string[];
+  images?: ImageFindingDto[];
+  sources?: SourceFindingDto[];
+  [k: string]: unknown;
+}
+/**
+ * One image a turn referenced, with **its own** page (ADR-017: provenance
+ * differs per image, so one shared attribution is not acceptable).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ImageFindingDto".
+ */
+export interface ImageFindingDto {
+  alt: string;
+  /**
+   * The page this image was found on — never a neighbour's.
+   */
+  sourceUrl: string;
+  url: string;
+  [k: string]: unknown;
+}
+/**
+ * One page a turn consulted, as filed to `POST
+ * /api/v1/sessions/{id}/deepdive/findings`.
+ *
+ * Both fields are untrusted (Z4 — they come from a fetched page). The URL is
+ * re-validated by `ResearchThread::record_source`, which refuses anything that
+ * is not an attributable `http(s)` URL, and the title is capped and escaped
+ * wherever it is rendered.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "SourceFindingDto".
+ */
+export interface SourceFindingDto {
+  title: string;
+  url: string;
+  [k: string]: unknown;
+}
+/**
+ * What was actually filed. Counts, plus a plain-text reason per rejected
+ * entry so a caller learns *that* a scrape or an unattributable URL was
+ * refused rather than discovering it missing later.
+ *
+ * The reasons are a **fixed vocabulary the server owns**: they never quote the
+ * offending fact, title or URL back at the caller. Reflecting an
+ * arbitrary-length, unsanitized, caller-chosen string into a response body is
+ * the mistake `ListError` documents avoiding, and a caller already knows what
+ * it sent.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "DeepDiveFindingsResponse".
+ */
+export interface DeepDiveFindingsResponse {
+  facts: number;
+  images: number;
+  /**
+   * One line per refused entry. Empty when everything was filed.
+   */
+  refused?: string[];
+  sources: number;
   [k: string]: unknown;
 }
 /**
@@ -821,6 +1009,44 @@ export interface HealthResponse {
   [k: string]: unknown;
 }
 /**
+ * One canvas instruction (F3b.6). The payload of the transient `hud.canvas`
+ * event.
+ *
+ * `cards` is the **live card set for this canvas**, not a delta: the same card
+ * id re-sent is the same card refreshed, so a client that applies it
+ * upsert-by-id converges on the current state no matter how many events it
+ * missed. That is what makes a transient classification safe here.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "HudCanvasDto".
+ */
+export interface HudCanvasDto {
+  action: CanvasActionDto;
+  cards?: HudCardDto[];
+  /**
+   * Present when the human asked to read one of the cited sources.
+   */
+  handoff?: SourceHandoffDto | null;
+  /**
+   * The shelf chip label to file the *displaced* panels under when `action`
+   * is `shelve` (docs/12 §4: "Ramen places · Restore · ×"). Plain text.
+   */
+  label: string;
+  /**
+   * The spoken offer to keep this thread as a Research Notes document
+   * (docs/12 §2.5: Jarvis's normal voice, one line, never a dialog box).
+   * Present only on the turn that crosses `[ui] deepdive_promote_after`.
+   */
+  offer?: string | null;
+  /**
+   * The conversation this turn belongs to. Absent for a canvas update that
+   * is not part of a deep-dive thread at all — a list card produced by the
+   * deterministic list grammar (FR-34), which has no session.
+   */
+  sessionId?: UlidString | null;
+  [k: string]: unknown;
+}
+/**
  * One labeled value in a value-readout card's mini-stats row (docs/12 §2.3).
  *
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
@@ -845,6 +1071,163 @@ export interface MediaGridItemDto {
   name: string;
   photo?: SourcedImageDto | null;
   price?: string | null;
+  [k: string]: unknown;
+}
+/**
+ * A single WGS84 point in degrees (F3b.5, docs/12 §3): a destination pin, the
+ * current-location dot, or one vertex of a route polyline. Deliberately bare
+ * — no zoom, no bounds, no rendering hint. Those live on the coverage
+ * endpoint (`crate::maps::MapCoverageResponse`), which the client consults
+ * separately to decide *how* to render a point, never on the point itself.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MapPointDto".
+ */
+export interface MapPointDto {
+  lat: number;
+  lon: number;
+  [k: string]: unknown;
+}
+/**
+ * One page consulted during a deep dive, as the sources card lists it
+ * (docs/12 §2.3: "title + domain + link each"; FR-27/ADR-017).
+ *
+ * `domain` is the chip label and is computed **server-side** from the parsed
+ * host (`jarvis_domain::deepdive::display_domain`), never by the client from
+ * `url` — a `https://wikipedia.org@evil.example/` link must not be able to
+ * present itself as `wikipedia.org`. Like [`SourcedImageDto`], every field is
+ * required: there is no way to list a reference without saying where it goes.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "SourceItemDto".
+ */
+export interface SourceItemDto {
+  /**
+   * Display domain for the chip, e.g. "en.wikipedia.org".
+   */
+  domain: string;
+  /**
+   * The page's title as consulted — plain text, never markup.
+   */
+  title: string;
+  /**
+   * The link target; always `http(s)` (validated server-side).
+   */
+  url: string;
+  [k: string]: unknown;
+}
+/**
+ * One named list with its items, in insertion order.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ListDto".
+ */
+export interface ListDto {
+  id: UlidString;
+  items: ListItemDto[];
+  /**
+   * Display name as the owner gave it ("Shopping"), sanitized.
+   */
+  name: string;
+  /**
+   * How many items are still open — the readback's "two things left"
+   * computed once server-side so the card and the spoken answer agree.
+   */
+  openCount: number;
+  /**
+   * The versioned artifact this list has been promoted into, if any (FR-08).
+   * Present ⇒ a further promotion adds a *version* to this artifact.
+   */
+  promotedArtifactId?: UlidString | null;
+  /**
+   * The list has grown into a document and promotion is worth offering
+   * (ADR-024). An offer the shell surfaces, never an automatic conversion.
+   */
+  promotionOffered: boolean;
+  [k: string]: unknown;
+}
+/**
+ * One line on a list.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ListItemDto".
+ */
+export interface ListItemDto {
+  checked: boolean;
+  id: UlidString;
+  /**
+   * Sanitized human text. Rendered as text.
+   */
+  text: string;
+  [k: string]: unknown;
+}
+/**
+ * "Open that / let me read it" resolved to a page the thread already cited
+ * (ADR-017 §3).
+ *
+ * A **citation, not a command**: `url` and `domain` are already on the sources
+ * card, `domain` is computed host-side from the parsed host
+ * (`jarvis_domain::deepdive::display_domain`) so a spoofing URL cannot present
+ * itself as a trusted site, and there is no tool id here for a client to
+ * submit anywhere.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "SourceHandoffDto".
+ */
+export interface SourceHandoffDto {
+  /**
+   * Display domain for what Jarvis says while handing off, e.g.
+   * "en.wikipedia.org".
+   */
+  domain: string;
+  /**
+   * The page to open; always `http(s)`, validated when it was recorded.
+   */
+  url: string;
+  [k: string]: unknown;
+}
+/**
+ * `POST /api/v1/lists/command` — run the **deterministic grammar** over one
+ * utterance (ADR-024). Zero model calls: an utterance the grammar does not
+ * unambiguously recognize is a `list.unrecognized_command` 422, never a guess.
+ * 422 rather than 400 because the body was perfectly valid — it is the
+ * *content* that did not resolve here, and the caller's answer is to fall back
+ * to the normal run path rather than to fix its request.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ListCommandRequest".
+ */
+export interface ListCommandRequest {
+  /**
+   * The utterance as spoken or typed, e.g. "add milk to the shopping list".
+   */
+  utterance: string;
+  [k: string]: unknown;
+}
+/**
+ * The list after the command was applied and audited, so the card re-renders
+ * without waiting for an event.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ListCommandResponse".
+ */
+export interface ListCommandResponse {
+  effect: ListEffectDto;
+  /**
+   * The item the command touched, absent for a read.
+   */
+  itemId?: UlidString | null;
+  list: ListDto;
+  [k: string]: unknown;
+}
+/**
+ * `GET /api/v1/lists` — every list the owner has, name-ordered.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ListIndexResponse".
+ */
+export interface ListIndexResponse {
+  lists: ListDto[];
   [k: string]: unknown;
 }
 /**
@@ -1131,6 +1514,52 @@ export interface ProblemDetails {
    * Problem type URI; `about:blank` when the code says it all.
    */
   type: string;
+  [k: string]: unknown;
+}
+/**
+ * `POST /api/v1/lists/{id}/promote` — the list is now a versioned markdown
+ * artifact (FR-08). A list promoted before gets the **next version** of the
+ * same artifact, never a rival document.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "PromoteListResponse".
+ */
+export interface PromoteListResponse {
+  artifactId: UlidString;
+  /**
+   * True when this promotion created the artifact rather than versioning it.
+   */
+  firstPromotion: boolean;
+  /**
+   * Content address of the document, lowercase hex — the same value the
+   * artifact blob endpoint serves under.
+   */
+  sha256: string;
+  version: number;
+  [k: string]: unknown;
+}
+/**
+ * `POST /api/v1/sessions/{id}/deepdive/promote` — the human accepted the
+ * offer; the thread is now a versioned markdown artifact (FR-08).
+ *
+ * Re-promoting the same thread appends a version to the same document rather
+ * than minting a rival one, the same shape as
+ * [`crate::lists::PromoteListResponse`].
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "PromoteNotesResponse".
+ */
+export interface PromoteNotesResponse {
+  artifactId: UlidString;
+  /**
+   * True when this promotion created the document rather than versioning it.
+   */
+  firstPromotion: boolean;
+  /**
+   * Content address of the document, lowercase hex.
+   */
+  sha256: string;
+  version: number;
   [k: string]: unknown;
 }
 /**
