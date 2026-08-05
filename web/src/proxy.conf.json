@@ -3,5 +3,11 @@
     "target": "http://localhost:8741",
     "secure": false,
     "changeOrigin": true
+  },
+  "/ws": {
+    "target": "http://localhost:8741",
+    "secure": false,
+    "ws": true,
+    "changeOrigin": true
   }
 }

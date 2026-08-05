@@ -96,8 +96,7 @@ export class MediaService {
 
   private connect(): void {
     if (this.closed || this.ws !== null) return;
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    this.ws = new WebSocket(`${protocol}//${window.location.host}/ws/v1`);
+    this.ws = this.api.openSocket('/ws/v1');
 
     this.ws.onmessage = (event) => {
       try {

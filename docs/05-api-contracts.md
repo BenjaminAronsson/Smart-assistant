@@ -180,8 +180,14 @@ Single-owner, loopback-first — deliberately simple, upgraded at M7:
    device record + opaque device token (random 256-bit, stored hashed server-side, keyring
    client-side). The pair response body is `{ deviceId, deviceToken, scopes }` — the
    granted scope list (§6.3) is returned explicitly so clients never infer it.
-2. **Requests.** Every REST call and the WS upgrade carry `Authorization: Bearer <token>`.
-   Unauthenticated surface: `GET /api/v1/diagnostics/health` on loopback only.
+2. **Requests.** Every REST call carries `Authorization: Bearer <token>`. The `/ws/v1`
+   upgrade does too **for non-browser clients** (the desktop agent, tests) — but a
+   browser's native `WebSocket` constructor cannot set arbitrary request headers on a
+   handshake, so the Angular shell instead offers the token as a WS subprotocol behind a
+   `jarvis.device.v1` sentinel (`new WebSocket(url, ['jarvis.device.v1', token])`);
+   `jarvisd::auth::ws_subprotocol_token` accepts that as a fallback, scoped to genuine WS
+   handshakes only, and echoes back the sentinel (never the token) to complete the
+   negotiation. Unauthenticated surface: `GET /api/v1/diagnostics/health` on loopback only.
 3. **Scopes.** Tokens carry device scopes (e.g. `ui`, `display-agent`, `voice-capture`);
    the desktop agent and the Angular shell are separate devices with separate scopes.
 4. **Revocation.** Immediate per-device token revocation via settings; revoked tokens fail
