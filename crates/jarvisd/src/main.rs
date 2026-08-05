@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use jarvis_adapters::claude_cli::ClaudeCliModel;
+use jarvis_application::deterministic::DeterministicFirstProvider;
 use jarvis_application::orchestrator::RunInput;
 use jarvis_application::ports::{MessageStore, RunStore};
 use jarvis_domain::conversations::MessageRole;
@@ -159,11 +160,12 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         grant_validator: grant_store,
     };
 
+    let model = Arc::new(ClaudeCliModel::with_config(
+        "claude-cli",
+        config.providers.claude_cli.to_adapter(),
+    ));
     let engine = RunEngine::new(
-        Arc::new(ClaudeCliModel::with_config(
-            "claude-cli",
-            config.providers.claude_cli.to_adapter(),
-        )),
+        Arc::new(DeterministicFirstProvider::new(model)),
         Arc::new(PassthroughAssembler),
         run_store.clone(),
         message_store.clone(),

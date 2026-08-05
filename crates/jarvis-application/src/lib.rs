@@ -3,6 +3,7 @@
 //! engine, and the ports (traits) adapters implement (docs/02 §3).
 
 pub mod deepdive;
+pub mod deterministic;
 pub mod health;
 pub mod lists;
 pub mod location;
