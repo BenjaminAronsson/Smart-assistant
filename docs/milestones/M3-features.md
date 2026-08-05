@@ -17,8 +17,10 @@ decomposition with three decisions:
 
 M2 signed off 2026-07-22 (`docs/milestones/M2-gate-report.md`, tag intentionally skipped
 by owner). **M3a is complete and signed off 2026-07-30** (`docs/milestones/M3a-gate-report.md`,
-tag `m3a-complete`; deviations D-M3a-1…7 and ADR-027 accepted) — **M3b is unblocked; start
-with F3b.1.**
+tag `m3a-complete`; deviations D-M3a-1…7 and ADR-027 accepted). **M3b is complete and
+signed off 2026-08-05** (`docs/milestones/M3b-gate-report.md`, tag `m3b-complete`;
+deviations D-M3b-1…7 accepted) — **M3 is complete.** Merged to `main` 2026-08-05
+(`df8a7b4`). Next milestone: run `/milestone` to decompose M4.
 
 Milestone scope (docs/08 §1): Artifact CAS + renderers, display profiles, `jarvis-agent`
 + Hyprland IPC, isolated Playwright worker, MPRIS adapter + media window + media bar
@@ -197,7 +199,7 @@ moves the M1/M2 conversation/approval surfaces into the ops layer (`Ctrl+.`).
   docs/12 §4–§6; skills `angular-shell`, `low-power`. Deps: F3b.1, F3b.2. Lifecycle +
   approval-exemption + contrast tests are the DoD.
 
-- [ ] **F3b.5 — Map card: MapLibre GL + local PMTiles serve + out-of-region fallback (web + jarvisd)** · *strong (tile-serving) / Sonnet (card)*
+- [x] **F3b.5 — Map card: MapLibre GL + local PMTiles serve + out-of-region fallback (web + jarvisd)** · *strong (tile-serving) / Sonnet (card)*
   Map card (docs/12 §3, ADR-013): MapLibre GL JS rendering a **PMTiles region extract served
   by jarvisd** (offline, no API key, no tracking); destination pin + current-location dot +
   route polyline + coords/distance/walk-time (tabular-nums); "open large" affordance.
@@ -211,7 +213,7 @@ moves the M1/M2 conversation/approval surfaces into the ops layer (`Ctrl+.`).
 
 ### Phase E — Deep dive & personal utilities
 
-- [ ] **F3b.6 — Deep-dive: thread continuity + sources/gallery cards + source handoff + Research Notes promotion (application + web)** · *strong model*
+- [x] **F3b.6 — Deep-dive: thread continuity + sources/gallery cards + source handoff + Research Notes promotion (application + web)** · *strong model*
   `jarvis-application`: a **continuation-vs-new-topic** router signal (same mechanism as F2.9
   location / F2.10 ambiguity) — continuations *extend* the canvas (append cards, no shelve),
   only a genuine topic change shelves (FR-24 unchanged); approvals stay exempt. **Sources
@@ -236,7 +238,7 @@ moves the M1/M2 conversation/approval surfaces into the ops layer (`Ctrl+.`).
   §11e, ADR-023; skills `sqlx-data`, `angular-shell`. Deps: F3a.2 (or own schema), F3b.2.
   rust-reviewer + contract-keeper (migration) mandatory.
 
-- [ ] **F3b.8 — Lists & notes (FR-34, ADR-024) + list card + artifact promotion (domain + infra + web)** · *Sonnet ok (strong if domain-heavy)*
+- [x] **F3b.8 — Lists & notes (FR-34, ADR-024) + list card + artifact promotion (domain + infra + web)** · *Sonnet ok (strong if domain-heavy)*
   Lightweight **lists/notes store**: named lists (shopping, todo, …) with
   add/remove/check-off/read by **deterministic grammar** where phrasing is clear (LLM assist
   only for ambiguous phrasing); quick notes as single-item captures into a Notes list. **List
@@ -248,7 +250,7 @@ moves the M1/M2 conversation/approval surfaces into the ops layer (`Ctrl+.`).
 
 ### Phase F — M3b exit-evidence demonstrator
 
-- [ ] **F3b.9 — HUD screenshot set + UX acceptance scenarios (web + golden)** · *Sonnet ok*
+- [x] **F3b.9 — HUD screenshot set + UX acceptance scenarios (web + golden)** · *Sonnet ok*
   Attach the **HUD screenshot set** (idle, listening, speaking+canvas, approval interrupt,
   degraded, each background) + the **contrast audit** on both worst-case wallpapers for owner
   review (docs/12 §9). Add repeatable UX acceptance: panel shelve/restore/dismiss/TTL +
