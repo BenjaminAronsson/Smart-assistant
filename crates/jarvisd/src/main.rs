@@ -103,7 +103,20 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     // and the grant mint/validate ports. `fs.read` is left unregistered — no
     // configured root is the stricter default (no ambient filesystem authority).
     let grant_store = Arc::new(jarvis_infra::grants::PgGrantStore::new(pool.clone()));
-    let mut registry = jarvisd::tools::build_registry(None)?;
+    let smtp = if config.integrations.smtp.enabled {
+        let password =
+            jarvisd::config::resolve_secret_ref(&config.integrations.smtp.password_secret)?;
+        Some(jarvis_adapters::smtp::SmtpConfig::new(
+            config.integrations.smtp.host.clone(),
+            config.integrations.smtp.port,
+            config.integrations.smtp.username.clone(),
+            config.integrations.smtp.from_address.clone(),
+            password.expose().to_owned(),
+        ))
+    } else {
+        None
+    };
+    let mut registry = jarvisd::tools::build_registry_with_smtp(None, smtp)?;
     // MCP tool servers (F2.7): none configured in M2, so no ambient MCP tool
     // authority — the stricter default. `_mcp_hosts` must live for the process
     // lifetime: each registered MCP executor holds a peer into its child, and

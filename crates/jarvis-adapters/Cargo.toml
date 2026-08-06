@@ -50,6 +50,14 @@ fastembed = { version = "=5.17.4", default-features = false, features = [
     "hf-hub-rustls-tls",
     "ort-download-binaries-rustls-tls",
 ] }
+# SMTP outbound mail (M4, FR-36, ADR-026). Keep the transport async and use the
+# existing rustls stack; the password is injected by the host after resolution.
+lettre = { version = "0.11", default-features = false, features = [
+    "builder",
+    "smtp-transport",
+    "tokio1",
+    "tokio1-rustls-tls",
+] }
 
 [dev-dependencies]
 # Async unit tests (`#[tokio::test]`) for the tool executors; the current-thread

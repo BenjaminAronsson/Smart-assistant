@@ -2,6 +2,8 @@
 //! layer names capabilities; infra provides them. No sqlx/axum/provider
 //! types may appear here (CLAUDE.md invariant 3, enforced by arch-test).
 
+pub use crate::calendar::{CalendarReader, CalendarReaderError};
+
 use jarvis_domain::artifact::{ArtifactManifest, ArtifactVersion};
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::conversations::{Message, Session};

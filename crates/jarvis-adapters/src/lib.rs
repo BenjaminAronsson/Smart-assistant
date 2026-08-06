@@ -8,6 +8,7 @@ pub mod coding;
 pub mod embeddings;
 pub mod mcp_host;
 pub mod media_mpris;
+pub mod smtp;
 pub mod timer_alert;
 pub mod tools;
 pub mod web;

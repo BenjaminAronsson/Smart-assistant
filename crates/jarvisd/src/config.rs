@@ -346,6 +346,48 @@ pub struct IntegrationsConfig {
     /// tools, no media routes, no session-bus connection.
     #[serde(default)]
     pub media: MediaConfig,
+    /// `[integrations.smtp]` (M4, FR-36, ADR-026). Disabled by default so
+    /// external message authority is never ambient.
+    #[serde(default)]
+    pub smtp: SmtpConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SmtpConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default = "default_smtp_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default = "default_smtp_password_secret")]
+    pub password_secret: String,
+    #[serde(default)]
+    pub from_address: String,
+}
+
+fn default_smtp_port() -> u16 {
+    587
+}
+
+fn default_smtp_password_secret() -> String {
+    "keyring:jarvis/smtp".to_owned()
+}
+
+impl Default for SmtpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: String::new(),
+            port: default_smtp_port(),
+            username: String::new(),
+            password_secret: default_smtp_password_secret(),
+            from_address: String::new(),
+        }
+    }
 }
 
 /// `[integrations.web_search]` (docs/02 §11b, ADR-014). The API key is a secret
@@ -575,6 +617,17 @@ impl Config {
                 "[maps].pmtiles_path {} must be an absolute path",
                 path.display()
             );
+        }
+        if self.integrations.smtp.enabled {
+            anyhow::ensure!(
+                !self.integrations.smtp.host.trim().is_empty(),
+                "[integrations.smtp].host is required when SMTP is enabled"
+            );
+            anyhow::ensure!(
+                !self.integrations.smtp.from_address.trim().is_empty(),
+                "[integrations.smtp].from_address is required when SMTP is enabled"
+            );
+            validate_secret_ref(&self.integrations.smtp.password_secret)?;
         }
         Ok(())
     }

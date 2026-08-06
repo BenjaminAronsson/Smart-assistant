@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use jarvis_adapters::mcp_host::{HostPolicyTable, McpHost};
+use jarvis_adapters::smtp::{SmtpConfig, SmtpTool};
 use jarvis_adapters::tools::example_light::ExampleLightTool;
 use jarvis_adapters::tools::example_message::ExampleMessageTool;
 use jarvis_adapters::tools::fs_read::FsReadTool;
@@ -38,6 +39,16 @@ use tokio_util::sync::CancellationToken;
 ///
 /// Every executor is timeout-wrapped ([`wrap_with_timeout`]) at registration.
 pub fn build_registry(fs_root: Option<PathBuf>) -> anyhow::Result<ToolRegistry> {
+    build_registry_with_smtp(fs_root, None)
+}
+
+/// Build the registry with the configured SMTP executor. SMTP is opt-in: when
+/// absent, the M2 no-op message tool remains available for policy/grant tests;
+/// when present, the same `message.send` id is backed by real SMTP transport.
+pub fn build_registry_with_smtp(
+    fs_root: Option<PathBuf>,
+    smtp: Option<SmtpConfig>,
+) -> anyhow::Result<ToolRegistry> {
     let mut registry = ToolRegistry::new();
 
     if let Some(root) = fs_root {
@@ -46,7 +57,10 @@ pub fn build_registry(fs_root: Option<PathBuf>) -> anyhow::Result<ToolRegistry> 
         registry.register(wrap_with_timeout(descriptor))?;
     }
     registry.register(wrap_with_timeout(ExampleLightTool::descriptor()))?;
-    registry.register(wrap_with_timeout(ExampleMessageTool::descriptor()))?;
+    let message = smtp
+        .map(SmtpTool::descriptor)
+        .unwrap_or_else(ExampleMessageTool::descriptor);
+    registry.register(wrap_with_timeout(message))?;
 
     Ok(registry)
 }
