@@ -1,0 +1,48 @@
+.agenda-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8vmin;
+}
+
+.agenda-title {
+  margin: 0;
+  font-size: clamp(14px, 2vmin, 18px);
+  color: var(--ink);
+}
+
+.agenda-events {
+  display: flex;
+  flex-direction: column;
+  gap: 1vmin;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agenda-event {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25vmin;
+  padding-inline-start: 1vmin;
+  border-inline-start: 0.35vmin solid var(--hue);
+}
+
+.agenda-event-title,
+.agenda-event-time {
+  margin: 0;
+}
+
+.agenda-event-title {
+  font-size: clamp(12px, 1.7vmin, 15px);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.agenda-event-time {
+  display: flex;
+  gap: 0.6ch;
+  flex-wrap: wrap;
+  font-size: clamp(10px, 1.4vmin, 13px);
+  color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+}

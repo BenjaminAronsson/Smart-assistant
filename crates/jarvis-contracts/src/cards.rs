@@ -20,10 +20,10 @@
 //! The v1 set is exactly the types F3b.2 owns per docs/milestones/M3-features.md:
 //! value readout, place, entity/person, media/menu grid, headlines/digest,
 //! now-playing (data only — live playback control stays on the media bar until
-//! M5), approval (wire-reused from [`crate::approvals::ApprovalCardDto`], never
-//! re-modeled), status/queued, and error. Timer/product/agenda cards are later
-//! features and are deliberately absent — adding one is an additive enum
-//! variant, never a change to this one's shape.
+//! M5), agenda, approval (wire-reused from [`crate::approvals::ApprovalCardDto`],
+//! never re-modeled), status/queued, and error. Agenda events deliberately carry
+//! no location, description, attendees, or sensitivity label: the HUD receives
+//! only the bounded display facts needed to answer "what's on today".
 //!
 //! Three later features took exactly that route: F3b.5 added the map card
 //! ([`HudCardDto::Map`], below); F3b.6 the two deep-dive types,
@@ -149,6 +149,19 @@ pub struct SourceItemDto {
     pub domain: String,
 }
 
+/// The sensitivity-safe calendar subset shown on an agenda card (FR-35,
+/// ADR-025). `start` and `end` are ISO-8601 display values supplied by the
+/// calendar projection; the card never carries provider metadata or personal
+/// context beyond these four fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgendaEventDto {
+    pub title: String,
+    pub start: String,
+    pub end: String,
+    pub all_day: bool,
+}
+
 /// Registered HUD card types (docs/12 §2.3). The `type` discriminator is
 /// dotted-namespaced (`card.value_readout`, …), matching the envelope/event
 /// convention. **Strict, no catch-all** — every card is authored by jarvisd
@@ -220,6 +233,16 @@ pub enum HudCardDto {
         id: String,
         title: String,
         items: Vec<HeadlineItemDto>,
+    },
+    /// A bounded read-only agenda (FR-35, ADR-025). The producer supplies at
+    /// most one local-day window of events; no mutation affordance or calendar
+    /// provider details are represented on the HUD card.
+    #[serde(rename = "card.agenda")]
+    Agenda {
+        id: String,
+        title: String,
+        #[schemars(length(max = 256))]
+        events: Vec<AgendaEventDto>,
     },
     /// "What's playing" as a first-class query (docs/12 §2.3, FR-32/ADR-022):
     /// **data only** — this variant answers a query, it does not add playback
@@ -339,6 +362,7 @@ impl HudCardDto {
             Self::Entity { .. } => "card.entity",
             Self::MediaGrid { .. } => "card.media_grid",
             Self::Headlines { .. } => "card.headlines",
+            Self::Agenda { .. } => "card.agenda",
             Self::NowPlaying { .. } => "card.now_playing",
             Self::Map { .. } => "card.map",
             Self::Sources { .. } => "card.sources",

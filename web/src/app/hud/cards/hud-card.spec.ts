@@ -46,6 +46,24 @@ describe('HudCard', () => {
     expect(el.querySelector('app-place-card')).not.toBeNull();
   });
 
+  it('renders the registered sub-component for an agenda card', () => {
+    render({
+      type: 'card.agenda',
+      id: 'agenda-1',
+      title: 'Today',
+      events: [
+        {
+          title: 'Design review',
+          start: '2026-08-06T09:30:00+02:00',
+          end: '2026-08-06T10:00:00+02:00',
+          allDay: false,
+        },
+      ],
+    });
+    expect(el.querySelector('app-agenda-card')).not.toBeNull();
+    expect(el.querySelector('app-error-card')).toBeNull();
+  });
+
   it('renders the registered sub-component for a map card (F3b.5)', () => {
     render({
       type: 'card.map',

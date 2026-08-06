@@ -39,6 +39,30 @@
       ],
       "type": "object"
     },
+    "AgendaEventDto": {
+      "description": "The sensitivity-safe calendar subset shown on an agenda card (FR-35,\nADR-025). `start` and `end` are ISO-8601 display values supplied by the\ncalendar projection; the card never carries provider metadata or personal\ncontext beyond these four fields.",
+      "properties": {
+        "allDay": {
+          "type": "boolean"
+        },
+        "end": {
+          "type": "string"
+        },
+        "start": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "start",
+        "end",
+        "allDay"
+      ],
+      "type": "object"
+    },
     "ApprovalCardDto": {
       "description": "What a human is asked to approve (docs/06 §3). Carries the exact effect and\nthe real proposed arguments so the approval binds precisely what is shown.",
       "properties": {
@@ -1168,6 +1192,35 @@
             "id",
             "title",
             "items"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A bounded read-only agenda (FR-35, ADR-025). The producer supplies at\nmost one local-day window of events; no mutation affordance or calendar\nprovider details are represented on the HUD card.",
+          "properties": {
+            "events": {
+              "items": {
+                "$ref": "#/definitions/AgendaEventDto"
+              },
+              "maxItems": 256,
+              "type": "array"
+            },
+            "id": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "const": "card.agenda",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "title",
+            "events"
           ],
           "type": "object"
         },

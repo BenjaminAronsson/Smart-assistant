@@ -8,8 +8,8 @@
 
 use jarvis_contracts::approvals::{ApprovalCardDto, DataEgressDto, RiskLevelDto};
 use jarvis_contracts::cards::{
-    HeadlineItemDto, HudCardDto, MapPointDto, MediaGridItemDto, MiniStatDto, SourceItemDto,
-    SourcedImageDto,
+    AgendaEventDto, HeadlineItemDto, HudCardDto, MapPointDto, MediaGridItemDto, MiniStatDto,
+    SourceItemDto, SourcedImageDto,
 };
 use jarvis_contracts::lists::{ListDto, ListItemDto};
 use serde_json::json;
@@ -93,6 +93,16 @@ fn every_card() -> Vec<HudCardDto> {
                 // it. `headlines_item_omits_an_absent_thumbnail` covers the
                 // `None` shape separately.
                 thumbnail: Some(photo()),
+            }],
+        },
+        HudCardDto::Agenda {
+            id: "card-13".into(),
+            title: "Today".into(),
+            events: vec![AgendaEventDto {
+                title: "Design review".into(),
+                start: "2026-08-06T09:30:00+02:00".into(),
+                end: "2026-08-06T10:00:00+02:00".into(),
+                all_day: false,
             }],
         },
         HudCardDto::NowPlaying {
@@ -189,6 +199,7 @@ fn card_type_tags_are_dotted_and_disjoint() {
     assert_eq!(
         tags,
         [
+            "card.agenda",
             "card.approval",
             "card.entity",
             "card.error",

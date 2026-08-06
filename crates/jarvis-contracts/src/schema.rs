@@ -77,6 +77,7 @@ pub fn export() -> Value {
     // even though F3b.6's `hud.canvas` event now carries it, so the union stays
     // a named type the shell imports directly for a single-card render.
     generator.subschema_for::<crate::cards::HudCardDto>();
+    generator.subschema_for::<crate::cards::AgendaEventDto>();
     // Deep-dive surface (F3b.6, FR-27, ADR-017). The canvas instruction rides
     // inside the transient `hud.canvas` event, but the findings request and the
     // promotion response are REST-only and referenced by no event — each must

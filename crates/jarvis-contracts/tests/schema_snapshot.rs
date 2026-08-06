@@ -39,6 +39,7 @@ const REQUIRED_DEFINITIONS: &[&str] = &[
     "MediaCommandRequest",
     "MediaCommandResponse",
     "HudCardDto",
+    "AgendaEventDto",
     "MapCoverageResponse",
     "MapBoundsDto",
     "TimerDto",

@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, input, output } from '@angular/core';
 import type { ApprovalDecisionDto, HudCardDto } from '../../../generated/api-types';
 import { ApprovalCard } from './approval-card';
+import { AgendaCard } from './agenda-card';
 import { EntityCard } from './entity-card';
 import { ErrorCard } from './error-card';
 import { GalleryCard } from './gallery-card';
@@ -38,6 +39,7 @@ function narrow<T extends HudCardDto['type']>(
   selector: 'app-hud-card',
   imports: [
     ValueReadoutCard,
+    AgendaCard,
     PlaceCard,
     EntityCard,
     MediaGridCard,
@@ -78,6 +80,7 @@ export class HudCard {
   protected readonly asEntity = computed(() => narrow(this.card(), 'card.entity'));
   protected readonly asMediaGrid = computed(() => narrow(this.card(), 'card.media_grid'));
   protected readonly asHeadlines = computed(() => narrow(this.card(), 'card.headlines'));
+  protected readonly asAgenda = computed(() => narrow(this.card(), 'card.agenda'));
   protected readonly asNowPlaying = computed(() => narrow(this.card(), 'card.now_playing'));
   protected readonly asMap = computed(() => narrow(this.card(), 'card.map'));
   protected readonly asSources = computed(() => narrow(this.card(), 'card.sources'));

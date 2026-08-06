@@ -388,6 +388,16 @@ export type HudCardDto =
       [k: string]: unknown;
     }
   | {
+      /**
+       * @maxItems 256
+       */
+      events: AgendaEventDto[];
+      id: string;
+      title: string;
+      type: "card.agenda";
+      [k: string]: unknown;
+    }
+  | {
       album?: string | null;
       artUrl?: string | null;
       artist?: string | null;
@@ -575,6 +585,22 @@ export interface AdapterHealth {
  */
 export interface AddListItemRequest {
   text: string;
+  [k: string]: unknown;
+}
+/**
+ * The sensitivity-safe calendar subset shown on an agenda card (FR-35,
+ * ADR-025). `start` and `end` are ISO-8601 display values supplied by the
+ * calendar projection; the card never carries provider metadata or personal
+ * context beyond these four fields.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "AgendaEventDto".
+ */
+export interface AgendaEventDto {
+  allDay: boolean;
+  end: string;
+  start: string;
+  title: string;
   [k: string]: unknown;
 }
 /**

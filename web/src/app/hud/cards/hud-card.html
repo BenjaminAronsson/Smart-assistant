@@ -8,6 +8,8 @@
   <app-media-grid-card [card]="c" />
 } @else if (asHeadlines(); as c) {
   <app-headlines-card [card]="c" />
+} @else if (asAgenda(); as c) {
+  <app-agenda-card [card]="c" />
 } @else if (asNowPlaying(); as c) {
   <app-now-playing-card [card]="c" />
 } @else if (asMap(); as c) {

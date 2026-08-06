@@ -3,6 +3,7 @@
 //! mcp-host, wyoming, embeddings (docs/02 §3).
 
 pub mod browser;
+pub mod caldav;
 pub mod claude_cli;
 pub mod coding;
 pub mod embeddings;

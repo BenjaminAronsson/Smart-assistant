@@ -1,0 +1,19 @@
+<section class="agenda-card" [attr.aria-label]="card().title">
+  <h3 class="agenda-title">{{ card().title }}</h3>
+  <ol class="agenda-events">
+    @for (event of card().events; track event.title + event.start + event.end) {
+      <li class="agenda-event">
+        <p class="agenda-event-title">{{ event.title }}</p>
+        @if (event.allDay) {
+          <p class="agenda-event-time">All day</p>
+        } @else {
+          <p class="agenda-event-time">
+            <time [attr.datetime]="event.start">{{ event.start }}</time>
+            <span aria-hidden="true">–</span>
+            <time [attr.datetime]="event.end">{{ event.end }}</time>
+          </p>
+        }
+      </li>
+    }
+  </ol>
+</section>

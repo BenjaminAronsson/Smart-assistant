@@ -37,6 +37,7 @@ tl = "0.7.8"
 # workspace's existing rustls+ring TLS stack (already in the lock via otel/tonic)
 # — no aws-lc-rs/OpenSSL-licensed crate enters the tree, keeping cargo-deny green.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
 # MPRIS media control over the D-Bus **session** bus (F3a.7, ADR-012, docs/02
 # §11a). `default-features = false` + `tokio` drops zbus's default async-io
 # executor stack (async-io/async-lock/blocking thread pool) and reuses the
@@ -64,4 +65,4 @@ lettre = { version = "0.11", default-features = false, features = [
 # runtime is enough — production code needs no `rt`/`macros`. `test-util` gives
 # the paused-clock (`start_paused`) the TimeoutExecutor tests use to assert a
 # deadline fires without sleeping in real time.
-tokio = { version = "1", features = ["rt", "macros", "test-util"] }
+tokio = { version = "1", features = ["rt", "macros", "test-util", "net"] }
