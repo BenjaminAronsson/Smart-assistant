@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use jarvis_domain::location::Sensitivity;
+use jarvis_domain::tools::sanitize_result_content;
 use tokio_util::sync::CancellationToken;
 
 /// A deliberately generous upper bound for one local day represented as UTC
@@ -19,6 +20,13 @@ pub const MAX_LOCAL_DAY_WINDOW: Duration = Duration::from_secs(48 * 60 * 60);
 
 /// Maximum number of occurrences a reader may return for one agenda read.
 pub const MAX_AGENDA_EVENTS: usize = 256;
+
+/// A CalDAV event title is untrusted content from a third-party server, the
+/// same trust class as a fetched web page or a tool result (docs/06 §5
+/// tool-result smuggling) — unlike those, nothing upstream of this
+/// constructor bounds or sanitizes it before it can reach every WS
+/// subscriber via an agenda card. Bounded here, once, for every reader.
+pub const MAX_TITLE_BYTES: usize = 200;
 
 /// The instant window for one local calendar day.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +75,7 @@ impl CalendarEvent {
         all_day: bool,
         sensitivity: Sensitivity,
     ) -> Result<Self, CalendarValidationError> {
-        let title = title.into();
+        let title = sanitize_result_content(&title.into(), MAX_TITLE_BYTES).text;
         if title.trim().is_empty() {
             return Err(CalendarValidationError::EmptyTitle);
         }
@@ -209,6 +217,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(event.sensitivity, Sensitivity::Sensitive);
+    }
+
+    #[test]
+    fn an_oversized_or_control_laden_title_from_a_caldav_server_is_bounded() {
+        let hostile = format!("\u{202E}{}", "x".repeat(MAX_TITLE_BYTES * 4));
+        let event = CalendarEvent::new(hostile, instant(1), instant(2), false, Sensitivity::Normal)
+            .unwrap();
+        assert!(event.title.len() <= MAX_TITLE_BYTES);
+        assert!(!event.title.contains('\u{202E}'));
     }
 
     #[test]

@@ -22,6 +22,15 @@ pub const MAX_RETRIEVAL_QUERY_BYTES: usize = 512;
 pub const MAX_RETRIEVAL_RESULTS: u32 = 8;
 pub const MAX_EMBEDDING_TEXT_BYTES: usize = 2_000;
 
+/// A hit below this cosine similarity is treated as noise, not context: without
+/// a floor, every message — even one wholly unrelated to anything the owner has
+/// told Jarvis — attaches up to [`MAX_RETRIEVAL_RESULTS`] stored personal facts
+/// to the prompt sent to the external reasoning provider (docs/02 §7 retrieval
+/// is supposed to combine similarity with deterministic filters; "no secrets in
+/// model context by default"). Conservative starting point, not empirically
+/// tuned against this embedding model — revisit with the M4 evaluation harness.
+pub const MIN_RETRIEVAL_SIMILARITY: f32 = 0.3;
+
 #[derive(Debug, thiserror::Error)]
 pub enum RetrievalError {
     #[error("retrieval query is empty or too long")]
@@ -156,10 +165,15 @@ impl MemoryRetrievalService {
         if embedding.len() != self.embedder.dimensions() {
             return Err(RetrievalError::Embedding(EmbeddingError::InvalidDimensions));
         }
-        self.retriever
+        let hits = self
+            .retriever
             .retrieve(user_id, layer, &embedding, limit.min(MAX_RETRIEVAL_RESULTS))
             .await
-            .map_err(RetrievalError::Storage)
+            .map_err(RetrievalError::Storage)?;
+        Ok(hits
+            .into_iter()
+            .filter(|hit| hit.similarity >= MIN_RETRIEVAL_SIMILARITY)
+            .collect())
     }
 }
 
@@ -275,6 +289,47 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(*retriever.0.lock().unwrap(), (2, MAX_RETRIEVAL_RESULTS));
+    }
+
+    struct FixedHitsRetriever(Vec<MemoryHit>);
+
+    #[async_trait]
+    impl MemoryRetriever for FixedHitsRetriever {
+        async fn retrieve(
+            &self,
+            _: &UserId,
+            _: Option<MemoryLayer>,
+            _: &[f32],
+            _: u32,
+        ) -> Result<Vec<MemoryHit>, RepositoryError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn hits_below_the_similarity_floor_are_dropped_before_reaching_a_prompt() {
+        let relevant = MemoryHit {
+            memory: memory(),
+            similarity: 0.8,
+        };
+        let noise = MemoryHit {
+            memory: memory(),
+            similarity: 0.1,
+        };
+        let retriever = Arc::new(FixedHitsRetriever(vec![relevant.clone(), noise]));
+        let service = MemoryRetrievalService::new(Arc::new(FakeEmbedder), retriever);
+        let user = UserId::from_str("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+        let hits = service
+            .retrieve(
+                &user,
+                None,
+                "what tea do I like",
+                8,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(hits, vec![relevant]);
     }
 
     #[tokio::test]

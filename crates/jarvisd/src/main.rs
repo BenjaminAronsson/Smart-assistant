@@ -205,12 +205,17 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     ));
     let engine = RunEngine::new(
         Arc::new(DeterministicFirstProvider::new(model)),
-        Arc::new(if let Some(calendar) = calendar {
-            MemoryAssembler::new(memory_retrieval)
-                .with_calendar(calendar)
+        Arc::new({
+            let assembler = MemoryAssembler::new(memory_retrieval)
                 .with_context_store(memory_store.clone())
-        } else {
-            MemoryAssembler::new(memory_retrieval).with_context_store(memory_store.clone())
+                .with_audit(Arc::new(jarvis_infra::audit_sink::PgAuditSink::new(
+                    pool.clone(),
+                )));
+            if let Some(calendar) = calendar {
+                assembler.with_calendar(calendar)
+            } else {
+                assembler
+            }
         }),
         run_store.clone(),
         message_store.clone(),

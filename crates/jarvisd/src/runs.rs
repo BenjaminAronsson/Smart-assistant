@@ -900,6 +900,7 @@ pub struct MemoryAssembler {
     retrieval: Arc<MemoryRetrievalService>,
     calendar: Option<Arc<dyn CalendarReader>>,
     context_store: Option<Arc<dyn MemoryContextStore>>,
+    audit: Option<Arc<dyn AuditSink>>,
 }
 
 impl MemoryAssembler {
@@ -908,6 +909,7 @@ impl MemoryAssembler {
             retrieval,
             calendar: None,
             context_store: None,
+            audit: None,
         }
     }
 
@@ -926,8 +928,25 @@ impl MemoryAssembler {
         self
     }
 
+    /// Records that this run's context included a calendar read (docs/06 §3:
+    /// R0 capabilities are automatic but audited). Best-effort, same as
+    /// `with_context_store` — a failure to record never changes the
+    /// assembled prompt or the run outcome.
+    pub fn with_audit(mut self, audit: Arc<dyn AuditSink>) -> Self {
+        self.audit = Some(audit);
+        self
+    }
+
+    /// Only ever called from [`assemble_for_user`](ContextAssembler::assemble_for_user)
+    /// with a real `user_id`: a crash-recovered or degraded-requeued run is
+    /// deliberately spawned with no policy context and no attributable user
+    /// (invariant #1, CF-15 fail-closed) — the same reason memory retrieval is
+    /// skipped on that path (see [`ContextAssembler::assemble`] below), the
+    /// calendar read must be too, rather than silently fetching on a run no
+    /// one is attributable for.
     async fn agenda(
         &self,
+        user_id: &UserId,
         input: &RunInput,
         cancel: &CancellationToken,
     ) -> Option<Vec<jarvis_application::calendar::CalendarEvent>> {
@@ -945,6 +964,18 @@ impl MemoryAssembler {
         let end = start + std::time::Duration::from_secs(86_400);
         let window = LocalDayWindow::new(start, end).ok()?;
         let events = reader.read(window, cancel.clone()).await.ok()?;
+        if let Some(audit) = &self.audit {
+            audit
+                .record(jarvis_domain::audit::AuditEvent {
+                    occurred_at: SystemTime::now(),
+                    actor: format!("user:{user_id}"),
+                    event_type: "calendar.read".to_owned(),
+                    target: "calendar:agenda".to_owned(),
+                    correlation_id: None,
+                    payload_json: "{}".to_owned(),
+                })
+                .await;
+        }
         Some(events.into_iter().take(MAX_AGENDA_EVENTS).collect())
     }
 
@@ -989,12 +1020,12 @@ impl ContextAssembler for MemoryAssembler {
         input: &RunInput,
         _cancel: &CancellationToken,
     ) -> Result<AssembledContext, ContextError> {
+        // No attributable user (crash-recovered / degraded-requeued run, CF-15
+        // fail-closed) ⇒ no memory retrieval and, symmetrically, no calendar
+        // read either — see `MemoryAssembler::agenda`'s doc comment.
         Ok(AssembledContext {
             prompt: input.text.clone(),
-            agenda: self
-                .agenda(input, _cancel)
-                .await
-                .map(|events| jarvis_application::orchestrator::AgendaPayload { events }),
+            agenda: None,
         })
     }
 
@@ -1036,7 +1067,7 @@ impl ContextAssembler for MemoryAssembler {
         Ok(AssembledContext {
             prompt,
             agenda: self
-                .agenda(input, cancel)
+                .agenda(user_id, input, cancel)
                 .await
                 .map(|events| jarvis_application::orchestrator::AgendaPayload { events }),
         })
