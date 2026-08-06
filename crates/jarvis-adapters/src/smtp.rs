@@ -114,11 +114,16 @@ impl ToolExecutor for SmtpTool {
     async fn execute(
         &self,
         invocation: ToolInvocation,
-        _grant: Option<ExecutionGrant>,
+        grant: Option<ExecutionGrant>,
         cancel: CancellationToken,
     ) -> Result<ToolResult, ToolError> {
         if cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
+        }
+        if grant.is_none() {
+            return Err(ToolError::Denied(
+                "message.send requires an execution grant".to_owned(),
+            ));
         }
 
         let (to, subject, body) = message_arguments(&invocation.arguments)?;
@@ -293,6 +298,20 @@ mod tests {
                 Err(ToolError::SchemaInvalid(_))
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn direct_invocation_without_grant_is_denied_before_transport() {
+        let tool = SmtpTool::new(config());
+        let error = tool
+            .execute(
+                invocation(arguments("person@example.test", "Subject", "Body")),
+                None,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ToolError::Denied(_)));
     }
 
     #[tokio::test]

@@ -46,7 +46,7 @@ impl CalDavConfig {
             .into()
             .parse()
             .map_err(|_| CalendarReaderError::Failed("invalid calendar configuration".into()))?;
-        if !matches!(server_url.scheme(), "http" | "https") || server_url.host_str().is_none() {
+        if server_url.scheme() != "https" || server_url.host_str().is_none() {
             return Err(CalendarReaderError::Failed(
                 "invalid calendar configuration".into(),
             ));
@@ -90,7 +90,9 @@ impl CalDavReader {
         if !response.status().is_success() {
             return Err(CalendarReaderError::Unavailable);
         }
-        read_response(response, max_bytes, cancel).await
+        tokio::time::timeout(REQUEST_TIMEOUT, read_response(response, max_bytes, cancel))
+            .await
+            .map_err(|_| CalendarReaderError::Unavailable)?
     }
 }
 
@@ -146,6 +148,16 @@ impl CalendarReader for CalDavReader {
                 .server_url
                 .join(&href)
                 .map_err(|_| CalendarReaderError::Failed("invalid calendar resource".into()))?;
+            if url.scheme() != self.config.server_url.scheme()
+                || url.host_str() != self.config.server_url.host_str()
+                || url.port_or_known_default() != self.config.server_url.port_or_known_default()
+                || url.username() != ""
+                || url.password().is_some()
+            {
+                return Err(CalendarReaderError::Failed(
+                    "calendar resource origin was rejected".into(),
+                ));
+            }
             let body = self
                 .request_body(
                     self.client

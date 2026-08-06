@@ -11,7 +11,8 @@ use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use jarvis_application::ports::{EmbeddingError, EmbeddingProvider};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 const DIMENSIONS: usize = 384;
@@ -44,6 +45,7 @@ struct LoadedModel {
 pub struct FastEmbedProvider {
     config: FastEmbedConfig,
     loaded: Arc<Mutex<Option<LoadedModel>>>,
+    idle_timer: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl FastEmbedProvider {
@@ -51,7 +53,29 @@ impl FastEmbedProvider {
         Self {
             config,
             loaded: Arc::new(Mutex::new(None)),
+            idle_timer: Mutex::new(None),
         }
+    }
+
+    fn arm_idle_unload(&self) {
+        let Ok(mut timer) = self.idle_timer.lock() else {
+            return;
+        };
+        if let Some(previous) = timer.take() {
+            previous.abort();
+        }
+        let loaded = Arc::clone(&self.loaded);
+        let delay = Duration::from_secs(self.config.idle_unload_secs);
+        *timer = Some(tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            if let Ok(mut guard) = loaded.lock()
+                && guard
+                    .as_ref()
+                    .is_some_and(|model| model.last_used.elapsed() >= delay)
+            {
+                *guard = None;
+            }
+        }));
     }
 
     fn embed_sync(
@@ -123,6 +147,17 @@ impl EmbeddingProvider for FastEmbedProvider {
         if cancel.is_cancelled() {
             return Err(EmbeddingError::Cancelled);
         }
+        self.arm_idle_unload();
         Ok(result)
+    }
+}
+
+impl Drop for FastEmbedProvider {
+    fn drop(&mut self) {
+        if let Ok(mut timer) = self.idle_timer.lock()
+            && let Some(handle) = timer.take()
+        {
+            handle.abort();
+        }
     }
 }

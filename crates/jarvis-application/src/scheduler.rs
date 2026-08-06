@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime};
 use crate::health::HealthState;
 
 pub const MAX_DEFERRED_WORK: usize = 100;
+const MAX_WORK_ID_BYTES: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeferredKind {
@@ -26,8 +27,9 @@ pub struct DeferredWork {
 
 impl DeferredWork {
     pub fn new(id: impl Into<String>, kind: DeferredKind, not_before: SystemTime) -> Self {
+        let id = id.into();
         Self {
-            id: id.into(),
+            id: id.chars().take(MAX_WORK_ID_BYTES).collect(),
             kind,
             not_before,
             attempts: 0,
