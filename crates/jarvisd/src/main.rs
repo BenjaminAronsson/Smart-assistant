@@ -473,17 +473,23 @@ async fn run_dispatcher(pool: sqlx::PgPool, hub: Arc<WsHub>, shutdown: Cancellat
 /// and we try again next interval.
 async fn poll_provider_health(engine: Arc<RunEngine>, shutdown: CancellationToken) {
     while !shutdown.is_cancelled() {
-        // Try to dequeue and re-spawn one run per interval
+        // Try to dequeue and re-spawn one run per interval.
         if let Some((run, input)) = engine.try_dequeue() {
             tracing::debug!("dequeued and re-spawning run after provider recovery");
             // A requeued run carries no device identity → no tool authority
             // (invariant #1); it re-runs the model turn that failed on quota.
             engine.spawn(run, input, None);
         }
-        // Wait for the next poll interval or shutdown
+        // Idle deployments wake only every five minutes; queued work uses the
+        // shorter recovery interval so an empty queue is not polled frequently.
+        let interval = if engine.queued_len() > 0 {
+            HEALTH_POLL_INTERVAL
+        } else {
+            HEALTH_IDLE_INTERVAL
+        };
         tokio::select! {
             _ = shutdown.cancelled() => return,
-            _ = tokio::time::sleep(HEALTH_POLL_INTERVAL) => {}
+            _ = tokio::time::sleep(interval) => {}
         }
     }
 }
@@ -541,6 +547,7 @@ async fn latest_user_text(messages: &dyn MessageStore, session: &SessionId) -> S
 /// minimal viable, this simply attempts to dequeue and re-spawn; the actual
 /// provider health signal comes from whether the run succeeds or fails.
 const HEALTH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+const HEALTH_IDLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
 
 const DRAIN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
 

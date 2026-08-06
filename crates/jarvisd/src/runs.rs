@@ -225,6 +225,10 @@ impl RunEngine {
         queue.dequeue().map(|q| (q.run, q.input))
     }
 
+    pub fn queued_len(&self) -> usize {
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
     async fn drive(
         &self,
         run: Run,
