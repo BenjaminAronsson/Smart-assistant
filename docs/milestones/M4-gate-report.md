@@ -1,11 +1,12 @@
 # M4 "Memory & quota-smart intelligence" — Gate Report
 
-**Status: DRAFT — awaiting owner sign-off.** Prepared 2026-08-06. Milestone loop
+**Status: ✅ SIGNED OFF 2026-08-06 (owner-approved).** Prepared 2026-08-06. Milestone loop
 docs/11 §2. All planned gate runs are green (§2); a whole-milestone security review found
-no BLOCKING findings and all reasonably-scoped SHOULD-FIX items are closed (§4); two
-items are carried forward as deviations requiring an owner decision (§5); one unrelated
-permission-scope change needs explicit owner confirmation (§6). **Do not tag
-`m4-complete` until §5 and §6 are resolved by the owner.**
+no BLOCKING findings and all reasonably-scoped SHOULD-FIX items are closed (§4). **Owner
+decisions:** D-M4-1 accepted as a carryforward into a follow-up feature (§5); the
+`.claude/settings.json` `git push`/`git -C` auto-allow change (§6) was confirmed
+intentional, unrelated to M4's own scope. Proceeding to fast-forward `main` to
+`feat/m4-complete`, tag, and push.
 
 Scope since the M3b sign-off (`m3b-complete`): **21 commits** on `feat/m4-complete`,
 comprising the milestone's original feature work (memory retrieval, deterministic
@@ -162,10 +163,13 @@ as the memories-API tests.
 
 ---
 
-## 5. Deviations requested (owner decision required)
+## 5. Deviations (owner-approved 2026-08-06)
 
 **D-M4-1: "Deferred summarization runs in a healthy-quota window" is demonstrated at the
-scheduler-mechanism level only, not end-to-end in the running daemon.**
+scheduler-mechanism level only, not end-to-end in the running daemon.** ✅ **Accepted as
+a carryforward** — owner confirmed via gate Q&A 2026-08-06; scope into a follow-up
+feature (M4-adjacent or folded into M5) once there's an actual design for the trigger and
+content.
 
 `DeferrableScheduler`/`DeferredWorkExecutor` are implemented, tested, and — per the
 security review — have no latent bug (bounded queue, single-flight, cancellable, capped
@@ -197,16 +201,14 @@ intentionally-unwired seam (the same pattern the codebase already uses for
 
 ---
 
-## 6. Owner confirmation required (unrelated to gate content, found during the review)
+## 6. Unrelated permission-scope finding (confirmed by owner, not a gate item)
 
 `.claude/settings.json` changed within the reviewed commit range (part of the
 uninformatively-named commit `2231353 things`, predating this session's work): it moved
 `Bash(git push:*)` from `ask` into `allow`, and added `Bash(git -C:*)` to `allow` — the
 latter re-admits push (and any other git operation, in any repository) past the narrower
-rule below it. This is a permission-scope relaxation, not a code change, and this session
-neither made it nor can consent to it on your behalf. **Please confirm this was
-deliberate before signing off the gate** — if not, it should be reverted independently of
-this milestone's disposition.
+rule below it. ✅ **Owner confirmed 2026-08-06 this was intentional** — left as-is,
+unrelated to M4's own scope.
 
 ---
 
@@ -223,16 +225,13 @@ severity unchanged, noted for whenever CF-8 itself is addressed.
 
 ---
 
-## 8. Recommendation
+## 8. Disposition
 
 All fully-in-scope exit evidence is met, all gate runs are green, and the whole-milestone
 security review found no blocking issues (3 of 5 SHOULD-FIX items fixed and verified
 in-session; the other 2 are legitimate scope-bounded carryforwards, not defects).
-**Recommend APPROVE WITH DEVIATIONS** (D-M4-1, D-M4-2) once the owner has:
+**APPROVED WITH DEVIATIONS** (D-M4-1, D-M4-2) — owner sign-off 2026-08-06 via gate Q&A.
 
-1. Decided the disposition of D-M4-1 (accept as carryforward / scope a follow-up now).
-2. Confirmed or reverted the `.claude/settings.json` permission change (§6) — independent
-   of the milestone, but discovered during it.
-
-On approval: tag `m4-complete`, update the docs/08 §1 roadmap row to ✅, and merge
-`feat/m4-complete` to `main`.
+Proceeding: tag `m4-complete`, update the docs/08 §1 roadmap row to ✅, fast-forward
+`main` to `feat/m4-complete` (a clean fast-forward — `main` is already an ancestor of
+this branch), and push.
