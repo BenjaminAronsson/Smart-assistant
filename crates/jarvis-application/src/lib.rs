@@ -7,6 +7,7 @@ pub mod deepdive;
 pub mod deterministic;
 pub mod evaluation;
 pub mod health;
+pub mod home;
 pub mod lists;
 pub mod location;
 pub mod memory;
