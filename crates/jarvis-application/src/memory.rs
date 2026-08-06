@@ -7,16 +7,20 @@
 
 use std::sync::Arc;
 
+use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::ids::UserId;
+use jarvis_domain::memory::Memory;
 use jarvis_domain::memory::MemoryLayer;
 use tokio_util::sync::CancellationToken;
 
 use crate::ports::{
-    EmbeddingError, EmbeddingProvider, MemoryHit, MemoryRetriever, RepositoryError,
+    EmbeddedMemory, EmbeddedMemoryStore, EmbeddingError, EmbeddingProvider, MemoryHit,
+    MemoryRetriever, RepositoryError,
 };
 
 pub const MAX_RETRIEVAL_QUERY_BYTES: usize = 512;
 pub const MAX_RETRIEVAL_RESULTS: u32 = 8;
+pub const MAX_EMBEDDING_TEXT_BYTES: usize = 2_000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RetrievalError {
@@ -26,6 +30,95 @@ pub enum RetrievalError {
     Embedding(#[source] EmbeddingError),
     #[error("memory storage failed")]
     Storage(#[source] RepositoryError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum MemoryWriteError {
+    #[error("memory text is empty or too long")]
+    InvalidText,
+    #[error("embedding failed")]
+    Embedding(#[source] EmbeddingError),
+    #[error("memory storage failed")]
+    Storage(#[source] RepositoryError),
+}
+
+/// Bounded, atomic memory writes. Embedding happens before entering the store
+/// transaction, and the store receives the vector and audit event together.
+pub struct MemoryWriteService {
+    embedder: Arc<dyn EmbeddingProvider>,
+    store: Arc<dyn EmbeddedMemoryStore>,
+}
+
+impl MemoryWriteService {
+    pub fn new(embedder: Arc<dyn EmbeddingProvider>, store: Arc<dyn EmbeddedMemoryStore>) -> Self {
+        Self { embedder, store }
+    }
+
+    async fn embedding(
+        &self,
+        text: &str,
+        cancel: &CancellationToken,
+    ) -> Result<EmbeddedMemory, MemoryWriteError> {
+        if text.trim().is_empty() || text.len() > MAX_EMBEDDING_TEXT_BYTES {
+            return Err(MemoryWriteError::InvalidText);
+        }
+        if cancel.is_cancelled() {
+            return Err(MemoryWriteError::Embedding(EmbeddingError::Cancelled));
+        }
+        let embedding = self
+            .embedder
+            .embed(text, cancel)
+            .await
+            .map_err(MemoryWriteError::Embedding)?;
+        if embedding.len() != self.embedder.dimensions()
+            || embedding.is_empty()
+            || embedding.iter().any(|value| !value.is_finite())
+        {
+            return Err(MemoryWriteError::Embedding(
+                EmbeddingError::InvalidDimensions,
+            ));
+        }
+        Ok(EmbeddedMemory {
+            model_id: self.embedder.model_id().to_owned(),
+            dimensions: embedding.len(),
+            embedding,
+        })
+    }
+
+    pub async fn create(
+        &self,
+        memory: &Memory,
+        audit: &AuditEvent,
+        cancel: &CancellationToken,
+    ) -> Result<(), MemoryWriteError> {
+        let embedding = self.embedding(&memory.text, cancel).await?;
+        self.store
+            .create_embedded(memory, &embedding, audit)
+            .await
+            .map_err(MemoryWriteError::Storage)
+    }
+
+    pub async fn replace(
+        &self,
+        memory: &Memory,
+        audit: &AuditEvent,
+        cancel: &CancellationToken,
+    ) -> Result<(), MemoryWriteError> {
+        let embedding = self.embedding(&memory.text, cancel).await?;
+        self.store
+            .replace_embedded(memory, &embedding, audit)
+            .await
+            .map_err(MemoryWriteError::Storage)
+    }
+
+    pub async fn reembed(
+        &self,
+        memory: &Memory,
+        audit: &AuditEvent,
+        cancel: &CancellationToken,
+    ) -> Result<(), MemoryWriteError> {
+        self.replace(memory, audit, cancel).await
+    }
 }
 
 pub struct MemoryRetrievalService {
@@ -73,10 +166,14 @@ impl MemoryRetrievalService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ports::MemoryHit;
+    use crate::ports::{EmbeddedMemoryStore, MemoryHit};
     use async_trait::async_trait;
+    use jarvis_domain::audit::AuditEvent;
+    use jarvis_domain::location::Sensitivity;
+    use jarvis_domain::memory::{Memory, MemoryScope, MemorySource, RetentionRule};
     use std::str::FromStr;
     use std::sync::Mutex;
+    use std::time::SystemTime;
 
     struct FakeEmbedder;
 
@@ -94,6 +191,59 @@ mod tests {
     }
 
     struct FakeRetriever(Mutex<(usize, u32)>);
+
+    struct FakeEmbeddedStore(Mutex<Vec<EmbeddedMemory>>);
+
+    #[async_trait]
+    impl EmbeddedMemoryStore for FakeEmbeddedStore {
+        async fn create_embedded(
+            &self,
+            _: &Memory,
+            embedding: &EmbeddedMemory,
+            _: &AuditEvent,
+        ) -> Result<(), RepositoryError> {
+            self.0.lock().unwrap().push(embedding.clone());
+            Ok(())
+        }
+
+        async fn replace_embedded(
+            &self,
+            _: &Memory,
+            embedding: &EmbeddedMemory,
+            _: &AuditEvent,
+        ) -> Result<(), RepositoryError> {
+            self.0.lock().unwrap().push(embedding.clone());
+            Ok(())
+        }
+    }
+
+    fn memory() -> Memory {
+        Memory::new(
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV".parse().unwrap(),
+            "01BX5ZZKBKACTAV9WEVGEMMVRZ".parse().unwrap(),
+            MemoryLayer::Semantic,
+            "likes green tea".to_owned(),
+            MemorySource::Explicit,
+            MemoryScope::User,
+            RetentionRule::UntilForgotten,
+            1.0,
+            Sensitivity::Normal,
+            false,
+            SystemTime::UNIX_EPOCH,
+        )
+        .unwrap()
+    }
+
+    fn audit() -> AuditEvent {
+        AuditEvent {
+            occurred_at: SystemTime::UNIX_EPOCH,
+            actor: "test".to_owned(),
+            event_type: "memory.created".to_owned(),
+            target: "memory:test".to_owned(),
+            correlation_id: None,
+            payload_json: "{}".to_owned(),
+        }
+    }
 
     #[async_trait]
     impl MemoryRetriever for FakeRetriever {
@@ -150,5 +300,38 @@ mod tests {
                 .await,
             Err(RetrievalError::InvalidQuery)
         ));
+    }
+
+    #[tokio::test]
+    async fn memory_write_populates_bounded_embedding_for_create_and_replace() {
+        let store = Arc::new(FakeEmbeddedStore(Mutex::new(Vec::new())));
+        let service = MemoryWriteService::new(Arc::new(FakeEmbedder), store.clone());
+        let memory = memory();
+        service
+            .create(&memory, &audit(), &CancellationToken::new())
+            .await
+            .unwrap();
+        service
+            .replace(&memory, &audit(), &CancellationToken::new())
+            .await
+            .unwrap();
+        let writes = store.0.lock().unwrap();
+        assert_eq!(writes.len(), 2);
+        assert_eq!(writes[0].model_id, "fixture");
+        assert_eq!(writes[0].dimensions, 2);
+        assert_eq!(writes[0].embedding, vec![1.0, 0.0]);
+    }
+
+    #[tokio::test]
+    async fn memory_write_rejects_cancelled_or_invalid_provider_before_store() {
+        let store = Arc::new(FakeEmbeddedStore(Mutex::new(Vec::new())));
+        let service = MemoryWriteService::new(Arc::new(FakeEmbedder), store.clone());
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        assert!(matches!(
+            service.create(&memory(), &audit(), &cancel).await,
+            Err(MemoryWriteError::Embedding(EmbeddingError::Cancelled))
+        ));
+        assert!(store.0.lock().unwrap().is_empty());
     }
 }

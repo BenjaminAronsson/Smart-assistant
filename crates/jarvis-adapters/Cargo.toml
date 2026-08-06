@@ -20,6 +20,7 @@ tokio-util = { version = "0.7", default-features = false, features = ["codec"] }
 tracing = "0.1"
 futures-util = "0.3"
 async-trait = "0.1"
+sha2 = "0.10"
 # MCP host (client) role only (F2.7, docs/03 §MCP, docs/06 §5): Jarvis launches
 # and drives out-of-process tool servers; it never runs a server. `default-features
 # = false` keeps rmcp's default `server` role out of the host — a smaller compile

@@ -7,7 +7,10 @@
 //! same transaction.
 
 use async_trait::async_trait;
-use jarvis_application::ports::{MemoryHit, MemoryRetriever, MemoryStore, RepositoryError};
+use jarvis_application::ports::{
+    EmbeddedMemory, EmbeddedMemoryStore, MemoryContextStore, MemoryContextUse, MemoryHit,
+    MemoryRetriever, MemoryStore, RepositoryError,
+};
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::ids::{MemoryId, MessageId, RunId, UserId};
 use jarvis_domain::location::Sensitivity;
@@ -271,7 +274,7 @@ impl MemoryStore for PgMemoryStore {
             next += 1;
         }
         if query.is_some() {
-            sql.push_str(&format!(" AND m.text ILIKE ${next} ESCAPE '\\\\'"));
+            sql.push_str(&format!(" AND m.text ILIKE ${next} ESCAPE '\\'"));
             next += 1;
         }
         sql.push_str(&format!(
@@ -400,6 +403,183 @@ fn vector_literal(values: &[f32]) -> Result<String, RepositoryError> {
             .collect::<Vec<_>>()
             .join(",")
     ))
+}
+
+fn stored_embedding(value: &EmbeddedMemory) -> Result<String, RepositoryError> {
+    if value.dimensions != value.embedding.len()
+        || value.dimensions != 384
+        || value.model_id.trim().is_empty()
+        || value
+            .embedding
+            .iter()
+            .any(|component| !component.is_finite())
+    {
+        return Err(RepositoryError::Storage(
+            "invalid embedding dimensions or model".to_owned(),
+        ));
+    }
+    Ok(format!(
+        "[{}]",
+        value
+            .embedding
+            .iter()
+            .map(|component| component.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    ))
+}
+
+fn text_hash(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(text.as_bytes()))
+}
+
+#[async_trait]
+impl EmbeddedMemoryStore for PgMemoryStore {
+    async fn create_embedded(
+        &self,
+        memory: &Memory,
+        embedding: &EmbeddedMemory,
+        audit: &AuditEvent,
+    ) -> Result<(), RepositoryError> {
+        let vector = stored_embedding(embedding)?;
+        let (scope_kind, scope_value) = scope_values(&memory.scope);
+        let (retention_kind, expires_at) = retention_values(&memory.retention);
+        let (source_kind, source_id) = source_values(&memory.source);
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| storage("memory create embedded begin", e))?;
+        sqlx::query("INSERT INTO memory.memories (id,user_id,layer,text,confidence,sensitivity,scope_kind,scope_value,retention_kind,expires_at,pinned,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)")
+            .bind(memory.id.as_str()).bind(memory.user_id.as_str()).bind(layer_name(memory.layer)).bind(&memory.text)
+            .bind(memory.confidence).bind(sensitivity_name(memory.sensitivity)).bind(scope_kind).bind(scope_value)
+            .bind(retention_kind).bind(expires_at).bind(memory.pinned).bind(utc(memory.created_at)).execute(&mut *tx).await
+            .map_err(|e| storage("memory create embedded insert", e))?;
+        sqlx::query(
+            "INSERT INTO memory.memory_sources (memory_id,source_kind,source_id) VALUES ($1,$2,$3)",
+        )
+        .bind(memory.id.as_str())
+        .bind(source_kind)
+        .bind(source_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| storage("memory create embedded source", e))?;
+        sqlx::query("INSERT INTO memory.embeddings (memory_id,model_id,dimensions,text_sha256,embedding,created_at) VALUES ($1,$2,$3,$4,$5::vector,$6)")
+            .bind(memory.id.as_str()).bind(&embedding.model_id).bind(embedding.dimensions as i32)
+            .bind(text_hash(&memory.text)).bind(vector).bind(utc(memory.updated_at)).execute(&mut *tx).await
+            .map_err(|e| storage("memory create embedded vector", e))?;
+        if let Some(expires_at) = expires_at {
+            sqlx::query("INSERT INTO memory.retention_jobs (memory_id,expires_at) VALUES ($1,$2)")
+                .bind(memory.id.as_str())
+                .bind(expires_at)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| storage("memory create embedded retention", e))?;
+        }
+        crate::audit::append(&mut tx, audit)
+            .await
+            .map_err(|e| RepositoryError::Storage(format!("memory create embedded audit: {e}")))?;
+        tx.commit()
+            .await
+            .map_err(|e| storage("memory create embedded commit", e))
+    }
+
+    async fn replace_embedded(
+        &self,
+        memory: &Memory,
+        embedding: &EmbeddedMemory,
+        audit: &AuditEvent,
+    ) -> Result<(), RepositoryError> {
+        let vector = stored_embedding(embedding)?;
+        let (scope_kind, scope_value) = scope_values(&memory.scope);
+        let (retention_kind, expires_at) = retention_values(&memory.retention);
+        let (source_kind, source_id) = source_values(&memory.source);
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| storage("memory replace embedded begin", e))?;
+        let changed = sqlx::query("UPDATE memory.memories SET layer=$1,text=$2,confidence=$3,sensitivity=$4,scope_kind=$5,scope_value=$6,retention_kind=$7,expires_at=$8,pinned=$9,updated_at=$10 WHERE id=$11 AND user_id=$12")
+            .bind(layer_name(memory.layer)).bind(&memory.text).bind(memory.confidence).bind(sensitivity_name(memory.sensitivity)).bind(scope_kind).bind(scope_value).bind(retention_kind).bind(expires_at).bind(memory.pinned).bind(utc(memory.updated_at)).bind(memory.id.as_str()).bind(memory.user_id.as_str()).execute(&mut *tx).await.map_err(|e| storage("memory replace embedded update", e))?;
+        if changed.rows_affected() == 0 {
+            return Err(RepositoryError::Conflict(
+                "memory not found or changed".to_owned(),
+            ));
+        }
+        sqlx::query("DELETE FROM memory.memory_sources WHERE memory_id=$1")
+            .bind(memory.id.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| storage("memory replace embedded source delete", e))?;
+        sqlx::query(
+            "INSERT INTO memory.memory_sources (memory_id,source_kind,source_id) VALUES ($1,$2,$3)",
+        )
+        .bind(memory.id.as_str())
+        .bind(source_kind)
+        .bind(source_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| storage("memory replace embedded source", e))?;
+        sqlx::query("INSERT INTO memory.embeddings (memory_id,model_id,dimensions,text_sha256,embedding,created_at) VALUES ($1,$2,$3,$4,$5::vector,$6) ON CONFLICT (memory_id) DO UPDATE SET model_id=EXCLUDED.model_id,dimensions=EXCLUDED.dimensions,text_sha256=EXCLUDED.text_sha256,embedding=EXCLUDED.embedding,created_at=EXCLUDED.created_at")
+            .bind(memory.id.as_str()).bind(&embedding.model_id).bind(embedding.dimensions as i32).bind(text_hash(&memory.text)).bind(vector).bind(utc(memory.updated_at)).execute(&mut *tx).await.map_err(|e| storage("memory replace embedded vector", e))?;
+        sqlx::query("DELETE FROM memory.retention_jobs WHERE memory_id=$1")
+            .bind(memory.id.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| storage("memory replace embedded retention delete", e))?;
+        if let Some(expires_at) = expires_at {
+            sqlx::query("INSERT INTO memory.retention_jobs (memory_id,expires_at) VALUES ($1,$2)")
+                .bind(memory.id.as_str())
+                .bind(expires_at)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| storage("memory replace embedded retention", e))?;
+        }
+        crate::audit::append(&mut tx, audit)
+            .await
+            .map_err(|e| RepositoryError::Storage(format!("memory replace embedded audit: {e}")))?;
+        tx.commit()
+            .await
+            .map_err(|e| storage("memory replace embedded commit", e))
+    }
+}
+
+#[async_trait]
+impl MemoryContextStore for PgMemoryStore {
+    async fn record_context(
+        &self,
+        user_id: &UserId,
+        uses: &[MemoryContextUse],
+    ) -> Result<(), RepositoryError> {
+        // The application bounds retrieval at eight results; keep this port
+        // defensive because it may also be called by a future assembler.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| storage("memory context begin", e))?;
+        for use_ in uses.iter().take(8) {
+            if !use_.similarity.is_finite() || !(0..=8).contains(&use_.rank) {
+                return Err(RepositoryError::Storage(
+                    "invalid memory context rank or similarity".to_owned(),
+                ));
+            }
+            sqlx::query("INSERT INTO memory.context_provenance (user_id,run_id,memory_id,rank,similarity,used_at) SELECT $1,$2,$3,$4,$5,$6 WHERE EXISTS (SELECT 1 FROM memory.memories WHERE id=$3 AND user_id=$1) ON CONFLICT (run_id,memory_id) DO NOTHING")
+                .bind(user_id.as_str())
+                .bind(use_.run_id.as_str())
+                .bind(use_.memory_id.as_str())
+                .bind(use_.rank)
+                .bind(use_.similarity)
+                .bind(utc(use_.used_at))
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| storage("memory context record", e))?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| storage("memory context commit", e))
+    }
 }
 
 #[async_trait]

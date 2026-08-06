@@ -61,6 +61,52 @@ pub trait MemoryStore: Send + Sync {
     ) -> Result<bool, RepositoryError>;
 }
 
+/// A memory mutation whose embedding was produced from the exact text being
+/// written. Implementations must persist the memory, source, embedding, and
+/// audit event in one transaction; a provider failure must never leave a
+/// stale vector searchable.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EmbeddedMemory {
+    pub model_id: String,
+    pub dimensions: usize,
+    pub embedding: Vec<f32>,
+}
+
+#[async_trait::async_trait]
+pub trait EmbeddedMemoryStore: Send + Sync {
+    async fn create_embedded(
+        &self,
+        memory: &Memory,
+        embedding: &EmbeddedMemory,
+        audit: &AuditEvent,
+    ) -> Result<(), RepositoryError>;
+    async fn replace_embedded(
+        &self,
+        memory: &Memory,
+        embedding: &EmbeddedMemory,
+        audit: &AuditEvent,
+    ) -> Result<(), RepositoryError>;
+}
+
+/// One bounded memory item forwarded into a run's model context.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryContextUse {
+    pub run_id: jarvis_domain::ids::RunId,
+    pub memory_id: jarvis_domain::ids::MemoryId,
+    pub rank: i32,
+    pub similarity: f32,
+    pub used_at: SystemTime,
+}
+
+#[async_trait::async_trait]
+pub trait MemoryContextStore: Send + Sync {
+    async fn record_context(
+        &self,
+        user_id: &jarvis_domain::ids::UserId,
+        uses: &[MemoryContextUse],
+    ) -> Result<(), RepositoryError>;
+}
+
 /// Provider-neutral semantic retrieval. The embedding vector is deliberately
 /// an owned slice at this boundary; fastembed/pgvector types do not cross the
 /// pure application crate. Implementations must apply the owner/layer filters

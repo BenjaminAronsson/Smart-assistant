@@ -5,6 +5,13 @@
 -- are deliberately no foreign keys into conversation/orchestration schemas;
 -- cross-module identity is carried as an opaque source id at the application
 -- port boundary.
+--
+-- pgvector must be created here, not only by the compose init script: the
+-- init script runs once against the persistent `jarvis` database, but
+-- `#[sqlx::test]`'s throwaway per-test databases (and CI) only ever replay
+-- committed migrations, never the init script. Idempotent, so a no-op on the
+-- persistent dev database where it already exists.
+CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE SCHEMA memory;
 

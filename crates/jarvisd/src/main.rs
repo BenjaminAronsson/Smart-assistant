@@ -206,9 +206,11 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     let engine = RunEngine::new(
         Arc::new(DeterministicFirstProvider::new(model)),
         Arc::new(if let Some(calendar) = calendar {
-            MemoryAssembler::new(memory_retrieval).with_calendar(calendar)
-        } else {
             MemoryAssembler::new(memory_retrieval)
+                .with_calendar(calendar)
+                .with_context_store(memory_store.clone())
+        } else {
+            MemoryAssembler::new(memory_retrieval).with_context_store(memory_store.clone())
         }),
         run_store.clone(),
         message_store.clone(),

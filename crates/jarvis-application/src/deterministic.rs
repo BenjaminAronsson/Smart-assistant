@@ -13,6 +13,7 @@ use futures_core::Stream;
 use futures_core::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
+use crate::home::{HomeAction, parse_home_intent};
 use crate::model::{ModelError, ModelEvent, ModelProvider, ModelRequest, ProfileId};
 use jarvis_domain::math::{MathCommand, parse_math_command};
 
@@ -40,6 +41,16 @@ impl ModelProvider for DeterministicFirstProvider {
         cancel: CancellationToken,
     ) -> Result<BoxStream<'static, ModelEvent>, ModelError> {
         let Some(command) = parse_math_command(&request.prompt) else {
+            if let Some(intent) = parse_home_intent(&request.prompt) {
+                let action = match intent.action {
+                    HomeAction::TurnOn => "turning on",
+                    HomeAction::TurnOff => "turning off",
+                };
+                return Ok(Box::pin(OneShotStream::new([
+                    ModelEvent::TextDelta(format!("{action} {}", intent.target)),
+                    ModelEvent::Done(crate::model::FinishReason::Stop),
+                ])));
+            }
             return self.inner.run(request, cancel).await;
         };
 
@@ -133,5 +144,21 @@ mod tests {
             .await
             .unwrap();
         assert!(inner.opened());
+    }
+
+    #[tokio::test]
+    async fn recognized_home_command_does_not_open_the_inner_provider() {
+        let inner = std::sync::Arc::new(FakeModel::streaming(["should not run"]));
+        let provider = DeterministicFirstProvider::new(inner.clone());
+        let _stream = provider
+            .run(
+                ModelRequest {
+                    prompt: "turn on living room lights".to_owned(),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(!inner.opened());
     }
 }
