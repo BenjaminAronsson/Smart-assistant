@@ -16,6 +16,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -25,6 +26,8 @@ use axum::response::Response;
 use jarvis_application::orchestrator::{RunEventSink, RunUpdate};
 use jarvis_application::ports::{DisplayDirectiveSink, RepositoryError};
 use jarvis_contracts::CONTRACT_VERSION;
+use jarvis_contracts::cards::{AgendaEventDto, HudCardDto};
+use jarvis_contracts::deepdive::{CanvasActionDto, HudCanvasDto};
 use jarvis_contracts::display::{DisplayDirective, SurfaceDto};
 use jarvis_contracts::envelope::{Channel, EventEnvelope};
 use jarvis_contracts::events::TransientEvent;
@@ -208,6 +211,34 @@ impl WsHub {
         let _ = self.tx.send(Arc::new(envelope));
     }
 
+    fn broadcast_agenda(
+        &self,
+        run_id: &RunId,
+        events: Vec<jarvis_application::calendar::CalendarEvent>,
+    ) {
+        let card = HudCardDto::Agenda {
+            id: format!("agenda-{run_id}"),
+            title: "Today".to_owned(),
+            events: events
+                .into_iter()
+                .map(|event| AgendaEventDto {
+                    title: event.title,
+                    start: rfc3339_system_time(event.start),
+                    end: rfc3339_system_time(event.end),
+                    all_day: event.all_day,
+                })
+                .collect(),
+        };
+        self.broadcast_hud_canvas(HudCanvasDto {
+            session_id: None,
+            action: CanvasActionDto::Extend,
+            label: "Today".to_owned(),
+            cards: vec![card],
+            offer: None,
+            handoff: None,
+        });
+    }
+
     /// Broadcast a transient text delta at the current high-water `seq` (it does
     /// not advance the resync cursor; a lost delta is re-derived, docs/05 §3).
     fn broadcast_delta(&self, run_id: &RunId, text: &str) {
@@ -308,6 +339,7 @@ impl RunEventSink for WsHub {
     async fn emit(&self, update: RunUpdate) {
         match update {
             RunUpdate::TextDelta { run_id, text } => self.broadcast_delta(&run_id, &text),
+            RunUpdate::Agenda { run_id, events } => self.broadcast_agenda(&run_id, events),
             // Persisted by the checkpointer and delivered on the outbox path —
             // dropping them here is the double-emit reconciliation (F1.4).
             // CompensationRegistered (F2.3) is likewise a persisted domain event;
@@ -466,6 +498,12 @@ fn now_rfc3339() -> String {
     rfc3339(OffsetDateTime::now_utc())
 }
 
+fn rfc3339_system_time(at: SystemTime) -> String {
+    time::OffsetDateTime::from(at)
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
+}
+
 fn rfc3339(at: OffsetDateTime) -> String {
     at.format(&Rfc3339).expect("UTC timestamp formats")
 }
@@ -558,6 +596,44 @@ mod tests {
             rx.try_recv().is_err(),
             "state/finished must not be broadcast"
         );
+    }
+
+    #[tokio::test]
+    async fn sink_maps_agenda_to_a_sensitivity_safe_hud_card() {
+        let hub = WsHub::new();
+        let mut rx = hub.subscribe();
+        let run_id: RunId = RUN.parse().unwrap();
+        let event = jarvis_application::calendar::CalendarEvent::new(
+            "Dentist",
+            SystemTime::UNIX_EPOCH,
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(3_600),
+            false,
+            jarvis_domain::location::Sensitivity::Sensitive,
+        )
+        .unwrap();
+
+        hub.emit(RunUpdate::Agenda {
+            run_id,
+            events: vec![event],
+        })
+        .await;
+
+        let envelope = rx.recv().await.unwrap();
+        assert_eq!(envelope.event_type, "hud.canvas");
+        assert_eq!(
+            envelope.payload["canvas"]["cards"][0]["type"],
+            "card.agenda"
+        );
+        assert_eq!(
+            envelope.payload["canvas"]["cards"][0]["events"][0],
+            json!({
+                "title": "Dentist",
+                "start": "1970-01-01T00:00:00Z",
+                "end": "1970-01-01T01:00:00Z",
+                "allDay": false
+            })
+        );
+        assert!(!envelope.payload.to_string().contains("sensitivity"));
     }
 
     #[test]

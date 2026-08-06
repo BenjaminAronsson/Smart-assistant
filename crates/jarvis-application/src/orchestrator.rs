@@ -24,6 +24,7 @@ use async_trait::async_trait;
 use futures_core::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
+use crate::calendar::CalendarEvent;
 use crate::model::{ModelError, ModelEvent, ModelProvider, ModelRequest};
 use crate::policy::{
     self, ApprovalGate, ApprovalOutcome, ApprovalRequest, AuditSink, DenyReason, GrantBinding,
@@ -51,6 +52,15 @@ pub struct RunInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssembledContext {
     pub prompt: String,
+    /// A read-only agenda projection assembled for an exact calendar query.
+    /// The application retains the source events until the host maps them to
+    /// the sensitivity-safe HUD DTO.
+    pub agenda: Option<AgendaPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgendaPayload {
+    pub events: Vec<CalendarEvent>,
 }
 
 /// A structured update the orchestrator emits as a run progresses. The host
@@ -62,6 +72,11 @@ pub enum RunUpdate {
     StateChanged { run_id: RunId, state: RunState },
     /// One incremental chunk of streamed model output (transient).
     TextDelta { run_id: RunId, text: String },
+    /// A transient, read-only agenda projection for the current run.
+    Agenda {
+        run_id: RunId,
+        events: Vec<CalendarEvent>,
+    },
     /// The run reached a terminal state (completed, failed, or cancelled);
     /// carries the outcome.
     Finished { run_id: RunId, outcome: RunOutcome },
@@ -346,6 +361,14 @@ impl Orchestrator<'_> {
             .await?;
         active.base_context = Some(ctx.prompt.clone());
         active.prompt = Some(ctx.prompt);
+        if let Some(agenda) = ctx.agenda {
+            self.sink
+                .emit(RunUpdate::Agenda {
+                    run_id: run.id.clone(),
+                    events: agenda.events,
+                })
+                .await;
+        }
         run.apply(RunEvent::ContextAssembled)?;
         self.after_transition(run).await;
         Ok(StepFlow::Continue)

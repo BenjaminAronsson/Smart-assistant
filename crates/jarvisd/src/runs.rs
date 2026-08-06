@@ -25,6 +25,9 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use axum::{Extension, Json};
 use futures_util::stream::BoxStream;
+use jarvis_application::calendar::{
+    CalendarQuery, CalendarReader, LocalDayWindow, MAX_AGENDA_EVENTS, classify_calendar_query,
+};
 use jarvis_application::health::ProviderHealthTracker;
 use jarvis_application::memory::MemoryRetrievalService;
 use jarvis_application::model::{
@@ -878,6 +881,7 @@ impl ContextAssembler for PassthroughAssembler {
     ) -> Result<AssembledContext, ContextError> {
         Ok(AssembledContext {
             prompt: input.text.clone(),
+            agenda: None,
         })
     }
 }
@@ -889,11 +893,44 @@ impl ContextAssembler for PassthroughAssembler {
 /// before it can reach a reasoning provider.
 pub struct MemoryAssembler {
     retrieval: Arc<MemoryRetrievalService>,
+    calendar: Option<Arc<dyn CalendarReader>>,
 }
 
 impl MemoryAssembler {
     pub fn new(retrieval: Arc<MemoryRetrievalService>) -> Self {
-        Self { retrieval }
+        Self {
+            retrieval,
+            calendar: None,
+        }
+    }
+
+    /// Adds the optional read-only calendar capability without changing the
+    /// existing memory/identity assembly path.
+    pub fn with_calendar(mut self, calendar: Arc<dyn CalendarReader>) -> Self {
+        self.calendar = Some(calendar);
+        self
+    }
+
+    async fn agenda(
+        &self,
+        input: &RunInput,
+        cancel: &CancellationToken,
+    ) -> Option<Vec<jarvis_application::calendar::CalendarEvent>> {
+        if !matches!(
+            classify_calendar_query(&input.text),
+            Some(CalendarQuery::Today)
+        ) {
+            return None;
+        }
+        let reader = self.calendar.as_ref()?;
+        let now = SystemTime::now();
+        let elapsed = now.duration_since(SystemTime::UNIX_EPOCH).ok()?;
+        let start = SystemTime::UNIX_EPOCH
+            + std::time::Duration::from_secs(elapsed.as_secs() / 86_400 * 86_400);
+        let end = start + std::time::Duration::from_secs(86_400);
+        let window = LocalDayWindow::new(start, end).ok()?;
+        let events = reader.read(window, cancel.clone()).await.ok()?;
+        Some(events.into_iter().take(MAX_AGENDA_EVENTS).collect())
     }
 
     fn render(prompt: &str, hits: &[jarvis_application::ports::MemoryHit]) -> String {
@@ -937,6 +974,10 @@ impl ContextAssembler for MemoryAssembler {
     ) -> Result<AssembledContext, ContextError> {
         Ok(AssembledContext {
             prompt: input.text.clone(),
+            agenda: self
+                .agenda(input, _cancel)
+                .await
+                .map(|events| jarvis_application::orchestrator::AgendaPayload { events }),
         })
     }
 
@@ -957,6 +998,10 @@ impl ContextAssembler for MemoryAssembler {
             .unwrap_or_default();
         Ok(AssembledContext {
             prompt: Self::render(&input.text, &hits),
+            agenda: self
+                .agenda(input, cancel)
+                .await
+                .map(|events| jarvis_application::orchestrator::AgendaPayload { events }),
         })
     }
 }

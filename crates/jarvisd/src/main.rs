@@ -116,6 +116,23 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     } else {
         None
     };
+    let calendar = if config.integrations.caldav.enabled {
+        let password =
+            jarvisd::config::resolve_secret_ref(&config.integrations.caldav.password_secret)?;
+        let caldav = jarvis_adapters::caldav::CalDavConfig::new(
+            config.integrations.caldav.server_url.clone(),
+            config.integrations.caldav.username.clone(),
+            password.expose().to_owned(),
+        )
+        .map_err(|error| anyhow::anyhow!("invalid CalDAV configuration: {error}"))?;
+        Some(Arc::new(
+            jarvis_adapters::caldav::CalDavReader::new(caldav)
+                .map_err(|error| anyhow::anyhow!("could not initialize CalDAV reader: {error}"))?,
+        )
+            as Arc<dyn jarvis_application::calendar::CalendarReader>)
+    } else {
+        None
+    };
     let mut registry = jarvisd::tools::build_registry_with_smtp(None, smtp)?;
     // MCP tool servers (F2.7): none configured in M2, so no ambient MCP tool
     // authority — the stricter default. `_mcp_hosts` must live for the process
@@ -188,7 +205,11 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     ));
     let engine = RunEngine::new(
         Arc::new(DeterministicFirstProvider::new(model)),
-        Arc::new(MemoryAssembler::new(memory_retrieval)),
+        Arc::new(if let Some(calendar) = calendar {
+            MemoryAssembler::new(memory_retrieval).with_calendar(calendar)
+        } else {
+            MemoryAssembler::new(memory_retrieval)
+        }),
         run_store.clone(),
         message_store.clone(),
         hub.clone(),

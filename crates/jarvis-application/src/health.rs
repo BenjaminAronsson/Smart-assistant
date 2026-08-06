@@ -111,6 +111,22 @@ impl ProviderHealthTracker {
             .unwrap_or_else(|| (HealthState::Healthy, String::new()))
     }
 
+    /// Whether quota-sensitive background work may consume this provider.
+    pub fn allows_background(&self, profile: &ProfileId) -> bool {
+        matches!(self.get(profile).0, HealthState::Healthy)
+    }
+
+    /// Stable score for ranking providers in the M4 scheduler/evaluation
+    /// surface. This is intentionally coarse and never derived from raw error
+    /// text or a provider's self-reported quality.
+    pub fn score(&self, profile: &ProfileId) -> u8 {
+        match self.get(profile).0 {
+            HealthState::Healthy => 100,
+            HealthState::Degraded => 50,
+            HealthState::Unavailable => 0,
+        }
+    }
+
     /// Get health for all known profiles.
     pub fn all(&self) -> Vec<(String, HealthState, Option<String>)> {
         let records = self.records.lock().unwrap_or_else(|e| e.into_inner());

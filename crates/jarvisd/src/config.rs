@@ -337,6 +337,10 @@ impl LocationConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IntegrationsConfig {
+    /// `[integrations.caldav]` (M4, FR-35, ADR-025). Read-only until a later
+    /// milestone adds explicitly approved calendar mutations.
+    #[serde(default)]
+    pub caldav: CaldavConfig,
     /// `[integrations.web_search]`. Present ⇒ the `web.search`/`web.fetch` R0
     /// tools are registered against the live provider; absent ⇒ they are not,
     /// which is the external-egress consent gate (CF-5, docs/06 §5).
@@ -350,6 +354,34 @@ pub struct IntegrationsConfig {
     /// external message authority is never ambient.
     #[serde(default)]
     pub smtp: SmtpConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaldavConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub server_url: String,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default = "default_caldav_password_secret")]
+    pub password_secret: String,
+}
+
+fn default_caldav_password_secret() -> String {
+    "keyring:jarvis/caldav".to_owned()
+}
+
+impl Default for CaldavConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            server_url: String::new(),
+            username: String::new(),
+            password_secret: default_caldav_password_secret(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -628,6 +660,13 @@ impl Config {
                 "[integrations.smtp].from_address is required when SMTP is enabled"
             );
             validate_secret_ref(&self.integrations.smtp.password_secret)?;
+        }
+        if self.integrations.caldav.enabled {
+            anyhow::ensure!(
+                !self.integrations.caldav.server_url.trim().is_empty(),
+                "[integrations.caldav].server_url is required when CalDAV is enabled"
+            );
+            validate_secret_ref(&self.integrations.caldav.password_secret)?;
         }
         Ok(())
     }

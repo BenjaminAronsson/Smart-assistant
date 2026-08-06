@@ -219,6 +219,7 @@ impl ContextAssembler for EchoAssembler {
     ) -> Result<AssembledContext, ContextError> {
         Ok(AssembledContext {
             prompt: input.text.clone(),
+            agenda: None,
         })
     }
 }

@@ -5,6 +5,7 @@
 pub mod calendar;
 pub mod deepdive;
 pub mod deterministic;
+pub mod evaluation;
 pub mod health;
 pub mod lists;
 pub mod location;
@@ -14,6 +15,7 @@ pub mod orchestrator;
 pub mod policy;
 pub mod ports;
 pub mod queue;
+pub mod scheduler;
 pub mod timers;
 
 #[cfg(any(test, feature = "fixtures"))]
