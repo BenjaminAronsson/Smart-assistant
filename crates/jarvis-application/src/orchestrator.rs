@@ -31,7 +31,7 @@ use crate::policy::{
 };
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::grants::{ExecutionGrant, GrantError};
-use jarvis_domain::ids::RunId;
+use jarvis_domain::ids::{RunId, UserId};
 use jarvis_domain::run::{Run, RunEvent, RunOutcome, RunState, TransitionError};
 use jarvis_domain::tools::{
     MAX_RESULT_PROMPT_BYTES, ToolError, ToolInvocation, ToolProposal, ToolResult,
@@ -87,6 +87,20 @@ pub trait ContextAssembler: Send + Sync {
         input: &RunInput,
         cancel: &CancellationToken,
     ) -> Result<AssembledContext, ContextError>;
+
+    /// Identity-aware assembly hook. The identity is authentication-derived
+    /// context, not authority; implementations must use it only to scope
+    /// retrieval. The default preserves existing test/fallback assemblers.
+    async fn assemble_for_user(
+        &self,
+        run: &Run,
+        input: &RunInput,
+        user_id: Option<&UserId>,
+        cancel: &CancellationToken,
+    ) -> Result<AssembledContext, ContextError> {
+        let _ = user_id;
+        self.assemble(run, input, cancel).await
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -148,6 +162,9 @@ pub struct Orchestrator<'a> {
     pub checkpointer: &'a dyn Checkpointer,
     pub sink: &'a dyn RunEventSink,
     pub clock: &'a dyn Clock,
+    /// Authentication-derived owner identity used only for scoped context
+    /// retrieval; it never grants tool authority.
+    pub user_id: Option<&'a UserId>,
     /// Present once tools are wired (F2.2+); `None` for the text-only path.
     pub tools: Option<ToolStack<'a>>,
 }
@@ -158,6 +175,9 @@ pub struct Orchestrator<'a> {
 /// replan).
 struct Active {
     prompt: Option<String>,
+    /// Retained across tool replans so observations cannot erase the bounded
+    /// owner-scoped context assembled for this run.
+    base_context: Option<String>,
     stream: Option<BoxStream<'static, ModelEvent>>,
     /// A model tool proposal awaiting policy evaluation (`PolicyReview`).
     proposal: Option<ToolProposal>,
@@ -251,6 +271,7 @@ impl Orchestrator<'_> {
         let started = self.clock.now();
         let mut active = Active {
             prompt: None,
+            base_context: None,
             stream: None,
             proposal: None,
             invocation: None,
@@ -319,7 +340,11 @@ impl Orchestrator<'_> {
         active: &mut Active,
         cancel: &CancellationToken,
     ) -> Result<StepFlow, StepError> {
-        let ctx = self.context.assemble(run, input, cancel).await?;
+        let ctx = self
+            .context
+            .assemble_for_user(run, input, self.user_id, cancel)
+            .await?;
+        active.base_context = Some(ctx.prompt.clone());
         active.prompt = Some(ctx.prompt);
         run.apply(RunEvent::ContextAssembled)?;
         self.after_transition(run).await;
@@ -704,7 +729,11 @@ impl Orchestrator<'_> {
         let sanitized = sanitize_result_content(&observation.content, MAX_RESULT_PROMPT_BYTES);
         let truncated = observation.truncated || sanitized.truncated;
         let note = if truncated { " (truncated)" } else { "" };
-        active.prompt = Some(format!("Tool result{note}: {}", sanitized.text));
+        let base = active.base_context.as_deref().unwrap_or_default();
+        active.prompt = Some(format!(
+            "{base} [Untrusted tool result{note}] {} [End untrusted tool result]",
+            sanitized.text
+        ));
         // ModelInvoked is legal from Replanning as well as ContextReady.
         self.open_model_step(run, active, cancel).await
     }

@@ -109,6 +109,7 @@ async fn approved_r2_mints_grant_and_executes_with_it() {
         checkpointer: &cp,
         sink: &sink,
         clock: &clock,
+        user_id: None,
         tools: Some(ToolStack {
             registry: &registry,
             audit: &audit,
@@ -166,6 +167,7 @@ async fn denied_r2_never_executes_and_replans() {
         checkpointer: &cp,
         sink: &sink,
         clock: &clock,
+        user_id: None,
         tools: Some(ToolStack {
             registry: &registry,
             audit: &audit,
@@ -219,6 +221,7 @@ async fn edited_arguments_bind_the_grant_and_execute() {
         checkpointer: &cp,
         sink: &sink,
         clock: &clock,
+        user_id: None,
         tools: Some(ToolStack {
             registry: &registry,
             audit: &audit,
@@ -267,6 +270,7 @@ async fn failed_grant_validation_blocks_execution() {
         checkpointer: &cp,
         sink: &sink,
         clock: &clock,
+        user_id: None,
         tools: Some(ToolStack {
             registry: &registry,
             audit: &audit,
@@ -326,6 +330,7 @@ async fn reversible_tool_registers_a_compensation_in_the_timeline() {
         checkpointer: &cp,
         sink: &sink,
         clock: &clock,
+        user_id: None,
         tools: Some(ToolStack {
             registry: &registry,
             audit: &audit,
@@ -382,6 +387,7 @@ async fn grant_mint_failure_fails_the_run_and_never_executes() {
         checkpointer: &cp,
         sink: &sink,
         clock: &clock,
+        user_id: None,
         tools: Some(ToolStack {
             registry: &registry,
             audit: &audit,
@@ -445,6 +451,7 @@ async fn malformed_edited_arguments_are_rejected_before_a_grant_binds() {
         checkpointer: &cp,
         sink: &sink,
         clock: &clock,
+        user_id: None,
         tools: Some(ToolStack {
             registry: &registry,
             audit: &audit,
@@ -521,6 +528,7 @@ async fn arguments_claiming_prior_approval_do_not_bypass_the_gate() {
         checkpointer: &cp,
         sink: &sink,
         clock: &clock,
+        user_id: None,
         tools: Some(ToolStack {
             registry: &registry,
             audit: &audit,

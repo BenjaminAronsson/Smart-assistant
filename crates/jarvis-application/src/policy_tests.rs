@@ -247,6 +247,7 @@ async fn r0_tool_proposal_auto_executes_and_replans_to_completed() {
         checkpointer: &cp,
         sink: &sink,
         clock: &clock,
+        user_id: None,
         tools: Some(ToolStack {
             registry: &registry,
             audit: &audit,
@@ -328,6 +329,7 @@ async fn tool_result_is_sanitized_before_it_reaches_the_next_prompt() {
         checkpointer: &cp,
         sink: &sink,
         clock: &clock,
+        user_id: None,
         tools: Some(ToolStack {
             registry: &registry,
             audit: &audit,
@@ -352,7 +354,10 @@ async fn tool_result_is_sanitized_before_it_reaches_the_next_prompt() {
     // The prompt the model saw on the replan turn: control bytes stripped, the
     // legitimate text preserved.
     let replan_prompt = model.last_prompt().expect("a replan prompt was assembled");
-    assert_eq!(replan_prompt, "Tool result: ok[2Jdone");
+    assert_eq!(
+        replan_prompt,
+        "read it [Untrusted tool result] ok[2Jdone [End untrusted tool result]"
+    );
     assert!(
         !replan_prompt.chars().any(|c| c.is_control()),
         "no control byte may survive into a prompt: {replan_prompt:?}"
@@ -387,6 +392,7 @@ async fn prohibited_tool_is_denied_and_never_executes() {
         checkpointer: &cp,
         sink: &sink,
         clock: &clock,
+        user_id: None,
         tools: Some(ToolStack {
             registry: &registry,
             audit: &audit,

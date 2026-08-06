@@ -143,6 +143,7 @@ async fn golden6_malicious_fetched_page_cannot_exfiltrate_via_message_send() {
         checkpointer: &cp,
         sink: &sink,
         clock: &clock,
+        user_id: None,
         tools: Some(ToolStack {
             registry: &registry,
             audit: &audit,
@@ -237,6 +238,7 @@ async fn golden6_unknown_tool_named_by_a_page_is_rejected_not_executed() {
         checkpointer: &cp,
         sink: &sink,
         clock: &clock,
+        user_id: None,
         tools: Some(ToolStack {
             registry: &registry,
             audit: &audit,

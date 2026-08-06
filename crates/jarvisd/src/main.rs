@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use jarvis_adapters::claude_cli::ClaudeCliModel;
+use jarvis_adapters::embeddings::FastEmbedProvider;
 use jarvis_application::deterministic::DeterministicFirstProvider;
+use jarvis_application::memory::MemoryRetrievalService;
 use jarvis_application::orchestrator::RunInput;
 use jarvis_application::ports::{MessageStore, RunStore};
 use jarvis_domain::conversations::MessageRole;
@@ -14,7 +16,7 @@ use jarvis_domain::ids::SessionId;
 use jarvis_domain::run::Run;
 use jarvis_infra::dispatcher::OutboxDispatcher;
 use jarvisd::api::RunWiring;
-use jarvisd::runs::{PassthroughAssembler, RunApi, RunEngine, SystemClock};
+use jarvisd::runs::{MemoryAssembler, RunApi, RunEngine, SystemClock};
 use jarvisd::ws::{WsHub, WsState};
 use tokio_util::sync::CancellationToken;
 use tower_http::trace::TraceLayer;
@@ -43,6 +45,13 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     let session_store = Arc::new(jarvis_infra::sessions::PgSessionStore::new(pool.clone()));
     let message_store = Arc::new(jarvis_infra::messages::PgMessageStore::new(pool.clone()));
     let run_store = Arc::new(jarvis_infra::runs::PgRunStore::new(pool.clone()));
+    let memory_store = Arc::new(jarvis_infra::memory::PgMemoryStore::new(pool.clone()));
+    let memory_retrieval = Arc::new(MemoryRetrievalService::new(
+        Arc::new(FastEmbedProvider::new(
+            config.providers.embeddings.to_adapter(),
+        )),
+        memory_store.clone(),
+    ));
     let event_log = Arc::new(jarvis_infra::events::PgEventLog::new(pool.clone()));
     let sessions = jarvisd::sessions::SessionApi::new(session_store.clone());
 
@@ -166,7 +175,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     ));
     let engine = RunEngine::new(
         Arc::new(DeterministicFirstProvider::new(model)),
-        Arc::new(PassthroughAssembler),
+        Arc::new(MemoryAssembler::new(memory_retrieval)),
         run_store.clone(),
         message_store.clone(),
         hub.clone(),
@@ -354,7 +363,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             timers: timer_api,
             lists: list_api,
             memories: Some(jarvisd::memories::MemoryApi::new(
-                Arc::new(jarvis_infra::memory::PgMemoryStore::new(pool.clone())),
+                memory_store,
             )),
             deepdive: Some(deepdive),
             web_assets: config.server.web_assets.clone(),
