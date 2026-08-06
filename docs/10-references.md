@@ -43,6 +43,10 @@ relevant milestone and before any redistribution.
 26. Rhasspy 3 (archived — lessons only): https://github.com/rhasspy/rhasspy3
 27. LiveKit Agents (M7 option): https://docs.livekit.io/agents/
 28. Pipecat: https://github.com/pipecat-ai/pipecat
+29. NanoClaw — lightweight OpenClaw alternative; owner-operated multi-channel agent (Telegram
+    today), container-per-session isolation, markdown/OKF memory, Anthropic Agents SDK
+    runtime. Owner's existing external agent, targeted for FR-20 integration as a Jarvis
+    worker per ADR-028: https://github.com/nanocoai/nanoclaw
 29. Leon: https://github.com/leon-ai/leon
 
 ## Rust stack

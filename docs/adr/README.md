@@ -591,6 +591,68 @@ host protocol; (B) process + `rlimit`s only; (C) `bubblewrap`/user-namespace san
   (policy overlay, Z4 sanitization, per-step audit, "a page cannot inject a tool call") is
   unit-testable **without a browser** and is identical across environments.
 - (+) The container requirement is deferred to ops packaging, not blocked on it — the
+
+## ADR-028 — NanoClaw as a policy-gated worker, not the top-level brain {#adr-028}
+
+**Status.** **Proposed** — brainstormed with the owner 2026-08-06; design detail in
+`docs/superpowers/specs/2026-08-06-nanoclaw-worker-integration-design.md`. Needs owner
+acceptance before implementation (human-only decision, `docs/11` §3).
+
+**Context.** The owner already runs [NanoClaw](https://github.com/nanocoai/nanoclaw) —
+ref 29, `docs/10-references.md` — as their day-to-day agent, reachable only through
+Telegram. It has real strengths Jarvis doesn't: multi-channel reach (WhatsApp, Telegram,
+Slack, Discord, Gmail), a container-per-session sandbox that can spawn sub-processes, and
+persistent markdown/OKF memory. The owner wants those capabilities available through
+Jarvis's presentation layer instead of two separate systems — this is FR-20's "OpenClaw
+bridge" clause, made concrete, and ADR-026 explicitly deferred this exact decision to
+FR-20's own future ADR.
+
+The complication: NanoClaw's container runs an autonomous "call tools until done" loop via
+Anthropic's Agent SDK — structurally the exact pattern ADR-003 forbids as Jarvis's
+top-level control flow, and invariant #1 forbids any execution path that bypasses
+`policy::evaluate`. Routing Jarvis's UI directly onto nanoclaw-as-the-brain would mean the
+presentation layer fronts an engine with no policy gate behind it — not a style
+preference, a real invariant break. Options weighed: (A) nanoclaw as a policy-gated
+*worker*, invoked like the M3a browser/coding workers, opaque internals but a single
+gated, audited, timeout-bounded invocation; (B) nanoclaw as the top-level brain with
+Jarvis as a thin view, requiring an explicit, human-approved exception to ADR-003 and
+invariant #1; (C) no execution bridge at all, memory-only sync between the two systems.
+
+**Decision.** Adopt **Option A**. Register `worker.nanoclaw.delegate` as a tool following
+the exact shape of the coding worker (`crates/jarvis-adapters/src/coding.rs`): a narrow
+`NanoclawTransport` trait, a `NanoclawWorkerHost` that owns the host-authored `ToolPolicy`
+and turns the worker's output into a durable `ArtifactManifest` + `artifact.created` audit
+event. Jarvis's orchestrator decides *when* to invoke nanoclaw; nanoclaw's internal loop
+stays opaque, the same way the coding worker's internal reasoning is opaque — but the
+invocation itself is one ordinary policy-gated tool call, not a bypass. The worker talks
+to nanoclaw's existing host process (CLI subprocess, mirroring `ChildCodingTransport`),
+not to its containers directly — nanoclaw's own `inbound.db`/`outbound.db` session
+machinery is not reimplemented. NanoClaw's markdown/OKF memory is exposed read-only as a
+Jarvis tool now (tagged as nanoclaw-sourced, not silently merged with Jarvis-native facts)
+with a path to M4's `memory_sources` schema later. Risk tier defaults to R1 only if the
+owner configures a dedicated Jarvis-facing nanoclaw agent group with outbound channel
+delivery disabled (bounding the blast radius to "wasted compute"); otherwise R2 with an
+explicit `ExecutionGrant` per delegation. Full inbound-channel bridging (nanoclaw/Telegram
+messages starting a Jarvis run) is out of scope for this decision — a later FR-20 slice,
+using the same device-pairing + `/sessions/{id}/messages` + `/ws/v1` surface the web shell
+already uses, no new trait required.
+
+**Consequences.**
+- (+) None of Jarvis's invariants bend — the orchestrator remains the only decision-maker
+  about *when* nanoclaw runs, and every invocation is audited and gated like any other
+  tool.
+- (+) Reuses a pattern already built and reviewed twice (browser worker, coding worker)
+  instead of inventing a third execution primitive.
+- (+) NanoClaw stays untouched as an external dependency — no fork, no code changes to
+  nanoclaw itself required for the first slice.
+- (−) Jarvis cannot see or gate nanoclaw's *internal* tool use — the grant covers the
+  delegation, not nanoclaw's sub-actions. Mitigated by the R1-only-if-outbound-disabled
+  rule; revisit if nanoclaw needs real external side effects sooner.
+- (−) Two memory systems coexist until M4 lands (nanoclaw's markdown/OKF, Jarvis's future
+  `memories` schema) — read-only bridging only, no reconciliation, until then.
+- Revisit trigger: if the owner decides they want nanoclaw itself to drive Jarvis's
+  presentation layer (Option B), that requires a separate, explicit ADR revising ADR-003
+  and invariant #1 — not a silent expansion of this one.
   adapter and its guarantees land now; the container profile is an F3a.8 / deployment
   concern.
 - (−) The process+profile-dir dev fallback is weaker isolation than a container (shared

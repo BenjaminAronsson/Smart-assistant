@@ -43,7 +43,7 @@ Priorities: **M** must, **S** should, **C** could (v1 horizon).
 | FR-17 | S | Schedule local automations with policy re-checked at execution time; triggers may reference HA presence/zone entities (e.g. "when I leave"). |
 | FR-18 | S | Generate small local web applications from validated templates; open them sandboxed. |
 | FR-19 | C | Pair remote room/display nodes with scoped device capabilities. |
-| FR-20 | C | Support chat channels through separate adapters or an OpenClaw bridge. |
+| FR-20 | C | Support chat channels through separate adapters or an OpenClaw bridge. First concrete step: integrate the owner's existing NanoClaw agent as a policy-gated worker (ADR-028, design spec `docs/superpowers/specs/2026-08-06-nanoclaw-worker-integration-design.md`); full inbound-channel bridging stays a later slice of this same requirement. |
 | FR-21 | S | Control Spotify playback on the owner's account: search, play/pause/skip, queue, volume (capped), device targeting via Spotify Connect. An artist-only resolution starts that artist's context (shuffled top tracks), no clarification needed for the common case. "Play playlist X" resolves against the user's own saved playlists first, public search only as fallback (ADR-022). |
 | FR-22 | S | Cast/open YouTube and generic web video in a dedicated media window on a chosen display; universal local playback control (play/pause/next/volume) for whatever is playing via MPRIS. |
 

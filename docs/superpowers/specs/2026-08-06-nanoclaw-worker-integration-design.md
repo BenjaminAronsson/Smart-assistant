@@ -2,7 +2,9 @@
 
 **Status:** Draft, pending owner review
 **Date:** 2026-08-06
-**Relates to:** FR-20 (`docs/01-requirements.md:46`), ADR-026 precedent (`docs/adr/README.md:524-541`), M3a worker pattern (browser worker / coding worker)
+**Relates to:** FR-20 (`docs/01-requirements.md:46`), ADR-028 (`docs/adr/README.md#adr-028`,
+Proposed — captures this decision for the repo's formal record), ADR-026 precedent
+(`docs/adr/README.md:524-541`), M3a worker pattern (browser worker / coding worker)
 
 ## Context
 
@@ -130,7 +132,8 @@ session's exploration — no new trait required), but it's a separate feature.
 
 ### ADR
 
-A new ADR is needed before implementation, extending ADR-026's precedent. It must decide:
+Captured as **ADR-028** (`docs/adr/README.md#adr-028`), Status: Proposed, extending
+ADR-026's precedent. It resolves the three open questions this design raised:
 
 1. The trust boundary for an opaque external agent — what Jarvis is willing to assert
    about a `worker.nanoclaw.delegate` call when it cannot itself audit nanoclaw's
@@ -138,8 +141,11 @@ A new ADR is needed before implementation, extending ADR-026's precedent. It mus
 2. The risk tier (R1-constrained-blast-radius vs. R2) and the exact wording of what an
    `ExecutionGrant` promises the user when the delegated task is opaque.
 3. Whether nanoclaw's channel adapters are ever invoked directly by Jarvis, or whether
-   every interaction always crosses through this one worker boundary (recommend: always
+   every interaction always crosses through this one worker boundary (decided: always
    through the worker boundary, for this slice — keeps one trust boundary instead of many).
+
+ADR-028 needs owner acceptance (human-only decision, `docs/11` §3) before implementation
+starts.
 
 ## Scope for the first PR
 
