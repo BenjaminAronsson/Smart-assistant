@@ -5,6 +5,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
+mod perf;
+
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let task = args.next().unwrap_or_default();
@@ -12,7 +14,8 @@ fn main() -> anyhow::Result<()> {
         "arch-test" => arch_test(),
         "codegen" => codegen::run(args.next().as_deref() == Some("--check")),
         "golden" => golden(),
-        _ => anyhow::bail!("usage: cargo xtask <arch-test|codegen [--check]|golden>"),
+        "perf" => perf::run(args.next().as_deref() == Some("--rss")),
+        _ => anyhow::bail!("usage: cargo xtask <arch-test|codegen [--check]|golden|perf --rss>"),
     }
 }
 
