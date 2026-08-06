@@ -712,10 +712,17 @@ pub fn resolve_secret_ref_with(
         })?;
         Ok(Redacted::new(value))
     } else if reference.starts_with("keyring:") {
-        anyhow::bail!(
-            "secret reference {reference:?}: keyring resolution is not yet available \
-             (lands with packaging) — use an env: reference in dev"
-        )
+        let key = reference
+            .strip_prefix("keyring:")
+            .and_then(|value| value.split_once('/'))
+            .filter(|(service, entry)| !service.is_empty() && !entry.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("keyring reference has invalid shape"))?;
+        let entry = keyring::Entry::new(key.0, key.1)
+            .map_err(|_| anyhow::anyhow!("keyring reference could not be opened"))?;
+        let value = entry
+            .get_password()
+            .map_err(|_| anyhow::anyhow!("keyring reference could not be resolved"))?;
+        Ok(Redacted::new(value))
     } else {
         // Same rule as validate_secret_ref: the value may BE a secret.
         anyhow::bail!(

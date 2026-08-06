@@ -38,6 +38,7 @@ rand = "0.9"
 # browser exactly as stored.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 sha2 = "0.10"
+keyring = "3"
 hex = "0.4"
 ulid = "1"
 time = { version = "0.3", features = ["formatting"] }

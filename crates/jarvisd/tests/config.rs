@@ -149,22 +149,16 @@ fn resolve_secret_ref_env_unset_is_err() {
     assert!(resolve_secret_ref("env:JARVIS_TEST_SECRET_ENV_NOT_SET_XYZZY").is_err());
 }
 
-// `keyring:` references are recognized as valid config (see
-// keyring_secret_reference_is_accepted above) but resolution is not yet
-// implemented — this must be a clear, actionable error, not a panic or a
-// silent stub value.
+// A valid-shaped keyring reference fails closed when this test environment has
+// no provisioned entry; no secret or backend detail may escape.
 #[test]
-fn resolve_secret_ref_keyring_is_not_yet_available() {
-    let err = resolve_secret_ref("keyring:jarvis/x")
-        .expect_err("keyring resolution is not implemented yet");
+fn resolve_secret_ref_keyring_unavailable_is_generic() {
+    let err =
+        resolve_secret_ref("keyring:jarvis/x").expect_err("test keyring entry is not provisioned");
     let message = err.to_string();
     assert!(
-        message.contains("keyring") && message.to_lowercase().contains("not"),
-        "error must explain keyring resolution isn't available yet, got: {message}"
-    );
-    assert!(
-        message.contains("env:"),
-        "error must point developers at the env: workaround, got: {message}"
+        message.contains("keyring") || message.contains("could not"),
+        "error must stay generic, got: {message}"
     );
 }
 
