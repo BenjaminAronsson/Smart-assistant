@@ -18,6 +18,7 @@ pub mod ports;
 pub mod queue;
 pub mod scheduler;
 pub mod timers;
+pub mod voice;
 
 #[cfg(any(test, feature = "fixtures"))]
 pub mod testing;

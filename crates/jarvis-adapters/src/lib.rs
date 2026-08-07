@@ -13,3 +13,4 @@ pub mod smtp;
 pub mod timer_alert;
 pub mod tools;
 pub mod web;
+pub mod wyoming;
