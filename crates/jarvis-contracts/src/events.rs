@@ -150,6 +150,16 @@ pub enum TransientEvent {
         run_id: RunId,
         text: String,
     },
+    /// A run entered degraded-mode queueing. The next durable run snapshot is
+    /// authoritative after reconnect; this live notice supplies the position
+    /// while the provider is unavailable (FR-12, angular-shell §5).
+    #[serde(rename = "degraded.queued")]
+    DegradedQueued {
+        #[schemars(with = "crate::schema::UlidString")]
+        run_id: RunId,
+        reason: String,
+        position: usize,
+    },
     /// Current local playback state, feeding the media bar (FR-22, docs/02
     /// §11a — "a `media.state` transient WS event").
     ///
@@ -186,14 +196,25 @@ pub enum TransientEvent {
     HudCanvas {
         canvas: crate::deepdive::HudCanvasDto,
     },
+    /// Partial or final speech recognition text on the voice channel. It is
+    /// disposable: the committed user message is the durable transcript.
+    #[serde(rename = "voice.transcript")]
+    VoiceTranscript {
+        stream_id: String,
+        text: String,
+        #[serde(rename = "final")]
+        is_final: bool,
+    },
 }
 
 impl TransientEvent {
     pub fn event_type(&self) -> &'static str {
         match self {
             Self::TextDelta { .. } => "text.delta",
+            Self::DegradedQueued { .. } => "degraded.queued",
             Self::MediaState { .. } => "media.state",
             Self::HudCanvas { .. } => "hud.canvas",
+            Self::VoiceTranscript { .. } => "voice.transcript",
         }
     }
 }

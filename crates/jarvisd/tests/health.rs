@@ -6,7 +6,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
-use jarvis_contracts::health::{HealthResponse, ServiceStatus};
+use jarvis_contracts::health::{HealthResponse, ServiceStatus, UiSettingsDto};
 use jarvisd::api::{AppState, router};
 use tower::ServiceExt;
 
@@ -75,6 +75,32 @@ async fn health_body_deserializes_as_health_response() {
         "F0.5 has no adapter joins yet (arrives F0.6); adapters map must be empty, got: {:?}",
         health.adapters
     );
+}
+
+#[tokio::test]
+async fn health_exposes_non_sensitive_ui_settings_when_configured() {
+    let app = router(AppState::new().with_ui_settings(UiSettingsDto {
+        background: "abstract".to_owned(),
+        panel_ttl_hours: 2,
+        motion: "auto".to_owned(),
+    }));
+    let response = app
+        .oneshot(get("/api/v1/diagnostics/health"))
+        .await
+        .expect("router must not error");
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body must be readable")
+        .to_bytes();
+    let health: HealthResponse =
+        serde_json::from_slice(&bytes).expect("body must deserialize as HealthResponse");
+    assert_eq!(
+        health.ui.as_ref().map(|ui| ui.background.as_str()),
+        Some("abstract")
+    );
+    assert_eq!(health.ui.as_ref().map(|ui| ui.panel_ttl_hours), Some(2));
 }
 
 // docs/05 §1 / conventional REST: unmapped routes are 404, not swallowed

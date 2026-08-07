@@ -110,6 +110,11 @@ fn every_transient_event() -> Vec<TransientEvent> {
                 max_volume_pct: 70,
             },
         },
+        TransientEvent::VoiceTranscript {
+            stream_id: "stream-1".into(),
+            text: "hello Jarvis".into(),
+            is_final: false,
+        },
     ]
 }
 
@@ -138,6 +143,20 @@ fn transient_events_round_trip_and_carry_their_type_tag() {
         json!({
             "type": "media.state",
             "state": { "players": [], "maxVolumePct": 0 }
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(TransientEvent::VoiceTranscript {
+            stream_id: "stream-1".into(),
+            text: "hello Jarvis".into(),
+            is_final: true,
+        })
+        .unwrap(),
+        json!({
+            "type": "voice.transcript",
+            "streamId": "stream-1",
+            "text": "hello Jarvis",
+            "final": true,
         })
     );
 }

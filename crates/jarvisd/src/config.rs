@@ -31,6 +31,8 @@ pub struct Config {
     pub maps: MapsConfig,
     #[serde(default)]
     pub ui: UiConfig,
+    #[serde(default)]
+    pub voice: VoiceConfig,
     pub timers: TimersConfig,
     #[serde(default)]
     pub lists: ListsConfig,
@@ -67,6 +69,74 @@ pub struct UiConfig {
     /// `auto | reduced` (docs/12 §6; `auto` honours the OS setting and battery).
     #[serde(default = "default_motion")]
     pub motion: String,
+}
+
+/// `[voice]` (docs/09 §1, FR-13). Voice is opt-in: the browser may render its
+/// push-to-talk affordance without this service-side pipeline, but no daemon
+/// connection to an external speech service is created until enabled.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VoiceConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_wyoming_stt")]
+    pub wyoming_stt: String,
+    #[serde(default = "default_wyoming_tts")]
+    pub wyoming_tts: String,
+    #[serde(default)]
+    pub audio: VoiceAudioConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VoiceAudioConfig {
+    #[serde(default = "default_voice_sample_rate")]
+    pub sample_rate: u32,
+    #[serde(default = "default_voice_channels")]
+    pub channels: u16,
+    #[serde(default = "default_voice_format")]
+    pub format: String,
+}
+
+fn default_wyoming_stt() -> String {
+    "tcp://127.0.0.1:10300".to_owned()
+}
+
+fn default_wyoming_tts() -> String {
+    "tcp://127.0.0.1:10200".to_owned()
+}
+
+fn default_voice_sample_rate() -> u32 {
+    16_000
+}
+
+fn default_voice_channels() -> u16 {
+    1
+}
+
+fn default_voice_format() -> String {
+    "s16le".to_owned()
+}
+
+impl Default for VoiceAudioConfig {
+    fn default() -> Self {
+        Self {
+            sample_rate: default_voice_sample_rate(),
+            channels: default_voice_channels(),
+            format: default_voice_format(),
+        }
+    }
+}
+
+impl Default for VoiceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            wyoming_stt: default_wyoming_stt(),
+            wyoming_tts: default_wyoming_tts(),
+            audio: VoiceAudioConfig::default(),
+        }
+    }
 }
 
 impl Default for UiConfig {
@@ -599,6 +669,7 @@ impl Default for Config {
             display: DisplayConfig::default(),
             maps: MapsConfig::default(),
             ui: UiConfig::default(),
+            voice: VoiceConfig::default(),
             timers: TimersConfig::default(),
             lists: ListsConfig::default(),
         }
@@ -667,6 +738,20 @@ impl Config {
                 "[integrations.caldav].server_url is required when CalDAV is enabled"
             );
             validate_secret_ref(&self.integrations.caldav.password_secret)?;
+        }
+        if self.voice.enabled {
+            anyhow::ensure!(
+                self.voice.wyoming_stt.starts_with("tcp://"),
+                "[voice].wyoming_stt must use tcp:// when voice is enabled"
+            );
+            anyhow::ensure!(
+                self.voice.audio.sample_rate > 0 && self.voice.audio.channels > 0,
+                "[voice].audio sample_rate and channels must be positive"
+            );
+            anyhow::ensure!(
+                self.voice.audio.format == "s16le",
+                "[voice].audio.format must be s16le"
+            );
         }
         Ok(())
     }

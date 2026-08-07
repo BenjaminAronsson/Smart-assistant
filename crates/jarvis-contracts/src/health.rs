@@ -31,6 +31,20 @@ pub struct AdapterHealth {
     pub detail: Option<String>,
 }
 
+/// Non-sensitive HUD presentation settings surfaced to the paired shell.
+/// These are display policy, not credentials or filesystem paths (docs/09 §1,
+/// docs/12 §5–§6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UiSettingsDto {
+    /// `none | abstract | photo` (docs/12 §5).
+    pub background: String,
+    /// Silent panel expiry in hours; approvals remain exempt (docs/12 §4).
+    pub panel_ttl_hours: u32,
+    /// `auto | reduced` (docs/12 §6).
+    pub motion: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthResponse {
@@ -43,4 +57,7 @@ pub struct HealthResponse {
     /// window is open (docs/05 §6: shown on the health page, loopback only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pairing_code: Option<String>,
+    /// Optional for embedders and older test fixtures during additive rollout.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ui: Option<UiSettingsDto>,
 }

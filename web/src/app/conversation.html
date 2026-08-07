@@ -1,15 +1,24 @@
-<div class="conversation-container">
+<main class="conversation-container" aria-label="Conversation and run timeline">
   <div class="conversation-header">
-    <h1>{{ session()?.title || 'Conversation' }}</h1>
+    <div>
+      <p class="eyebrow">Run spine</p>
+      <h1>{{ session()?.title || 'Conversation' }}</h1>
+    </div>
 
     <!-- Provider health indicator (F1.7) -->
     <div class="provider-status" [class.unavailable]="isProviderUnavailable()">
       <span class="status-dot" [class]="getProviderState()"></span>
-      <span class="status-text">
-        {{ getProviderState() === 'unavailable' ? 'Degraded Mode' : 'Healthy' }}
-      </span>
+      <span class="status-text">{{ getProviderLabel() }}</span>
+      @if (getQuotaReset()) {
+        <span class="quota-reset">
+          Resets <time [attr.datetime]="getQuotaReset()">in {{ getQuotaResetLabel() }}</time>
+        </span>
+      }
       @if (getProviderReason()) {
         <span class="reason">{{ getProviderReason() }}</span>
+      }
+      @if (hud.queuePosition(); as position) {
+        <span class="quota-reset">Queue position #{{ position }}</span>
       }
     </div>
   </div>
@@ -26,6 +35,13 @@
         />
       }
     </div>
+  }
+
+  @if (voice.transcript(); as transcript) {
+    <section class="voice-transcript" aria-live="polite" aria-label="Voice transcript">
+      <span class="voice-transcript-label">Voice {{ voice.transcriptFinal() ? 'transcript' : 'listening' }}</span>
+      <p>{{ transcript }}</p>
+    </section>
   }
 
   <!-- Timeline -->
@@ -96,13 +112,16 @@
   </div>
 
   <!-- Input form -->
-  <div class="input-section">
+  <form class="input-section" (submit)="$event.preventDefault(); submitMessage()">
     @if (error()) {
       <div class="error-message">{{ error() }}</div>
     }
 
     <div class="input-form">
+      <label class="sr-only" for="message-composer">Message Jarvis</label>
       <textarea
+        id="message-composer"
+        name="message"
         [(ngModel)]="messageText"
         placeholder="Type your message..."
         [disabled]="loading()"
@@ -110,7 +129,7 @@
 
       <div class="form-actions">
         <button
-          (click)="submitMessage()"
+          type="submit"
           [disabled]="!messageText().trim() || loading() || isProviderUnavailable()"
           [title]="
             isProviderUnavailable()
@@ -127,6 +146,19 @@
           }
         </button>
 
+        @if (canCancelRun()) {
+          <button
+            type="button"
+            class="cancel-run"
+            [disabled]="cancelling()"
+            (click)="cancelActiveRun()"
+            aria-label="Cancel active run"
+          >
+            {{ cancelling() ? 'Cancelling…' : 'Cancel run' }}
+            <kbd>Esc</kbd>
+          </button>
+        }
+
         @if (isProviderUnavailable()) {
           <p class="degraded-note">
             <strong>⚠️ Degraded Mode:</strong> The provider is temporarily unavailable. Your
@@ -135,5 +167,5 @@
         }
       </div>
     </div>
-  </div>
-</div>
+  </form>
+</main>

@@ -59,6 +59,15 @@ describe('HudStateService', () => {
     expect(hud.presenceLabel()).toBe('Waiting on you');
   });
 
+  it('tracks the active run position in the degraded queue', () => {
+    hud.markRunQueued('run-a');
+    expect(hud.queuePosition()).toBe(1);
+    hud.markRunQueued('run-b');
+    expect(hud.queuePosition()).toBe(2);
+    hud.clearQueuedRun('run-a');
+    expect(hud.queuePosition()).toBe(1);
+  });
+
   it('toggles the ops layer', () => {
     expect(hud.opsOpen()).toBe(false);
     hud.toggleOps();
@@ -84,5 +93,24 @@ describe('HudStateService', () => {
     hud.setCards([{ type: 'card.status', id: 'a', message: 'First', queued: false }]);
     hud.appendCards([{ type: 'card.status', id: 'b', message: 'Second', queued: false }]);
     expect(hud.cards().map(hudCardId)).toEqual(['a', 'b']);
+  });
+
+  it('removes an approval only after its durable resolution', () => {
+    const approval = {
+      type: 'card.approval' as const,
+      card: {
+        approvalId: '01BX5ZZKBKACTAV9WEVGEMMVS1',
+        runId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+        toolId: 'message.send',
+        risk: 'r2' as const,
+        egress: 'external' as const,
+        reversible: false,
+        exactEffect: 'Send an email',
+        proposedArguments: {},
+      },
+    };
+    hud.setCards([approval]);
+    hud.resolveApproval(approval.card.approvalId);
+    expect(hud.cards()).toEqual([]);
   });
 });

@@ -939,6 +939,17 @@
         "status": {
           "$ref": "#/definitions/ServiceStatus"
         },
+        "ui": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UiSettingsDto"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional for embedders and older test fixtures during additive rollout."
+        },
         "version": {
           "description": "jarvisd semver, for support/diagnostics.",
           "type": "string"
@@ -3083,6 +3094,33 @@
           "type": "object"
         },
         {
+          "description": "A run entered degraded-mode queueing. The next durable run snapshot is\nauthoritative after reconnect; this live notice supplies the position\nwhile the provider is unavailable (FR-12, angular-shell §5).",
+          "properties": {
+            "position": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "runId": {
+              "$ref": "#/definitions/UlidString"
+            },
+            "type": {
+              "const": "degraded.queued",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "runId",
+            "reason",
+            "position"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Current local playback state, feeding the media bar (FR-22, docs/02\n§11a — \"a `media.state` transient WS event\").\n\nTransient is the correct classification, not a shortcut: this is a\n*current-value readout* of whatever is playing right now, not a fact\nabout the run timeline. A client that missed one is not missing history\n— it holds a stale value that the next change corrects, and a client\nthat just connected reads `GET /api/v1/media/state` instead of replaying.\nIt is also not run-scoped: media state exists with no run in flight,\nwhich is why this variant carries no `RunId`.",
           "properties": {
             "state": {
@@ -3115,13 +3153,128 @@
             "canvas"
           ],
           "type": "object"
+        },
+        {
+          "description": "Partial or final speech recognition text on the voice channel. It is\ndisposable: the committed user message is the durable transcript.",
+          "properties": {
+            "final": {
+              "type": "boolean"
+            },
+            "streamId": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "voice.transcript",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "streamId",
+            "text",
+            "final"
+          ],
+          "type": "object"
         }
       ]
+    },
+    "UiSettingsDto": {
+      "description": "Non-sensitive HUD presentation settings surfaced to the paired shell.\nThese are display policy, not credentials or filesystem paths (docs/09 §1,\ndocs/12 §5–§6).",
+      "properties": {
+        "background": {
+          "description": "`none | abstract | photo` (docs/12 §5).",
+          "type": "string"
+        },
+        "motion": {
+          "description": "`auto | reduced` (docs/12 §6).",
+          "type": "string"
+        },
+        "panelTtlHours": {
+          "description": "Silent panel expiry in hours; approvals remain exempt (docs/12 §4).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "background",
+        "panelTtlHours",
+        "motion"
+      ],
+      "type": "object"
     },
     "UlidString": {
       "description": "ULID: 26 chars of uppercase Crockford base32",
       "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
       "type": "string"
+    },
+    "VoiceControlDto": {
+      "description": "JSON control frames that bracket a voice PCM stream.",
+      "oneOf": [
+        {
+          "description": "Sent before the first binary PCM frame.",
+          "properties": {
+            "channels": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sampleRateHz": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sampleWidthBytes": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sessionId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "streamId": {
+              "type": "string"
+            },
+            "type": {
+              "const": "voice.stream.start",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "streamId",
+            "sampleRateHz",
+            "sampleWidthBytes",
+            "channels"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Sent after the final binary PCM frame.",
+          "properties": {
+            "streamId": {
+              "type": "string"
+            },
+            "type": {
+              "const": "voice.stream.stop",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "streamId"
+          ],
+          "type": "object"
+        }
+      ]
     }
   },
   "description": "Jarvis wire contract v1 (generated — do not edit)",

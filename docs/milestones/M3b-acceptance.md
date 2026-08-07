@@ -114,28 +114,29 @@ All nine frames are real product renders: real `jarvisd` (built from this branch
 Postgres), real `ng serve`, a real paired device, a real Chromium tab. Attached to the
 PR: `01-idle.jpg` … `08-background-photo.jpg`.
 
-**How each frame was actually reached** (for repeatability, since docs/12 §9's HUD
-states have no producer/trigger yet for several of them — see the caveat below):
+**How each frame was actually reached** (for repeatability; the historical capture
+predates the browser voice producer described below):
 
 | # | Frame | How it was reached |
 |---|---|---|
 | 1 | Idle | Loaded the HUD after pairing; no run active. Fully real, no shortcuts. |
-| 2 | Listening | `HudStateService.setPresence('listening')` via the browser console — **there is no producer for this state yet** (see caveat). |
+| 2 | Listening | Historical capture used `HudStateService.setPresence('listening')` via the browser console. Current product path is the authenticated **Hold to speak** control, which requests microphone permission and enters listening only after capture + WS setup succeed. |
 | 3 | Speaking + canvas | Real path end-to-end: `POST /api/v1/lists/command` (`"add milk to shopping list"`) → server publishes a real `hud.canvas` WS event → the browser's real (now-authenticated, see the WS fix below) socket receives it → `conversation.ts` → `HudStateService.appendCards`. Caption text set via `speak()` (no TTS pipeline before M5, so text is the product's actual behavior, not a stand-in). |
 | 4 | Approval interrupt | `HudStateService.appendCards([...])` with a real `ApprovalCardDto` shape (the wire type, not invented fields) via the console — **`message.send`'s R2 flow was not driven live** (would need a real model turn deciding to call it, or a scripted `claude` stub); the rendering itself (amber card, risk/egress/reversibility badges, approve/deny/edit) is the real component. |
-| 5 | Degraded | Stopped the `postgres` container so `/health` genuinely degrades; `HudStateService.setPresence('degraded')` set directly because `App.refresh()`'s `listSessions()` call also fails when the DB is down, which the current wiring maps to `'error'`, not `'degraded'` (see caveat) — a real gap, not a screenshot inconvenience. |
-| 6–8 | Each background | Frame 3's canvas, `HudStateService.setBackground('none' \| 'abstract' \| 'photo', ...)` via the console — **no producer wires this from config yet either** (see caveat). `photo` used the bundled `deep-dusk.svg` wallpaper (the other of the two §9 contrast-audit worst cases; `abstract` already exercises `bright-haze.svg` as its default asset). |
+| 5 | Degraded | Stopped the `postgres` container so `/health` genuinely degrades. The current shell preserves that degraded state even when the authenticated session list is unavailable; the earlier screenshot run used a direct state trigger because it predated that wiring fix. |
+| 6–8 | Each background | Frame 3's canvas, `HudStateService.setBackground('none' \| 'abstract' \| 'photo', ...)` via the console. The current shell also applies the daemon's non-sensitive `[ui]` background profile from the health contract at bootstrap, while retaining the live picker for local overrides. `photo` used the bundled `deep-dusk.svg` wallpaper (the other of the two §9 contrast-audit worst cases; `abstract` already exercises `bright-haze.svg` as its default asset). |
 
-**Caveat carried forward, not closed by these screenshots:** presence
-`listening`/`speaking`/`tool`/`waiting` (beyond what `App`'s health-derived effect sets)
-and `[ui] background` have **no runtime producer** in the client yet —
-`HudStateService.setPresence`/`.speak`/`.setBackground` are called from exactly one
-production site each (`App`'s health effect), everywhere else is tests. Driving them by
-console was the only way to render these frames at all, not a methodology choice; it is
-the same gap noted for F3b.6/F3b.7/F3b.8 card producers in the milestone's card-registry
-doc comment (`cards.rs`). Wiring real triggers (voice pipeline → listening/speaking,
-config → background) is out of scope for M3b (voice is M5; background config-to-client
-plumbing is a small follow-up, not filed as its own item yet).
+**Caveat carried forward, not closed by these screenshots:** the web shell now has a
+real permission-aware push-to-talk producer and emits the documented PCM stream
+frames, but daemon-side VAD/STT consumption remains M5. The rendered `listening`
+frame therefore still needs a live microphone-capable browser run, while `speaking`/`tool`/`waiting`
+now follow authenticated run and approval events. The background profile is now produced
+by the daemon's health response and applied once by the shell; the picker remains the
+explicit local override. Driving the historical screenshots by console was the only way
+to render those states at capture time, not a current product limitation. The remaining
+voice limitation is daemon-side VAD/STT/TTS consumption and turn submission; the
+browser capture and transcript surface are now wired to the v1 voice-channel contract,
+while that server pipeline remains M5 scope.
 
 **A second, more consequential thing this pass found:** frame 3 initially failed
 outright — the browser's WebSocket to `/ws/v1` could not authenticate at all (`browser's

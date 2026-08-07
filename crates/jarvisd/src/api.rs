@@ -2,7 +2,9 @@
 //! sessions + auth arrive in F0.7–F0.8.
 
 use axum::{Json, Router, extract::State, routing::get};
-use jarvis_contracts::health::{AdapterHealth, AdapterState, HealthResponse, ServiceStatus};
+use jarvis_contracts::health::{
+    AdapterHealth, AdapterState, HealthResponse, ServiceStatus, UiSettingsDto,
+};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
@@ -15,6 +17,7 @@ pub struct AppState {
     adapters: Arc<RwLock<BTreeMap<String, AdapterHealth>>>,
     db: Option<sqlx::PgPool>,
     auth: Option<crate::auth::AuthState>,
+    ui: Option<UiSettingsDto>,
 }
 
 impl AppState {
@@ -27,6 +30,7 @@ impl AppState {
             adapters: Arc::default(),
             db: Some(pool),
             auth: Some(auth),
+            ui: None,
         }
     }
 
@@ -37,6 +41,12 @@ impl AppState {
     /// Attach auth without a database (tests use a fake IdentityStore).
     pub fn with_auth(mut self, auth: crate::auth::AuthState) -> Self {
         self.auth = Some(auth);
+        self
+    }
+
+    /// Attach the non-sensitive `[ui]` presentation profile used by the HUD.
+    pub fn with_ui_settings(mut self, settings: UiSettingsDto) -> Self {
+        self.ui = Some(settings);
         self
     }
 
@@ -84,6 +94,7 @@ impl AppState {
             // Deliberate (docs/05 §6): the bootstrap code is shown on the
             // loopback-only health page while the pairing window is open.
             pairing_code: self.auth.as_ref().and_then(|a| a.current_pairing_code()),
+            ui: self.ui.clone(),
         }
     }
 }

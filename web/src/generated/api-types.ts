@@ -552,6 +552,13 @@ export type TransientEvent =
       [k: string]: unknown;
     }
   | {
+      position: number;
+      reason: string;
+      runId: UlidString;
+      type: "degraded.queued";
+      [k: string]: unknown;
+    }
+  | {
       state: MediaStateDto;
       type: "media.state";
       [k: string]: unknown;
@@ -559,6 +566,34 @@ export type TransientEvent =
   | {
       canvas: HudCanvasDto;
       type: "hud.canvas";
+      [k: string]: unknown;
+    }
+  | {
+      final: boolean;
+      streamId: string;
+      text: string;
+      type: "voice.transcript";
+      [k: string]: unknown;
+    };
+/**
+ * JSON control frames that bracket a voice PCM stream.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "VoiceControlDto".
+ */
+export type VoiceControlDto =
+  | {
+      channels: number;
+      sampleRateHz: number;
+      sampleWidthBytes: number;
+      sessionId?: string | null;
+      streamId: string;
+      type: "voice.stream.start";
+      [k: string]: unknown;
+    }
+  | {
+      streamId: string;
+      type: "voice.stream.stop";
       [k: string]: unknown;
     };
 
@@ -1057,9 +1092,36 @@ export interface HealthResponse {
   pairingCode?: string | null;
   status: ServiceStatus;
   /**
+   * Optional for embedders and older test fixtures during additive rollout.
+   */
+  ui?: UiSettingsDto | null;
+  /**
    * jarvisd semver, for support/diagnostics.
    */
   version: string;
+  [k: string]: unknown;
+}
+/**
+ * Non-sensitive HUD presentation settings surfaced to the paired shell.
+ * These are display policy, not credentials or filesystem paths (docs/09 §1,
+ * docs/12 §5–§6).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "UiSettingsDto".
+ */
+export interface UiSettingsDto {
+  /**
+   * `none | abstract | photo` (docs/12 §5).
+   */
+  background: string;
+  /**
+   * `auto | reduced` (docs/12 §6).
+   */
+  motion: string;
+  /**
+   * Silent panel expiry in hours; approvals remain exempt (docs/12 §4).
+   */
+  panelTtlHours: number;
   [k: string]: unknown;
 }
 /**

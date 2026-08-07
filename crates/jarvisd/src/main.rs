@@ -11,6 +11,7 @@ use jarvis_application::deterministic::DeterministicFirstProvider;
 use jarvis_application::memory::MemoryRetrievalService;
 use jarvis_application::orchestrator::RunInput;
 use jarvis_application::ports::{MessageStore, RunStore};
+use jarvis_application::voice::SpeechTranscriber;
 use jarvis_domain::conversations::MessageRole;
 use jarvis_domain::ids::SessionId;
 use jarvis_domain::run::Run;
@@ -73,6 +74,23 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     // The WS hub is both the outbox publisher (committed domain events) and the
     // orchestrator's run-event sink (transient deltas).
     let hub = WsHub::new();
+
+    // Voice STT is an explicit out-of-process adapter. The browser's binary
+    // stream is accepted by the WS only when this opt-in provider is wired;
+    // no local recognizer or ambient process is created by default.
+    let transcriber: Option<Arc<dyn SpeechTranscriber>> = if config.voice.enabled {
+        let address = config
+            .voice
+            .wyoming_stt
+            .strip_prefix("tcp://")
+            .ok_or_else(|| anyhow::anyhow!("[voice].wyoming_stt must use tcp://"))?;
+        Some(Arc::new(jarvis_adapters::wyoming::WyomingClient::new(
+            "wyoming-stt",
+            address,
+        )))
+    } else {
+        None
+    };
 
     // Display placement surface (F3a.4): the hub is the directive sink to agents;
     // placements are audited through the fallible audit log before dispatch.
@@ -264,6 +282,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         hub: hub.clone(),
         events: event_log,
         shutdown: serve_shutdown.clone(),
+        transcriber,
     };
 
     // Start the event-driven outbox dispatcher (LISTEN/NOTIFY, not polling) and
@@ -388,7 +407,13 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         None
     };
 
-    let state = jarvisd::api::AppState::with_database(pool.clone(), auth);
+    let state = jarvisd::api::AppState::with_database(pool.clone(), auth).with_ui_settings(
+        jarvis_contracts::health::UiSettingsDto {
+            background: config.ui.background.clone(),
+            panel_ttl_hours: config.ui.panel_ttl_hours,
+            motion: config.ui.motion.clone(),
+        },
+    );
     let app = jarvisd::api::router_with(
         state,
         jarvisd::api::Wiring {

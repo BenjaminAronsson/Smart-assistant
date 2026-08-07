@@ -43,9 +43,10 @@ impl RunQueue {
         }
     }
 
-    /// Enqueue a run. Interactive runs are unlimited; background runs are capped
-    /// and oldest background run is evicted if limit exceeded.
-    pub fn enqueue(&mut self, run: Run, input: RunInput, priority: RunPriority) {
+    /// Enqueue a run and return its one-based position in dequeue order.
+    /// Interactive runs are unlimited; background runs are capped and oldest
+    /// background run is evicted if limit exceeded.
+    pub fn enqueue(&mut self, run: Run, input: RunInput, priority: RunPriority) -> usize {
         let queued = QueuedRun {
             run,
             input,
@@ -54,6 +55,7 @@ impl RunQueue {
         match priority {
             RunPriority::Interactive => {
                 self.interactive.push_back(queued);
+                self.interactive.len()
             }
             RunPriority::Background => {
                 if self.background.len() >= self.max_background {
@@ -61,6 +63,7 @@ impl RunQueue {
                     let _ = self.background.pop_front();
                 }
                 self.background.push_back(queued);
+                self.interactive.len() + self.background.len()
             }
         }
     }

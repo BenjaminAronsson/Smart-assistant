@@ -28,6 +28,7 @@ pub mod schema;
 pub mod sessions;
 pub mod timeline;
 pub mod timers;
+pub mod voice;
 
 /// Wire contract major version, carried as `v` on every WS envelope.
 /// Breaking changes bump this with a dual-emit shim window (docs/05 §5).

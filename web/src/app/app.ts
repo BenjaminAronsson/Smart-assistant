@@ -11,12 +11,22 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { NavigationEnd, Router, RouterLink, RouterOutlet } from '@angular/router';
-import type { HealthResponse, SessionDto } from '../generated/api-types';
+import type {
+  DomainEvent,
+  EventEnvelope,
+  HealthResponse,
+  MessageDto,
+  RunStateDto,
+  SessionDto,
+  TransientEvent,
+} from '../generated/api-types';
 import { ApiService } from './api.service';
 import { Hud } from './hud/hud';
 import { HudStateService } from './hud/hud-state.service';
 import { MediaBar } from './media-bar';
 import { MediaService } from './media.service';
+
+const TRANSIENT_WS_TYPES = new Set(['text.delta', 'media.state', 'hud.canvas', 'degraded.queued']);
 
 /**
  * Jarvis shell root (docs/03 §3, docs/12 §1).
@@ -43,6 +53,9 @@ export class App implements OnInit, OnDestroy {
   protected readonly media = inject(MediaService);
   protected readonly hud = inject(HudStateService);
   private readonly router = inject(Router);
+  private hudWs: WebSocket | null = null;
+  private hudReconnect: ReturnType<typeof setTimeout> | null = null;
+  private hudLastSeq: number | null = null;
 
   protected readonly title = signal('Jarvis');
   protected readonly health = signal<HealthResponse | null>(null);
@@ -50,6 +63,7 @@ export class App implements OnInit, OnDestroy {
   protected readonly paired = signal(false);
   protected readonly error = signal<string | null>(null);
   protected readonly newSessionTitle = signal('');
+  private readonly liveRun = signal(false);
 
   /**
    * Which layer the active route belongs to (`data.surface`, see `app.routes`).
@@ -79,12 +93,16 @@ export class App implements OnInit, OnDestroy {
 
     // Presence is derived, never set by hand: an unreachable or degraded daemon
     // is a HUD state (docs/12 §2.1), not just a line of text in the ops layer.
-    // Run-driven states (listening/speaking/tool/waiting) arrive with the HUD's
-    // run stream in F3b.2/F3b.6 — this is the part that exists today.
+    // Voice capture owns the listening state; run/approval events own
+    // speaking/tool/waiting. All paths converge on the same HUD state service.
     effect(() => {
       const health = this.health();
       if (this.error() !== null || health === null) {
         this.hud.setPresence('error');
+      } else if (this.liveRun()) {
+        // A healthy daemon does not mean an active run is idle. Run events own
+        // the HUD state until the terminal event arrives.
+        return;
       } else if (health.status !== 'ok') {
         this.hud.setPresence('degraded');
       } else {
@@ -99,11 +117,15 @@ export class App implements OnInit, OnDestroy {
     // Media control is device-authenticated: only start it once paired.
     if (this.paired()) {
       void this.media.start();
+      this.connectHudStream();
     }
   }
 
   ngOnDestroy(): void {
     this.media.stop();
+    if (this.hudReconnect !== null) clearTimeout(this.hudReconnect);
+    this.hudWs?.close();
+    this.hudWs = null;
   }
 
   /**
@@ -132,9 +154,15 @@ export class App implements OnInit, OnDestroy {
   protected async refresh(): Promise<void> {
     try {
       this.health.set(await this.api.health());
+      this.hud.applyConfiguredUi(this.health()?.ui);
       this.error.set(null);
       if (this.paired()) {
-        this.sessions.set((await this.api.listSessions()).sessions);
+        try {
+          this.sessions.set((await this.api.listSessions()).sessions);
+        } catch {
+          // Health is still authoritative: a degraded database should keep
+          // the HUD gray/degraded rather than turning the whole face red.
+        }
       }
     } catch {
       this.error.set('jarvisd is not reachable');
@@ -150,6 +178,7 @@ export class App implements OnInit, OnDestroy {
       await this.api.pair(code, 'web-shell');
       this.paired.set(true);
       await this.refresh();
+      this.connectHudStream();
       // Now authenticated: the media surface becomes reachable.
       void this.media.start();
     } catch {
@@ -170,5 +199,158 @@ export class App implements OnInit, OnDestroy {
 
   protected onTitleInput(event: Event): void {
     this.newSessionTitle.set((event.target as HTMLInputElement).value);
+  }
+
+  /**
+   * The HUD is the default route, so it must receive global run/canvas events
+   * even when the operator conversation component is not mounted. The same
+   * authenticated stream also makes approval interrupts real rather than
+   * route-dependent.
+   */
+  private connectHudStream(resume = false): void {
+    if (!this.paired() || this.hudWs !== null) return;
+    const since = resume && this.hudLastSeq !== null ? `?since=${this.hudLastSeq}` : '';
+    this.hudWs = this.api.openSocket(`/ws/v1${since}`);
+    this.hudWs.onmessage = (message) => {
+      try {
+        this.handleHudEnvelope(JSON.parse(message.data) as EventEnvelope);
+      } catch {
+        // The operator route owns detailed parse diagnostics; the HUD stream
+        // remains fail-closed when an event is malformed.
+      }
+    };
+    this.hudWs.onclose = () => {
+      this.hudWs = null;
+      if (this.paired()) {
+        this.hudReconnect = setTimeout(() => {
+          this.hudReconnect = null;
+          this.connectHudStream(true);
+        }, 3000);
+      }
+    };
+  }
+
+  private handleHudEnvelope(env: EventEnvelope): void {
+    if (env.channel !== 'session') return;
+
+    // Transient events reuse the durable high-water sequence and therefore do
+    // not advance the `since` cursor or participate in gap detection.
+    if (!TRANSIENT_WS_TYPES.has(env.type)) {
+      if (this.hudLastSeq !== null && env.seq !== this.hudLastSeq + 1) {
+        const runId = (env.payload as { runId?: string }).runId;
+        if (runId) void this.resyncHudRun(runId);
+      }
+      this.hudLastSeq = env.seq;
+    }
+
+    if (env.type === 'hud.canvas') {
+      const transient = env.payload as TransientEvent;
+      if (transient.type === 'hud.canvas') {
+        this.hud.routeTurn(
+          transient.canvas.action,
+          transient.canvas.label,
+          transient.canvas.cards ?? [],
+        );
+      }
+      return;
+    }
+
+    if (env.type === 'degraded.queued') {
+      const queued = env.payload as Extract<TransientEvent, { type: 'degraded.queued' }>;
+      this.hud.markRunQueued(queued.runId);
+      this.liveRun.set(true);
+      this.hud.setPresence('degraded');
+      return;
+    }
+
+    const event = { ...(env.payload as Record<string, unknown>), type: env.type } as DomainEvent;
+    switch (event.type) {
+      case 'run.queued':
+        this.liveRun.set(true);
+        this.hud.markRunQueued(event.runId);
+        this.hud.setPresence('degraded');
+        break;
+      case 'run.started':
+        this.liveRun.set(true);
+        this.hud.clearQueuedRun(event.runId);
+        this.hud.setPresence('speaking');
+        break;
+      case 'run.state_changed':
+        this.liveRun.set(!['completed', 'failed', 'cancelled'].includes(event.state));
+        if (['completed', 'failed', 'cancelled'].includes(event.state)) {
+          this.hud.clearQueuedRun(event.runId);
+        }
+        this.setHudPresenceForRunState(event.state);
+        break;
+      case 'run.completed':
+        this.liveRun.set(false);
+        this.hud.clearQueuedRun(event.runId);
+        this.hud.setPresence(event.outcome.kind === 'completed' ? 'done' : 'error');
+        break;
+      case 'provider.health_changed':
+        this.hud.setPresence(event.provider.state === 'healthy' ? 'idle' : 'degraded');
+        break;
+      case 'approval.requested':
+        this.hud.appendCards([{ type: 'card.approval', card: event.card }]);
+        this.hud.setPresence('waiting');
+        break;
+      case 'approval.resolved':
+        this.hud.resolveApproval(event.approvalId);
+        break;
+      case 'message.created':
+        this.speakMessage(event.message);
+        break;
+      case 'run.checkpoint_saved':
+      case 'timer.fired':
+        break;
+    }
+  }
+
+  /** Repair the global HUD's live presence from the durable run snapshot. */
+  private async resyncHudRun(runId: string): Promise<void> {
+    try {
+      const run = await this.api.getRun(runId);
+      this.liveRun.set(!['completed', 'failed', 'cancelled'].includes(run.state));
+      this.setHudPresenceForRunState(run.state);
+    } catch {
+      // Conversation owns the session timeline repair; a HUD snapshot failure
+      // leaves the last visible evidence intact and the next event converges it.
+    }
+  }
+
+  private setHudPresenceForRunState(state: RunStateDto): void {
+    switch (state) {
+      case 'received':
+      case 'context_ready':
+      case 'model_running':
+      case 'responding':
+      case 'replanning':
+        this.hud.setPresence('speaking');
+        break;
+      case 'tool_running':
+        this.hud.setPresence('tool');
+        break;
+      case 'waiting_approval':
+      case 'policy_review':
+        this.hud.setPresence('waiting');
+        break;
+      case 'completed':
+        this.hud.setPresence('done');
+        break;
+      case 'failed':
+        this.hud.setPresence('error');
+        break;
+      case 'cancelled':
+        this.hud.setPresence('idle');
+        break;
+    }
+  }
+
+  private speakMessage(message: MessageDto): void {
+    const text = message.content
+      .map((block) => (block.type === 'text' ? block.text : ''))
+      .join('')
+      .trim();
+    if (text) this.hud.speak(text);
   }
 }

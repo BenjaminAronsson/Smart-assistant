@@ -312,8 +312,17 @@ impl RunEngine {
                 terminal.session_id.clone(),
                 terminal.budget,
             );
-            let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
-            queue.enqueue(retry, input, RunPriority::Interactive);
+            let position = {
+                let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+                queue.enqueue(retry, input, RunPriority::Interactive)
+            };
+            self.hub
+                .emit(RunUpdate::Queued {
+                    run_id: terminal.id.clone(),
+                    reason: reason.to_owned(),
+                    position,
+                })
+                .await;
             // Don't commit an assistant message; the run retries on recovery.
             return;
         }

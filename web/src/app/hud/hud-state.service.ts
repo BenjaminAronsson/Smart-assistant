@@ -1,10 +1,25 @@
 import { Injectable, computed, signal } from '@angular/core';
-import type { HudCardDto } from '../../generated/api-types';
+import type { HudCardDto, UiSettingsDto } from '../../generated/api-types';
 import { hudCardId } from './cards/card-id';
-import { type BackgroundKind, type GlassTokens, glassTokensFor } from './backgrounds';
+import {
+  BUNDLED_WALLPAPERS,
+  type BackgroundKind,
+  type GlassTokens,
+  glassTokensFor,
+} from './backgrounds';
 
 /** The shelf holds at most 4 panels; the oldest drops (docs/12 §4). */
 const MAX_SHELF = 4;
+const BACKGROUND_KEY = 'jarvis.hud.background';
+
+function readStoredBackground(): BackgroundKind {
+  try {
+    const value = globalThis.localStorage?.getItem(BACKGROUND_KEY);
+    return value === 'abstract' || value === 'photo' || value === 'none' ? value : 'none';
+  } catch {
+    return 'none';
+  }
+}
 
 /** A canvas set collapsed into a labeled shelf chip (docs/12 §4). */
 export interface ShelvedPanel {
@@ -16,7 +31,9 @@ export interface ShelvedPanel {
 }
 
 /** Approvals are exempt from shelving, clear-all and TTL (docs/12 §4). */
-export function isApproval(card: HudCardDto): boolean {
+export function isApproval(
+  card: HudCardDto,
+): card is Extract<HudCardDto, { type: 'card.approval' }> {
   return card.type === 'card.approval';
 }
 
@@ -103,18 +120,21 @@ export class HudStateService {
    * battery-saver reliably, so it is pushed in rather than sniffed. */
   private readonly batterySaverSignal = signal(false);
   /**
-   * The materialization canvas's cards (docs/12 §2.3, F3b.2). No producer
-   * wires this from the wire yet — F3b.2 ships the grammar and renderers with
-   * no server-side event (see `jarvis_contracts::cards`'s doc comment); the
-   * first producer is F3b.6. Panel lifecycle (shelve/restore/dismiss/TTL) is
-   * F3b.4 — this service only holds the current list.
+   * The materialization canvas's cards (docs/12 §2.3, F3b.2). Transient
+   * `hud.canvas` instructions from the deep-dive/list producers route into
+   * this service; panel lifecycle (shelve/restore/dismiss/TTL) remains local
+   * client state.
    */
   private readonly cardsSignal = signal<HudCardDto[]>([]);
+  /** Ordered degraded-mode runs waiting for provider recovery. */
+  private readonly queuedRunsSignal = signal<string[]>([]);
+  private readonly activeQueuedRunSignal = signal<string | null>(null);
   /** Shelved panel sets, oldest first (docs/12 §4, F3b.4). */
   private readonly shelfSignal = signal<ShelvedPanel[]>([]);
   private readonly panelTtlHoursSignal = signal(2);
-  private readonly backgroundSignal = signal<BackgroundKind>('none');
+  private readonly backgroundSignal = signal<BackgroundKind>(readStoredBackground());
   private readonly backgroundAssetSignal = signal<string | null>(null);
+  private configuredFromDaemon = false;
 
   /** When each card first appeared, for the silent TTL sweep. */
   private readonly seenAt = new Map<string, number>();
@@ -128,6 +148,12 @@ export class HudStateService {
   readonly caption = this.captionSignal.asReadonly();
   readonly opsOpen = this.opsOpenSignal.asReadonly();
   readonly cards = this.cardsSignal.asReadonly();
+  readonly queuePosition = computed(() => {
+    const queued = this.queuedRunsSignal();
+    const active = this.activeQueuedRunSignal();
+    const index = active === null ? -1 : queued.indexOf(active);
+    return index >= 0 ? index + 1 : null;
+  });
   readonly shelf = this.shelfSignal.asReadonly();
   readonly background = this.backgroundSignal.asReadonly();
   readonly backgroundAsset = this.backgroundAssetSignal.asReadonly();
@@ -160,6 +186,23 @@ export class HudStateService {
 
   setPresence(state: PresenceState): void {
     this.presenceSignal.set(state);
+  }
+
+  /** Record a durable queue notice and expose its current front position. */
+  markRunQueued(runId: string): void {
+    this.queuedRunsSignal.update((runs) => (runs.includes(runId) ? runs : [...runs, runId]));
+    this.activeQueuedRunSignal.set(runId);
+  }
+
+  /** Remove a run from the degraded queue after a terminal/start event. */
+  clearQueuedRun(runId: string): void {
+    this.queuedRunsSignal.update((runs) => {
+      const next = runs.filter((id) => id !== runId);
+      if (this.activeQueuedRunSignal() === runId) {
+        this.activeQueuedRunSignal.set(next[0] ?? null);
+      }
+      return next;
+    });
   }
 
   /**
@@ -203,6 +246,29 @@ export class HudStateService {
 
   setReducedMotion(reduced: boolean): void {
     this.reducedMotionSignal.set(reduced);
+  }
+
+  /** Apply the daemon's `[ui] motion` profile without overriding OS policy. */
+  setConfiguredMotion(motion: string): void {
+    if (motion === 'reduced') {
+      this.reducedMotionSignal.set(true);
+    }
+  }
+
+  /** Apply the daemon's non-sensitive `[ui]` profile exactly once per shell. */
+  applyConfiguredUi(settings: UiSettingsDto | null | undefined): void {
+    if (this.configuredFromDaemon || settings === null || settings === undefined) return;
+    this.configuredFromDaemon = true;
+    const background = settings.background;
+    if (background === 'abstract') {
+      this.setBackground('abstract');
+    } else if (background === 'photo') {
+      this.setBackground('photo', BUNDLED_WALLPAPERS[1].asset);
+    } else {
+      this.setBackground('none');
+    }
+    this.setPanelTtlHours(settings.panelTtlHours);
+    this.setConfiguredMotion(settings.motion);
   }
 
   setBatterySaver(saving: boolean): void {
@@ -337,6 +403,14 @@ export class HudStateService {
     this.cardsSignal.update((cards) => cards.filter((card) => hudCardId(card) !== cardId));
   }
 
+  /** Remove an approval only after its durable decision event arrives. */
+  resolveApproval(approvalId: string): void {
+    this.cardsSignal.update((cards) =>
+      cards.filter((card) => !(isApproval(card) && card.card.approvalId === approvalId)),
+    );
+    this.seenAt.delete(approvalId);
+  }
+
   /** Dismiss one shelf chip (its `×`, docs/12 §4). */
   dismissShelf(shelfId: string): void {
     this.shelfSignal.update((shelf) => shelf.filter((panel) => panel.id !== shelfId));
@@ -399,6 +473,11 @@ export class HudStateService {
   setBackground(kind: BackgroundKind, photoAsset?: string): void {
     this.backgroundSignal.set(kind);
     this.backgroundAssetSignal.set(photoAsset ?? null);
+    try {
+      globalThis.localStorage?.setItem(BACKGROUND_KEY, kind);
+    } catch {
+      // Private browsing/storage-disabled environments still get the control.
+    }
   }
 
   /** Stop the reveal timer — called on teardown so no timer outlives the view. */

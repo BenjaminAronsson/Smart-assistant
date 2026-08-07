@@ -1,10 +1,16 @@
-<section class="hud" aria-label="Jarvis HUD">
+<section class="hud" [class.wallpaper-active]="hud.background() !== 'none'" [class.motion-still]="!hud.ambientMotion()" aria-label="Jarvis HUD">
   <!-- Background + scrim (FR-23, docs/12 §5). Any text over an unpredictable
        background sits on glass or scrim — never raw. -->
   @if (hud.background() !== 'none') {
     <div class="wallpaper" aria-hidden="true" [style.background-image]="wallpaperUrl()"></div>
     <div class="scrim" aria-hidden="true" [style.background]="hud.glass().scrim"></div>
   }
+
+  <div class="ambient-field" aria-hidden="true">
+    @for (mote of ambientMotes; track mote) {
+      <i class="mote"></i>
+    }
+  </div>
 
   <header class="presence">
     <app-presence-orb
@@ -24,11 +30,49 @@
         }
       </p>
       <p class="status">{{ hud.presenceLabel() }}</p>
+      <div class="provider-meta" role="status" aria-label="Provider status">
+        <span
+          class="provider-dot"
+          [class.healthy]="getProviderState() === 'healthy'"
+          [class.degraded]="getProviderState() === 'degraded'"
+          [class.unavailable]="getProviderState() === 'unavailable'"
+        ></span>
+        <span>{{ getProviderLabel() }}</span>
+        @if (getQuotaReset()) {
+          <span class="provider-reset">
+            resets <time [attr.datetime]="getQuotaReset()">in {{ getQuotaResetLabel() }}</time>
+          </span>
+        }
+        @if (hud.queuePosition(); as position) {
+          <span class="provider-reset">queue · #{{ position }}</span>
+        }
+      </div>
     </div>
 
-    <button type="button" class="ops-toggle" (click)="openOps()">
-      Operator layer <kbd>Ctrl</kbd><kbd>.</kbd>
-    </button>
+    <div class="header-actions">
+      <label class="background-picker">
+        <span>Backdrop</span>
+        <select
+          [value]="hud.background()"
+          aria-label="Choose HUD backdrop"
+          (change)="onBackgroundChange($event)"
+        >
+          <option value="none">None</option>
+          <option value="abstract">Abstract</option>
+          <option value="photo">Photo</option>
+        </select>
+      </label>
+      <app-voice-ptt />
+      @if (hud.background() === 'photo') {
+        <label class="photo-picker">
+          <span>Image</span>
+          <input type="file" accept="image/*" aria-label="Choose a local HUD photo" (change)="onPhotoSelected($event)" />
+        </label>
+      }
+      <button type="button" class="ops-toggle" (click)="openOps()">
+        Operator layer <kbd>Ctrl</kbd><kbd>.</kbd>
+      </button>
+    </div>
   </header>
 
   <!-- Shelf row (FR-24, docs/12 §4): a new topic collapses the canvas into a
@@ -62,7 +106,13 @@
     } @else {
       @for (card of hud.cards(); track cardKey(card); let i = $index) {
         <div class="canvas-slot">
-          <app-hud-card [card]="card" [index]="i" [reducedMotion]="hud.reducedMotion()" />
+          <app-hud-card
+            [card]="card"
+            [index]="i"
+            [reducedMotion]="hud.reducedMotion()"
+            [approvalPending]="isApprovalPending(card)"
+            (approvalDecide)="onApprovalDecision(card, $event)"
+          />
           <!-- Approvals are exempt from lifecycle actions: they persist until
                decided (docs/12 §4), so they carry no dismiss affordance. -->
           @if (!isApproval(card)) {

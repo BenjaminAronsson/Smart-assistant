@@ -1,6 +1,4 @@
 import { Routes } from '@angular/router';
-import { Conversation } from './conversation';
-
 /**
  * `data.surface` says which layer a route belongs to (docs/12 §1): `hud` routes
  * render on the front face, everything else inside the operator layer. The
@@ -10,7 +8,7 @@ import { Conversation } from './conversation';
 export const routes: Routes = [
   {
     path: 'sessions/:id',
-    component: Conversation,
+    loadComponent: () => import('./conversation').then((m) => m.Conversation),
     data: { surface: 'ops' },
   },
   {

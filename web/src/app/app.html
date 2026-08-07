@@ -28,7 +28,9 @@
         <router-outlet></router-outlet>
       }
 
-      <!-- Shell UI (sessions list, pairing) -->
+      <!-- Shell UI (sessions list, pairing). A specific session owns the ops
+           surface; do not stack the session manager underneath its transcript. -->
+      @if (routedSurface() !== 'ops') {
       <div class="shell-ui">
         @if (error(); as message) {
           <p class="error" role="alert">{{ message }}</p>
@@ -56,7 +58,13 @@
             <form (submit)="$event.preventDefault(); createSession()">
               <label>
                 Title
-                <input type="text" [value]="newSessionTitle()" (input)="onTitleInput($event)" />
+              <input
+                type="text"
+                [value]="newSessionTitle()"
+                (input)="onTitleInput($event)"
+                placeholder="e.g. Weekend plans"
+                autocomplete="off"
+              />
               </label>
               <button type="submit">Create session</button>
               <button type="button" (click)="refresh()">Refresh</button>
@@ -76,6 +84,7 @@
           </section>
         }
       </div>
+      }
     </div>
   }
 

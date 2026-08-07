@@ -87,6 +87,7 @@ async fn start(pool: PgPool, model: FakeModel) -> Harness {
         hub,
         events,
         shutdown: shutdown.clone(),
+        transcriber: None,
     };
 
     // Start the outbox dispatcher so committed domain events reach the hub.

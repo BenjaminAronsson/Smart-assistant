@@ -119,6 +119,8 @@ pub fn export() -> Value {
     generator.subschema_for::<crate::memories::MemoryDto>();
     generator.subschema_for::<crate::memories::MemoryListResponse>();
     generator.subschema_for::<crate::memories::PatchMemoryRequest>();
+    // Voice push-to-talk control frames bracket binary PCM on the shared WS.
+    generator.subschema_for::<crate::voice::VoiceControlDto>();
 
     let definitions: Value =
         serde_json::to_value(generator.definitions()).expect("schemas are valid JSON");

@@ -20,8 +20,12 @@
 .caption-chip {
   flex: 1 1 min(100%, 30rem);
   min-inline-size: 0;
-  padding: 1.4vmin 2vmin;
+  padding: 0.4em 0.7em;
   border-radius: 1.4vmin;
+}
+
+.wallpaper-active .caption-chip {
+  padding: 1.4vmin 2vmin;
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow);
@@ -31,6 +35,7 @@
 .caption {
   margin: 0;
   font-size: var(--caption-size);
+  font-weight: 500;
   line-height: 1.35;
   color: var(--ink);
 }
@@ -56,7 +61,6 @@
 }
 
 .ops-toggle {
-  margin-inline-start: auto;
   padding: 0.9vmin 1.6vmin;
   border-radius: 1vmin;
   border: 1px solid var(--glass-border);
@@ -75,8 +79,54 @@
   }
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 1vmin;
+  margin-inline-start: auto;
+}
+
+.background-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7ch;
+  padding: 0.55vmin 0.9vmin;
+  border: 1px solid var(--glass-border);
+  border-radius: 1vmin;
+  background: var(--glass-bg);
+  color: var(--ink-dim);
+  font-size: clamp(11px, 1.5vmin, 14px);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(var(--glass-blur));
+
+  select {
+    border: 0;
+    background: transparent;
+    color: var(--ink);
+    font: inherit;
+    cursor: pointer;
+  }
+}
+
+.photo-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5ch;
+  padding: 0.55vmin 0.9vmin;
+  border: 1px solid var(--glass-border);
+  border-radius: 1vmin;
+  background: var(--glass-bg);
+  color: var(--ink-dim);
+  font-size: clamp(11px, 1.5vmin, 14px);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(var(--glass-blur));
+
+  input { max-inline-size: 9rem; font: inherit; color: var(--ink); }
+}
+
 .canvas {
   inline-size: var(--canvas-width);
+  margin-inline: auto;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
   gap: 2vmin;
@@ -84,6 +134,9 @@
 }
 
 .canvas-empty {
+  display: grid;
+  min-block-size: min(34vmin, 18rem);
+  place-items: center;
   color: var(--ink-dim);
   font-size: clamp(12px, 1.8vmin, 16px);
 }
@@ -100,6 +153,20 @@
 @media (prefers-reduced-motion: reduce) {
   .sentence {
     animation-duration: 1ms;
+  }
+}
+
+@media (max-width: 620px) {
+  .header-actions {
+    inline-size: 100%;
+    margin-inline-start: 0;
+  }
+
+  .background-picker,
+  .photo-picker,
+  .ops-toggle {
+    flex: 1;
+    text-align: center;
   }
 }
 
@@ -201,4 +268,5 @@
   .card-dismiss {
     transition-duration: 1ms;
   }
+
 }

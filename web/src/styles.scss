@@ -51,6 +51,18 @@
   --canvas-width: min(96vw, 920px);
   --card-hero-size: clamp(40px, 8vmin, 64px);
 
+  /* Shared ops-layer tokens. The transcript is a different layer, but it
+   * should still feel like the same instrument rather than a second app. */
+  --surface: rgb(255 255 255 / 0.74);
+  --surface-strong: rgb(255 255 255 / 0.92);
+  --surface-muted: rgb(236 240 246 / 0.76);
+  --line: rgb(80 92 112 / 0.18);
+  --line-strong: rgb(80 92 112 / 0.3);
+  --ink-soft: #596270;
+  --ops-shadow: 0 24px 80px rgb(48 58 76 / 0.16);
+  --radius-lg: 1.5rem;
+  --radius-md: 0.9rem;
+
   /* Motion scale (docs/12 §6): 1 = full event-animation duration, 0 collapses
    * every event animation (card reveal, brackets, image sweep) to ~1ms and
    * its stagger delay to 0 — "nothing loops after arrival" plus "reduce to
@@ -85,12 +97,55 @@ body {
   color: var(--ink);
   /* "none" background: light gradient (docs/12 §5). */
   background: linear-gradient(160deg, #f4f6fa 0%, #eef0f4 55%, #e9ebef 100%);
+  min-block-size: 100%;
 }
 
 /* Every control is keyboard reachable with a visible ring (docs/12 §8). */
 :focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
+}
+
+/* HUD ambient field: capped below the reference's 25 live motes and gated by
+ * the same visibility/focus/reduced-motion signal as the presence orb. */
+.ambient-field {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.mote {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  inline-size: clamp(0.35rem, 0.8vmin, 0.7rem);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--c-idle) 50%, transparent), transparent 70%);
+  filter: blur(0.1vmin);
+  opacity: 0;
+  animation: mote-drift 24s linear infinite;
+}
+
+.mote:nth-child(3n) { inset-inline-start: 18%; animation-delay: -7s; animation-duration: 29s; }
+.mote:nth-child(3n + 1) { inset-inline-start: 57%; animation-delay: -16s; animation-duration: 33s; }
+.mote:nth-child(3n + 2) { inset-inline-start: 84%; animation-delay: -23s; animation-duration: 27s; }
+.mote:nth-child(4n) { inset-block-start: 82%; }
+.mote:nth-child(4n + 1) { inset-block-start: 64%; }
+.mote:nth-child(4n + 2) { inset-block-start: 38%; }
+.mote:nth-child(4n + 3) { inset-block-start: 16%; }
+.motion-still .mote { animation-play-state: paused; }
+
+@keyframes mote-drift {
+  0% { transform: translateY(0) translateX(0) scale(1); opacity: 0; }
+  8% { opacity: 0.55; }
+  92% { opacity: 0.35; }
+  100% { transform: translateY(-38vmin) translateX(4vmin) scale(1.4); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ambient-field { display: none; }
 }
 
 /* Screen-reader-only text: state changes are announced by name, not by colour
@@ -106,3 +161,36 @@ body {
   white-space: nowrap;
   border: 0;
 }
+
+.provider-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.55ch;
+  margin-block-start: 0.35vmin;
+  color: var(--ink-dim);
+  font-size: clamp(10px, 1.2vmin, 12px);
+  letter-spacing: 0.02em;
+}
+
+.provider-dot {
+  inline-size: 0.55em;
+  block-size: 0.55em;
+  border-radius: 50%;
+  background: var(--c-degraded);
+}
+
+.provider-dot.healthy { background: var(--c-done); }
+.provider-dot.degraded { background: var(--c-degraded); }
+.provider-dot.unavailable { background: var(--c-error); }
+.provider-reset { color: var(--ink-dim); }
+
+.voice-transcript {
+  margin: 0 1.4rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid color-mix(in srgb, var(--c-listen) 35%, var(--line));
+  border-radius: 0.8rem;
+  background: color-mix(in srgb, var(--c-listen) 7%, var(--surface-strong));
+}
+.voice-transcript-label { color: var(--c-listen); font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.voice-transcript p { margin: 0.3rem 0 0; line-height: 1.45; }

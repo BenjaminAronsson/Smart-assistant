@@ -12,6 +12,7 @@ import type {
   SubmitMessageRequest,
   ProvidersResponse,
   RunAck,
+  RunDto,
   ApprovalDecisionDto,
   MediaCommandRequest,
   MediaCommandResponse,
@@ -105,6 +106,13 @@ export class ApiService {
     );
   }
 
+  /** Durable run snapshot used to repair a HUD stream gap (docs/05 §1/§3). */
+  getRun(runId: string): Promise<RunDto> {
+    return firstValueFrom(
+      this.http.get<RunDto>(`/api/v1/runs/${runId}`, { headers: this.authHeaders() }),
+    );
+  }
+
   submitMessage(sessionId: string, text: string): Promise<RunAck> {
     const request: SubmitMessageRequest = {
       content: [{ type: 'text', text }],
@@ -132,6 +140,13 @@ export class ApiService {
       this.http.post(`/api/v1/runs/${runId}/approvals/${approvalId}`, decision, {
         headers: this.authHeaders(),
       }),
+    );
+  }
+
+  /** Request cancellation of the active run; completion is confirmed by WS. */
+  async cancelRun(runId: string): Promise<void> {
+    await firstValueFrom(
+      this.http.post(`/api/v1/runs/${runId}/cancel`, {}, { headers: this.authHeaders() }),
     );
   }
 

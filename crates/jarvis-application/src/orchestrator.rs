@@ -65,13 +65,20 @@ pub struct AgendaPayload {
 
 /// A structured update the orchestrator emits as a run progresses. The host
 /// maps these onto the wire `DomainEvent`/`TransientEvent` split (docs/05 §3):
-/// [`Self::TextDelta`] is transient (never replayed); the others are persisted.
+/// [`Self::TextDelta`], [`Self::Queued`] and [`Self::Agenda`] are transient
+/// (never replayed); the durable run snapshot follows each lifecycle change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunUpdate {
     /// The run entered a new lifecycle state.
     StateChanged { run_id: RunId, state: RunState },
     /// One incremental chunk of streamed model output (transient).
     TextDelta { run_id: RunId, text: String },
+    /// The provider parked this run; the position is one-based in dequeue order.
+    Queued {
+        run_id: RunId,
+        reason: String,
+        position: usize,
+    },
     /// A transient, read-only agenda projection for the current run.
     Agenda {
         run_id: RunId,

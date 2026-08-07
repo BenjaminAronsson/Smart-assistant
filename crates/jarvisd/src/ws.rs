@@ -5,8 +5,8 @@
 //! * committed **domain events** arrive via [`OutboxPublisher`] — the dispatcher
 //!   calls us after commit. They are persisted and replayable; `seq` is the
 //!   outbox row `id`, the same global cursor the timeline `since` uses.
-//! * transient **text deltas** arrive via [`RunEventSink`] straight from the
-//!   orchestrator. They are never persisted and never replayed.
+//! * transient **text deltas** and voice recognition hypotheses arrive through
+//!   bounded in-process streams. They are never persisted and never replayed.
 //!
 //! The hub owns every envelope field (docs/05 §3); payload authors never set
 //! `seq`/`occurredAt`/etc. Run **state** changes are deliberately NOT emitted
@@ -16,6 +16,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
@@ -23,8 +24,10 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::HeaderValue;
 use axum::response::Response;
+use futures_util::stream::{BoxStream, StreamExt, poll_fn};
 use jarvis_application::orchestrator::{RunEventSink, RunUpdate};
 use jarvis_application::ports::{DisplayDirectiveSink, RepositoryError};
+use jarvis_application::voice::{AudioFormat, SpeechTranscriber, TranscriptEvent};
 use jarvis_contracts::CONTRACT_VERSION;
 use jarvis_contracts::cards::{AgendaEventDto, HudCardDto};
 use jarvis_contracts::deepdive::{CanvasActionDto, HudCanvasDto};
@@ -38,6 +41,7 @@ use serde::Deserialize;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// Bounded fan-out buffer. A client that falls this far behind is disconnected
@@ -48,9 +52,9 @@ const CHANNEL_CAPACITY: usize = 1024;
 /// Rows per page when replaying persisted events on a `?since=` reconnect.
 const REPLAY_PAGE: i64 = 256;
 
-/// Inbound WS frame/message ceiling. M1 sends no commands over the socket, so
-/// this is deliberately tiny — enough for control frames, far below the 64 MiB
-/// tungstenite default (DoS hardening, security-auditor F1.5).
+/// Inbound WS frame/message ceiling. Voice PCM chunks are intentionally kept
+/// below this bound; the browser emits 20–40 ms frames (docs/05 §1), far below
+/// the 64 MiB tungstenite default (DoS hardening, security-auditor F1.5).
 const MAX_INBOUND_FRAME_BYTES: usize = 64 * 1024;
 
 /// Read side of the persisted event log (docs/05 §3), abstracted so the hub and
@@ -188,6 +192,30 @@ impl WsHub {
         let _ = self.tx.send(Arc::new(envelope));
     }
 
+    /// Broadcast a disposable recognition hypothesis on the voice channel.
+    /// The durable user message, once a voice turn is bound to a session, is
+    /// the source of truth; partials are intentionally never replayed.
+    fn broadcast_voice_transcript(&self, stream_id: &str, text: String, is_final: bool) {
+        let event = TransientEvent::VoiceTranscript {
+            stream_id: stream_id.to_owned(),
+            text,
+            is_final,
+        };
+        let (event_type, payload) =
+            split_tagged(serde_json::to_value(&event).expect("transient event serializes"));
+        let envelope = EventEnvelope {
+            v: CONTRACT_VERSION,
+            seq: self.high_water.load(Ordering::SeqCst),
+            channel: Channel::Voice,
+            event_type,
+            occurred_at: now_rfc3339(),
+            trace_id: None,
+            resource_version: None,
+            payload,
+        };
+        let _ = self.tx.send(Arc::new(envelope));
+    }
+
     /// Broadcast a transient `hud.canvas` instruction (F3b.6, FR-27/ADR-017):
     /// what this turn does to the materialization canvas, plus the cards that
     /// belong on it. Like a text delta it rides at the current high-water `seq`
@@ -248,6 +276,30 @@ impl WsHub {
         };
         // Split the `type` tag out of the payload so the wire matches the outbox
         // convention: discriminator on the envelope, fields in the payload.
+        let (event_type, payload) =
+            split_tagged(serde_json::to_value(&event).expect("transient event serializes"));
+        let envelope = EventEnvelope {
+            v: CONTRACT_VERSION,
+            seq: self.high_water.load(Ordering::SeqCst),
+            channel: Channel::Session,
+            event_type,
+            occurred_at: now_rfc3339(),
+            trace_id: None,
+            resource_version: None,
+            payload,
+        };
+        let _ = self.tx.send(Arc::new(envelope));
+    }
+
+    /// Broadcast the live degraded-mode queue notice. It shares the transient
+    /// sequence semantics of token deltas; a reconnect gets the durable run
+    /// snapshot and a fresh provider poll instead (FR-12).
+    fn broadcast_queued(&self, run_id: &RunId, reason: &str, position: usize) {
+        let event = TransientEvent::DegradedQueued {
+            run_id: run_id.clone(),
+            reason: reason.to_owned(),
+            position,
+        };
         let (event_type, payload) =
             split_tagged(serde_json::to_value(&event).expect("transient event serializes"));
         let envelope = EventEnvelope {
@@ -339,6 +391,11 @@ impl RunEventSink for WsHub {
     async fn emit(&self, update: RunUpdate) {
         match update {
             RunUpdate::TextDelta { run_id, text } => self.broadcast_delta(&run_id, &text),
+            RunUpdate::Queued {
+                run_id,
+                reason,
+                position,
+            } => self.broadcast_queued(&run_id, &reason, position),
             RunUpdate::Agenda { run_id, events } => self.broadcast_agenda(&run_id, events),
             // Persisted by the checkpointer and delivered on the outbox path —
             // dropping them here is the double-emit reconciliation (F1.4).
@@ -365,6 +422,85 @@ pub struct WsState {
     pub hub: Arc<WsHub>,
     pub events: Arc<dyn EventReader>,
     pub shutdown: CancellationToken,
+    /// Optional M5 STT adapter. `None` keeps voice capture visible but disabled
+    /// at the daemon boundary; the browser still fails closed on no transcript.
+    pub transcriber: Option<Arc<dyn SpeechTranscriber>>,
+}
+
+struct ActiveVoiceStream {
+    stream_id: String,
+    audio_tx: Option<mpsc::Sender<Vec<u8>>>,
+    cancel: CancellationToken,
+    task: tokio::task::JoinHandle<()>,
+}
+
+fn audio_stream(rx: mpsc::Receiver<Vec<u8>>) -> BoxStream<'static, Vec<u8>> {
+    let mut rx = rx;
+    Box::pin(poll_fn(move |cx| rx.poll_recv(cx)))
+}
+
+fn start_voice_stream(
+    transcriber: Arc<dyn SpeechTranscriber>,
+    hub: Arc<WsHub>,
+    stream_id: String,
+    format: AudioFormat,
+    cancel: CancellationToken,
+) -> ActiveVoiceStream {
+    let (tx, rx) = mpsc::channel(32);
+    let task_stream_id = stream_id.clone();
+    let task_cancel = cancel.clone();
+    let task = tokio::spawn(async move {
+        let result = transcriber
+            .transcribe(audio_stream(rx), format, task_cancel.clone())
+            .await;
+        let mut transcript = match result {
+            Ok(transcript) => transcript,
+            Err(error) => {
+                tracing::warn!(%error, stream_id = %task_stream_id, "voice transcription could not start");
+                return;
+            }
+        };
+        while let Some(event) = transcript.next().await {
+            match event {
+                TranscriptEvent::Partial(text) => {
+                    hub.broadcast_voice_transcript(&task_stream_id, text, false)
+                }
+                TranscriptEvent::Final(text) => {
+                    hub.broadcast_voice_transcript(&task_stream_id, text, true)
+                }
+                // A mid-stream STT failure. Logged rather than dropped, but the
+                // browser currently sees only "no transcript" — indistinguishable
+                // from silence. Surfacing it to the user needs a `voice.error`
+                // transient event in jarvis-contracts (not added here: the voice
+                // contract surface is still in flight). Until then this is a
+                // known, deliberate gap, not an oversight.
+                TranscriptEvent::Error(error) => {
+                    tracing::warn!(%error, stream_id = %task_stream_id, "voice transcription failed mid-stream");
+                    break;
+                }
+            }
+        }
+    });
+    ActiveVoiceStream {
+        stream_id,
+        audio_tx: Some(tx),
+        cancel,
+        task,
+    }
+}
+
+async fn stop_voice_stream(active: &mut Option<ActiveVoiceStream>) {
+    let Some(mut stream) = active.take() else {
+        return;
+    };
+    stream.audio_tx.take();
+    if tokio::time::timeout(Duration::from_secs(5), &mut stream.task)
+        .await
+        .is_err()
+    {
+        stream.cancel.cancel();
+        let _ = stream.task.await;
+    }
 }
 
 /// `GET /ws/v1` — authenticated WebSocket upgrade (the bearer middleware has
@@ -397,9 +533,8 @@ pub async fn ws_upgrade(
     let offered_token_protocol = ws
         .requested_protocols()
         .any(|p| p.as_bytes() == crate::auth::WS_DEVICE_TOKEN_PROTOCOL.as_bytes());
-    // M1 accepts NO inbound commands over the socket (run control is REST), so
-    // tighten the default 64 MiB ceiling to a small cap — a client has no
-    // legitimate large inbound payload (DoS hardening, security-auditor F1.5).
+    // Run control remains REST-only, but voice control frames and bounded PCM
+    // chunks are legitimate inbound messages (docs/05 §1).
     let mut ws = ws
         .max_message_size(MAX_INBOUND_FRAME_BYTES)
         .max_frame_size(MAX_INBOUND_FRAME_BYTES);
@@ -416,6 +551,7 @@ async fn handle_socket(mut socket: WebSocket, state: WsState, since: Option<i64>
     // overlap between replay and live is deduped by the client on `seq` (the
     // outbox id is unique and monotonic).
     let mut rx = state.hub.subscribe();
+    let mut voice_stream: Option<ActiveVoiceStream> = None;
 
     if let Some(since) = since
         && replay_since(&mut socket, &state, since).await.is_err()
@@ -427,29 +563,84 @@ async fn handle_socket(mut socket: WebSocket, state: WsState, since: Option<i64>
         tokio::select! {
             biased;
             _ = state.shutdown.cancelled() => {
+                stop_voice_stream(&mut voice_stream).await;
                 let _ = socket.send(Message::Close(None)).await;
                 return;
             }
             received = rx.recv() => match received {
                 Ok(envelope) => {
                     if send_envelope(&mut socket, &envelope).await.is_err() {
+                        stop_voice_stream(&mut voice_stream).await;
                         return;
                     }
                 }
                 // Too far behind: close so the client reconnects and resyncs
                 // (persisted events are recovered via `?since=` / REST).
                 Err(broadcast::error::RecvError::Lagged(_)) => {
+                    stop_voice_stream(&mut voice_stream).await;
                     let _ = socket.send(Message::Close(None)).await;
                     return;
                 }
-                Err(broadcast::error::RecvError::Closed) => return,
+                Err(broadcast::error::RecvError::Closed) => {
+                    stop_voice_stream(&mut voice_stream).await;
+                    return;
+                }
             },
-            // Inbound frames: M1 accepts no commands over the socket (run control
-            // is REST) — we only honour a Close and keep the connection healthy.
+            // Inbound voice frames are the one exception to REST-only commands;
+            // run control remains on the audited REST surface.
             inbound = socket.recv() => match inbound {
-                Some(Ok(Message::Close(_))) | None => return,
+                Some(Ok(Message::Close(_))) | None => {
+                    stop_voice_stream(&mut voice_stream).await;
+                    return;
+                }
+                Some(Ok(Message::Text(text))) => {
+                    let Ok(control) = serde_json::from_str::<jarvis_contracts::voice::VoiceControlDto>(&text) else {
+                        continue;
+                    };
+                    match control {
+                        jarvis_contracts::voice::VoiceControlDto::StreamStart {
+                            stream_id,
+                            sample_rate_hz,
+                            sample_width_bytes,
+                            channels,
+                            ..
+                        } => {
+                            stop_voice_stream(&mut voice_stream).await;
+                            if let Some(transcriber) = &state.transcriber {
+                                let cancel = state.shutdown.child_token();
+                                voice_stream = Some(start_voice_stream(
+                                    Arc::clone(transcriber),
+                                    Arc::clone(&state.hub),
+                                    stream_id,
+                                    AudioFormat {
+                                        sample_rate_hz,
+                                        sample_width_bytes,
+                                        channels,
+                                    },
+                                    cancel,
+                                ));
+                            }
+                        }
+                        jarvis_contracts::voice::VoiceControlDto::StreamStop { stream_id } => {
+                            if voice_stream
+                                .as_ref()
+                                .is_some_and(|active| active.stream_id == stream_id)
+                            {
+                                stop_voice_stream(&mut voice_stream).await;
+                            }
+                        }
+                    }
+                }
+                Some(Ok(Message::Binary(bytes))) => {
+                    if let Some(tx) = voice_stream.as_mut().and_then(|active| active.audio_tx.as_ref()) {
+                        let _ = tx.send(bytes.to_vec()).await;
+                    }
+                }
                 Some(Ok(_)) => {}
-                Some(Err(_)) => return,
+                Some(Err(_)) => {
+                    stop_voice_stream(&mut voice_stream).await;
+                    return;
+                }
             },
         }
     }
@@ -642,6 +833,71 @@ mod tests {
             split_tagged(json!({ "type": "text.delta", "runId": RUN, "text": "x" }));
         assert_eq!(event_type, "text.delta");
         assert_eq!(payload, json!({ "runId": RUN, "text": "x" }));
+    }
+
+    struct FakeTranscriber;
+
+    #[async_trait]
+    impl SpeechTranscriber for FakeTranscriber {
+        fn id(&self) -> &str {
+            "fake-stt"
+        }
+
+        async fn transcribe(
+            &self,
+            mut audio: BoxStream<'static, Vec<u8>>,
+            _format: AudioFormat,
+            _cancel: CancellationToken,
+        ) -> Result<BoxStream<'static, TranscriptEvent>, jarvis_application::voice::VoiceError>
+        {
+            while audio.next().await.is_some() {}
+            Ok(Box::pin(futures_util::stream::iter([
+                TranscriptEvent::Partial("hello".to_owned()),
+                TranscriptEvent::Final("hello Jarvis".to_owned()),
+            ])))
+        }
+    }
+
+    #[tokio::test]
+    async fn voice_stream_routes_pcm_to_the_transcriber_and_broadcasts_hypotheses() {
+        let hub = WsHub::new();
+        let mut rx = hub.subscribe();
+        let mut active = Some(start_voice_stream(
+            Arc::new(FakeTranscriber),
+            Arc::clone(&hub),
+            "stream-1".to_owned(),
+            AudioFormat {
+                sample_rate_hz: 16_000,
+                sample_width_bytes: 2,
+                channels: 1,
+            },
+            CancellationToken::new(),
+        ));
+        active
+            .as_ref()
+            .unwrap()
+            .audio_tx
+            .as_ref()
+            .unwrap()
+            .send(vec![0, 1, 2, 3])
+            .await
+            .unwrap();
+        stop_voice_stream(&mut active).await;
+
+        let partial = rx.recv().await.unwrap();
+        let final_event = rx.recv().await.unwrap();
+        assert_eq!(partial.channel, Channel::Voice);
+        assert_eq!(partial.event_type, "voice.transcript");
+        assert_eq!(
+            partial.payload,
+            json!({
+                "streamId": "stream-1",
+                "text": "hello",
+                "final": false,
+            })
+        );
+        assert_eq!(final_event.payload["final"], json!(true));
+        assert_eq!(final_event.payload["text"], json!("hello Jarvis"));
     }
 
     #[test]

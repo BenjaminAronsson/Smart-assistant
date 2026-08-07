@@ -1,5 +1,6 @@
 import {
   Component,
+  HostListener,
   OnInit,
   OnDestroy,
   inject,
@@ -21,10 +22,14 @@ import type {
   RunStateDto,
   ApprovalCardDto,
   ApprovalDecisionDto,
+  TransientEvent,
 } from '../generated/api-types';
 import { ApiService } from './api.service';
 import { ApprovalTray } from './approval-tray';
 import { HudStateService } from './hud/hud-state.service';
+import { VoiceCaptureService } from './voice-capture.service';
+
+const TRANSIENT_WS_TYPES = new Set(['text.delta', 'media.state', 'hud.canvas', 'degraded.queued']);
 
 /** Cap on the live streaming preview buffer (NIT 4). The durable message that
  * arrives on completion is authoritative, so trimming the transient preview to
@@ -49,7 +54,10 @@ export class Conversation implements OnInit, OnDestroy {
   private readonly route = inject(ActivatedRoute);
   /** The materialization canvas (docs/12 §2.3). The deep-dive router's
    * `hud.canvas` instruction is applied to it below (F3b.6). */
-  private readonly hud = inject(HudStateService);
+  protected readonly hud = inject(HudStateService);
+  /** Live partial/final recognition text; the durable user message remains the
+   * source of truth once the voice turn is submitted. */
+  protected readonly voice = inject(VoiceCaptureService);
 
   protected readonly session = signal<SessionDto | null>(null);
   protected readonly timeline = signal<TimelineItem[]>([]);
@@ -68,10 +76,17 @@ export class Conversation implements OnInit, OnDestroy {
   /** Approval ids whose decision is in flight — optimistic-block until the
    * durable `approval.resolved` event removes the card (angular-shell §4). */
   protected readonly resolving = signal<ReadonlySet<string>>(new Set());
+  /** Run cancellation remains available while model or tool work is active. */
+  protected readonly activeRunId = signal<string | null>(null);
+  protected readonly activeRunState = signal<RunStateDto | null>(null);
+  protected readonly cancelling = signal(false);
+  private readonly providerNow = signal(Date.now());
 
   private sessionId: string | null = null;
   private ws: WebSocket | null = null;
   private resyncCursor = 0;
+  private lastSeq: number | null = null;
+  private destroyed = false;
   private providerInterval: ReturnType<typeof setInterval> | null = null;
 
   ngOnInit(): void {
@@ -91,11 +106,13 @@ export class Conversation implements OnInit, OnDestroy {
     // plain lifecycle method is not — a bare `setInterval`/`ngOnDestroy`
     // pair, matching the WS teardown just below, needs none.)
     this.providerInterval = setInterval(() => {
+      this.providerNow.set(Date.now());
       void this.loadProviders();
     }, 10000);
   }
 
   ngOnDestroy(): void {
+    this.destroyed = true;
     if (this.ws) {
       this.ws.close();
     }
@@ -143,13 +160,24 @@ export class Conversation implements OnInit, OnDestroy {
   }
 
   private connectWebSocket(): void {
-    if (!this.sessionId) return;
+    if (!this.sessionId || this.destroyed) return;
 
+    this.lastSeq = null;
     this.ws = this.api.openSocket('/ws/v1');
 
     this.ws.onmessage = (event) => {
       try {
         const envelope: EventEnvelope = JSON.parse(event.data);
+        if (envelope.channel === 'session') {
+          if (!TRANSIENT_WS_TYPES.has(envelope.type) && this.lastSeq !== null && envelope.seq !== this.lastSeq + 1) {
+            // Durable timeline truth repairs a dropped WS event; transient
+            // token deltas are intentionally not replayed.
+            void this.loadTimeline();
+          }
+          if (!TRANSIENT_WS_TYPES.has(envelope.type)) {
+            this.lastSeq = envelope.seq;
+          }
+        }
         this.handleWebSocketMessage(envelope);
       } catch (err) {
         console.error('Failed to parse WS message', err);
@@ -161,8 +189,12 @@ export class Conversation implements OnInit, OnDestroy {
     };
 
     this.ws.onclose = () => {
-      // Attempt to reconnect after a delay
-      setTimeout(() => this.connectWebSocket(), 3000);
+      this.lastSeq = null;
+      if (!this.destroyed) {
+        // Reconcile before resuming so approvals and run states converge.
+        void this.loadTimeline();
+        setTimeout(() => this.connectWebSocket(), 3000);
+      }
     };
   }
 
@@ -190,6 +222,17 @@ export class Conversation implements OnInit, OnDestroy {
       return;
     }
 
+    if (env.type === 'degraded.queued') {
+      const queued = env.payload as Extract<TransientEvent, { type: 'degraded.queued' }>;
+      if (queued.runId === this.activeRunId() || this.activeRunId() === null) {
+        this.hud.markRunQueued(queued.runId);
+        this.activeRunId.set(queued.runId);
+        this.activeRunState.set('received');
+        this.hud.setPresence('degraded');
+      }
+      return;
+    }
+
     // Transient canvas instruction (F3b.6, FR-27/ADR-017): the server decided
     // continuation-vs-new-topic and says what this turn does to the canvas.
     // The decision is never re-derived here — there is one classifier, and it
@@ -208,30 +251,62 @@ export class Conversation implements OnInit, OnDestroy {
     } as DomainEvent;
 
     switch (event.type) {
-      case 'message.created':
+      case 'message.created': {
         // The durable message supersedes any in-progress streamed text.
         this.streamingText.set('');
+        const captionText = this.getMessageText(event.message).trim();
+        if (captionText) this.hud.speak(captionText);
         this.timeline.update((items) => [...items, { type: 'message', message: event.message }]);
         break;
+      }
       case 'run.queued':
+        this.activeRunId.set(event.runId);
+        this.activeRunState.set('received');
+        this.hud.markRunQueued(event.runId);
+        this.hud.setPresence('degraded');
+        this.timeline.update((items) => [...items, { type: 'run_event', event }]);
+        break;
       case 'run.started':
+        this.activeRunId.set(event.runId);
+        this.activeRunState.set('model_running');
+        this.hud.clearQueuedRun(event.runId);
+        this.hud.setPresence('speaking');
+        this.timeline.update((items) => [...items, { type: 'run_event', event }]);
+        break;
       case 'run.state_changed':
+        this.activeRunId.set(event.runId);
+        this.activeRunState.set(event.state);
+        if (['completed', 'failed', 'cancelled'].includes(event.state)) {
+          this.hud.clearQueuedRun(event.runId);
+        }
+        this.setHudPresenceForRunState(event.state);
         this.timeline.update((items) => [...items, { type: 'run_event', event }]);
         break;
       case 'run.completed':
+        this.hud.clearQueuedRun(event.runId);
+        if (this.activeRunId() === event.runId) {
+          this.activeRunId.set(null);
+          this.activeRunState.set(null);
+          this.cancelling.set(false);
+        }
+        this.hud.setPresence(event.outcome.kind === 'completed' ? 'done' : 'error');
         this.streamingText.set('');
         this.timeline.update((items) => [...items, { type: 'run_event', event }]);
         break;
       case 'provider.health_changed':
+        this.hud.setPresence(event.provider.state === 'healthy' ? 'idle' : 'degraded');
         void this.loadProviders();
         break;
       case 'approval.requested':
         this.addPendingApproval(event.card);
+        // Approval interrupts belong on the HUD face as well as the ops tray.
+        this.hud.appendCards([{ type: 'card.approval', card: event.card }]);
         break;
       case 'approval.resolved':
         // The durable decision is the source of truth — drop the card and clear
         // any optimistic block, whether this client or another decided it.
         this.removePendingApproval(event.approvalId);
+        this.hud.resolveApproval(event.approvalId);
         break;
     }
   }
@@ -312,8 +387,10 @@ export class Conversation implements OnInit, OnDestroy {
       const event = item.event;
       if (event.type === 'approval.requested') {
         this.addPendingApproval(event.card);
+        this.hud.appendCards([{ type: 'card.approval', card: event.card }]);
       } else if (event.type === 'approval.resolved') {
         this.removePendingApproval(event.approvalId);
+        this.hud.resolveApproval(event.approvalId);
       }
     }
   }
@@ -333,6 +410,32 @@ export class Conversation implements OnInit, OnDestroy {
     }
   }
 
+  @HostListener('document:keydown', ['$event'])
+  protected onKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Escape' && this.canCancelRun() && !this.cancelling()) {
+      event.preventDefault();
+      void this.cancelActiveRun();
+    }
+  }
+
+  protected canCancelRun(): boolean {
+    return this.activeRunId() !== null &&
+      (this.activeRunState() === 'model_running' || this.activeRunState() === 'tool_running');
+  }
+
+  protected async cancelActiveRun(): Promise<void> {
+    const runId = this.activeRunId();
+    if (!runId || !this.canCancelRun() || this.cancelling()) return;
+
+    this.cancelling.set(true);
+    try {
+      await this.api.cancelRun(runId);
+    } catch {
+      this.cancelling.set(false);
+      this.error.set('Failed to cancel run');
+    }
+  }
+
   protected getProviderState(): ProviderState | null {
     const providers = this.providers();
     if (!providers || providers.providers.length === 0) {
@@ -347,6 +450,57 @@ export class Conversation implements OnInit, OnDestroy {
       return null;
     }
     return providers.providers[0].reason || null;
+  }
+
+  protected getProviderLabel(): string {
+    const provider = this.providers()?.providers[0];
+    if (!provider) return 'Provider · checking';
+    const state = provider.state === 'unavailable' ? 'degraded' : provider.state;
+    return `${provider.id} · ${state}`;
+  }
+
+  private setHudPresenceForRunState(state: RunStateDto): void {
+    switch (state) {
+      case 'received':
+      case 'context_ready':
+      case 'model_running':
+      case 'responding':
+      case 'replanning':
+        this.hud.setPresence('speaking');
+        break;
+      case 'tool_running':
+        this.hud.setPresence('tool');
+        break;
+      case 'waiting_approval':
+      case 'policy_review':
+        this.hud.setPresence('waiting');
+        break;
+      case 'completed':
+        this.hud.setPresence('done');
+        break;
+      case 'failed':
+        this.hud.setPresence('error');
+        break;
+      case 'cancelled':
+        this.hud.setPresence('idle');
+        break;
+    }
+  }
+
+  protected getQuotaReset(): string | null {
+    return this.providers()?.providers[0]?.quota?.resetAt ?? null;
+  }
+
+  protected getQuotaResetLabel(): string | null {
+    const resetAt = this.getQuotaReset();
+    if (!resetAt) return null;
+    const remaining = new Date(resetAt).getTime() - this.providerNow();
+    if (remaining <= 0) return 'now';
+    const minutes = Math.ceil(remaining / 60_000);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const remainder = minutes % 60;
+    return remainder === 0 ? `${hours}h` : `${hours}h ${remainder}m`;
   }
 
   protected isProviderUnavailable(): boolean {
