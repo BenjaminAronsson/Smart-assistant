@@ -64,4 +64,4 @@ sqlx = { version = "0.8", default-features = false, features = ["postgres", "run
 tokio-tungstenite = "0.29"
 # Golden 7 spawns the real `tools/coding-worker` child process; the `process`
 # feature unifies into the test build only (the binary spawns no children).
-tokio = { version = "1", features = ["process"] }
+tokio = { version = "1", features = ["process", "io-util"] }

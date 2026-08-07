@@ -3178,6 +3178,28 @@
             "final"
           ],
           "type": "object"
+        },
+        {
+          "description": "A voice-pipeline leg failed (F5.2). Transient for the same reason as\n`voice.transcript`: it describes a live capture/playback attempt, not a\nfact about the run timeline, and a client that was disconnected has\nnothing to recover.\n\nIt exists because a stream that simply *ends* means the service finished\nnormally (`jarvis_application::voice`) — without this event a dead STT\nservice is indistinguishable from a user who said nothing, and a dead TTS\nservice is indistinguishable from a silent response. Only a stable\n[`crate::voice::VoiceErrorCodeDto`] crosses the wire; no service text.",
+          "properties": {
+            "code": {
+              "$ref": "#/definitions/VoiceErrorCodeDto"
+            },
+            "streamId": {
+              "description": "The capture stream, or the utterance, the failure belongs to.",
+              "type": "string"
+            },
+            "type": {
+              "const": "voice.error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "streamId",
+            "code"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -3273,6 +3295,116 @@
             "streamId"
           ],
           "type": "object"
+        },
+        {
+          "description": "Daemon → client: spoken output for one turn begins; the binary frames\nthat follow are PCM in this format, until the matching\n[`VoiceControlDto::SpeakStop`]. `utteranceId` scopes the audio so a\nbarge-in-cancelled utterance can never be confused with the next one.",
+          "properties": {
+            "channels": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "runId": {
+              "description": "The run whose response is being spoken, when there is one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sampleRateHz": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sampleWidthBytes": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "voice.speak.start",
+              "type": "string"
+            },
+            "utteranceId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "utteranceId",
+            "sampleRateHz",
+            "sampleWidthBytes",
+            "channels"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Daemon → client: no further audio belongs to `utteranceId`. `reason`\ndistinguishes a finished utterance from an interrupted or failed one —\nsilence alone would be indistinguishable between the three.",
+          "properties": {
+            "reason": {
+              "$ref": "#/definitions/VoiceSpeakEndDto"
+            },
+            "type": {
+              "const": "voice.speak.stop",
+              "type": "string"
+            },
+            "utteranceId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "utteranceId",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "VoiceErrorCodeDto": {
+      "description": "Stable machine codes for a voice-pipeline failure (`voice.error`). Free-form\nservice text is deliberately **not** on the wire: the client maps the code to\nits own message, so no adapter/transport string can reach the UI (docs/06 §5).\nAdditive only — codes are never renamed or reused.",
+      "oneOf": [
+        {
+          "const": "voice.stt_unavailable",
+          "description": "The speech-to-text service could not be reached.",
+          "type": "string"
+        },
+        {
+          "const": "voice.stt_failed",
+          "description": "The speech-to-text service failed or broke the protocol mid-stream.",
+          "type": "string"
+        },
+        {
+          "const": "voice.tts_unavailable",
+          "description": "The text-to-speech service could not be reached.",
+          "type": "string"
+        },
+        {
+          "const": "voice.tts_failed",
+          "description": "The text-to-speech service failed or broke the protocol mid-utterance.",
+          "type": "string"
+        }
+      ]
+    },
+    "VoiceSpeakEndDto": {
+      "description": "Why spoken output for one utterance ended (F5.2).",
+      "oneOf": [
+        {
+          "const": "completed",
+          "description": "The whole response was synthesized and sent.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "Barge-in (or shutdown) cancelled synthesis mid-utterance; the client\nmust stop playback of what it has already buffered.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "The synthesizer failed; playback stops and the failure is surfaced by a\n`voice.error` transient event rather than as truncated audio.",
+          "type": "string"
         }
       ]
     }

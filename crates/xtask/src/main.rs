@@ -14,8 +14,10 @@ fn main() -> anyhow::Result<()> {
         "arch-test" => arch_test(),
         "codegen" => codegen::run(args.next().as_deref() == Some("--check")),
         "golden" => golden(),
-        "perf" => perf::run(args.next().as_deref() == Some("--rss")),
-        _ => anyhow::bail!("usage: cargo xtask <arch-test|codegen [--check]|golden|perf --rss>"),
+        "perf" => perf::run(args.next().as_deref()),
+        _ => anyhow::bail!(
+            "usage: cargo xtask <arch-test|codegen [--check]|golden|perf <--rss|--voice>>"
+        ),
     }
 }
 

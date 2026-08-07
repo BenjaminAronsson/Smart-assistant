@@ -297,6 +297,8 @@ async fn app_with_token(
         events: Arc::new(EmptyEventReader),
         shutdown: CancellationToken::new(),
         transcriber: None,
+        synthesizer: None,
+        runs: None,
     };
 
     let app = router_with(

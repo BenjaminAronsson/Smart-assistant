@@ -1,7 +1,14 @@
-//! `cargo xtask perf --rss`: the milestone-gate performance harness against the
-//! ultrabook resource budget (docs/01 §4.1, NFR-15). Flagged in the M2 gate
-//! carryforward as "no RSS harness exists — build before M4/M5"; this is that
-//! harness.
+//! `cargo xtask perf`: the milestone-gate performance harnesses.
+//!
+//! * `--rss` — the ultrabook resource budget (docs/01 §4.1, NFR-15). Flagged in
+//!   the M2 gate carryforward as "no RSS harness exists — build before M4/M5";
+//!   this is that harness.
+//! * `--voice` — the NFR-04 voice pipeline latency harness (F5.2), which runs
+//!   the `voice_latency` integration test against **fixture** Wyoming services
+//!   and reports the daemon's own share of the transcript / first-audio budgets.
+//!   See [`voice`] for what that number is and is not.
+//!
+//! `--rss` specifics follow.
 //!
 //! It measures two things about the real `jarvisd` binary, not a proxy for it:
 //!   - cold start to healthy (NFR-15: < 2 s), timed from process spawn to the
@@ -53,9 +60,74 @@ const SETTLE_DURATION: Duration = Duration::from_secs(2);
 /// before it can measure the number.
 const HEALTH_POLL_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub fn run(rss: bool) -> anyhow::Result<()> {
-    anyhow::ensure!(rss, "usage: cargo xtask perf --rss");
+pub fn run(mode: Option<&str>) -> anyhow::Result<()> {
+    match mode {
+        Some("--rss") => rss(),
+        Some("--voice") => voice(),
+        _ => anyhow::bail!("usage: cargo xtask perf <--rss|--voice>"),
+    }
+}
 
+/// `cargo xtask perf --voice`: the NFR-04 voice-latency harness (F5.2).
+///
+/// Delegates to the `voice_latency` integration test rather than re-implementing
+/// a WebSocket client and the Wyoming framing here — that test already drives
+/// the real daemon against fixture speech services, and duplicating it in xtask
+/// would mean two harnesses that can disagree. This wrapper is the operator
+/// front door: it states plainly what is and is not being measured, runs the
+/// harness in **release** (a debug build is not representative, same reason as
+/// `--rss`), and exits non-zero only when the overhead budget is genuinely
+/// breached.
+///
+/// **This does not produce the NFR-04 number.** The STT/TTS models are fixtures
+/// here, so what is measured is the daemon's own share of the budget. Validating
+/// NFR-04 itself needs the reference machine with real faster-whisper/Piper
+/// services on it (docs/02 §9, docs/08 §6) — that measurement, and the resulting
+/// model-size/budget decision, belongs in the M5 gate report, not in a harness
+/// that would otherwise have to invent a figure.
+fn voice() -> anyhow::Result<()> {
+    let database_url = std::env::var("DATABASE_URL").context(
+        "DATABASE_URL is not set — export it, e.g. \
+         DATABASE_URL=postgres://jarvis:jarvis-dev-only@127.0.0.1:5432/jarvis",
+    )?;
+    preflight_postgres(&database_url)?;
+
+    let root = workspace_root()?;
+    println!("perf --voice: NFR-04 voice pipeline latency (docs/01 §4.1, docs/02 §9)");
+    println!(
+        "perf --voice: fixture Wyoming STT/TTS — MODEL TIME EXCLUDED; this measures the daemon's"
+    );
+    println!("perf --voice: own share of the 0.8s transcript / 1.2s first-audio budgets.");
+    println!("perf --voice: building and running the harness in release mode...");
+
+    let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+        .args([
+            "test",
+            "-p",
+            "jarvisd",
+            "--release",
+            "--test",
+            "voice_latency",
+            "--",
+            "--nocapture",
+        ])
+        .current_dir(&root)
+        .env("DATABASE_URL", &database_url)
+        .status()
+        .context("failed to run the voice latency harness")?;
+    anyhow::ensure!(
+        status.success(),
+        "perf --voice: the voice pipeline overhead budget was exceeded — see the report above"
+    );
+    println!();
+    println!(
+        "perf --voice: PASS — daemon-side overhead is within its share of NFR-04. Record the \
+         reference-hardware end-to-end figures (real faster-whisper/Piper) in the M5 gate report."
+    );
+    Ok(())
+}
+
+fn rss() -> anyhow::Result<()> {
     let database_url = std::env::var("DATABASE_URL").context(
         "DATABASE_URL is not set — export it, e.g. \
          DATABASE_URL=postgres://jarvis:jarvis-dev-only@127.0.0.1:5432/jarvis",

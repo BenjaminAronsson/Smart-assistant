@@ -81,8 +81,13 @@ pub struct VoiceConfig {
     pub enabled: bool,
     #[serde(default = "default_wyoming_stt")]
     pub wyoming_stt: String,
-    #[serde(default = "default_wyoming_tts")]
-    pub wyoming_tts: String,
+    /// Piper (or any Wyoming TTS) endpoint for the spoken response leg (F5.2).
+    /// **Absent means no TTS**, deliberately: the round trip still works — the
+    /// transcript starts a run and the answer streams as text — it is simply not
+    /// spoken. The stricter default, matching every other outbound capability in
+    /// this config (media, web search, MCP): opt in by naming the service.
+    #[serde(default)]
+    pub wyoming_tts: Option<String>,
     #[serde(default)]
     pub audio: VoiceAudioConfig,
 }
@@ -100,10 +105,6 @@ pub struct VoiceAudioConfig {
 
 fn default_wyoming_stt() -> String {
     "tcp://127.0.0.1:10300".to_owned()
-}
-
-fn default_wyoming_tts() -> String {
-    "tcp://127.0.0.1:10200".to_owned()
 }
 
 fn default_voice_sample_rate() -> u32 {
@@ -133,7 +134,7 @@ impl Default for VoiceConfig {
         Self {
             enabled: false,
             wyoming_stt: default_wyoming_stt(),
-            wyoming_tts: default_wyoming_tts(),
+            wyoming_tts: None,
             audio: VoiceAudioConfig::default(),
         }
     }
@@ -743,6 +744,13 @@ impl Config {
             anyhow::ensure!(
                 self.voice.wyoming_stt.starts_with("tcp://"),
                 "[voice].wyoming_stt must use tcp:// when voice is enabled"
+            );
+            anyhow::ensure!(
+                self.voice
+                    .wyoming_tts
+                    .as_ref()
+                    .is_none_or(|tts| tts.starts_with("tcp://")),
+                "[voice].wyoming_tts must use tcp:// when set"
             );
             anyhow::ensure!(
                 self.voice.audio.sample_rate > 0 && self.voice.audio.channels > 0,

@@ -62,6 +62,9 @@ entity_allowlist = ["light.office", "scene.evening"]
 [voice]
 enabled = false                          # flip at M5
 wyoming_stt = "tcp://127.0.0.1:10300"
+# Optional (F5.2). ABSENT => no spoken responses: the round trip still works —
+# the transcript starts a run and the answer streams as text — it is simply not
+# synthesized. Same opt-in stance as the media/web/MCP capabilities.
 wyoming_tts = "tcp://127.0.0.1:10200"
 audio = { sample_rate = 16000, channels = 1, format = "s16le" }
 

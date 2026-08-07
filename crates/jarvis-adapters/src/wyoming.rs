@@ -107,7 +107,22 @@ impl WyomingClient {
             () = cancel.cancelled() => Err(VoiceError::Cancelled),
             outcome = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&self.addr)) => {
                 match outcome {
-                    Ok(Ok(stream)) => Ok(stream),
+                    Ok(Ok(stream)) => {
+                        // Disable Nagle (F5.2, NFR-04). A Wyoming exchange is a
+                        // sequence of small writes — header line, then data,
+                        // then payload — and Nagle holds each one back until the
+                        // previous is acknowledged, which the voice latency
+                        // harness measured as ~40 ms of pure delay per request
+                        // on loopback. Voice is the one path in this system with
+                        // a sub-second human-perceptible budget, so throughput
+                        // coalescing is the wrong trade here.
+                        //
+                        // A kernel that refuses the option is not a reason to
+                        // fail the request: the connection still works, it is
+                        // just slower.
+                        let _ = stream.set_nodelay(true);
+                        Ok(stream)
+                    }
                     // Connection refused, unreachable, or the timeout elapsed —
                     // all the same "service is not reachable" case to a caller;
                     // no raw io::Error text or address crosses this boundary.

@@ -5,13 +5,14 @@
 use std::sync::Arc;
 
 use anyhow::Context as _;
+use axum::serve::ListenerExt;
 use jarvis_adapters::claude_cli::ClaudeCliModel;
 use jarvis_adapters::embeddings::FastEmbedProvider;
 use jarvis_application::deterministic::DeterministicFirstProvider;
 use jarvis_application::memory::MemoryRetrievalService;
 use jarvis_application::orchestrator::RunInput;
 use jarvis_application::ports::{MessageStore, RunStore};
-use jarvis_application::voice::SpeechTranscriber;
+use jarvis_application::voice::{SpeechSynthesizer, SpeechTranscriber};
 use jarvis_domain::conversations::MessageRole;
 use jarvis_domain::ids::SessionId;
 use jarvis_domain::run::Run;
@@ -91,6 +92,25 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     } else {
         None
     };
+
+    // The spoken response leg (F5.2). A second, independent Wyoming endpoint —
+    // VAD/STT/TTS are separately swappable services (ADR-007), so this is a
+    // distinct client, not a mode of the STT one. Unconfigured `wyoming_tts` ⇒
+    // no TTS at all: the voice round trip still completes, it is just not
+    // spoken, which is the stricter default for an outbound capability.
+    let synthesizer: Option<Arc<dyn SpeechSynthesizer>> =
+        match (config.voice.enabled, config.voice.wyoming_tts.as_deref()) {
+            (true, Some(url)) => {
+                let address = url
+                    .strip_prefix("tcp://")
+                    .ok_or_else(|| anyhow::anyhow!("[voice].wyoming_tts must use tcp://"))?;
+                Some(Arc::new(jarvis_adapters::wyoming::WyomingClient::new(
+                    "wyoming-tts",
+                    address,
+                )))
+            }
+            _ => None,
+        };
 
     // Display placement surface (F3a.4): the hub is the directive sink to agents;
     // placements are audited through the fallible audit log before dispatch.
@@ -283,6 +303,12 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         events: event_log,
         shutdown: serve_shutdown.clone(),
         transcriber,
+        synthesizer,
+        // A final voice transcript starts its run through the SAME use case the
+        // REST message endpoint calls (`RunApi::start_turn`), carrying the
+        // socket's authenticated device context — never a second, weaker path
+        // from "the microphone heard it" to a run (invariant #1).
+        runs: Some(run_api.clone()),
     };
 
     // Start the event-driven outbox dispatcher (LISTEN/NOTIFY, not polling) and
@@ -441,7 +467,18 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         }),
     );
 
-    let listener = tokio::net::TcpListener::bind(config.bind_addr()).await?;
+    // Disable Nagle on every accepted connection (F5.2, NFR-04). The voice
+    // channel interleaves many small frames — control frames, transcripts, text
+    // deltas, PCM — and Nagle holds each small write until the previous one is
+    // acknowledged; the voice latency harness measured that as ~40 ms per
+    // exchange on loopback, twice over in one round trip. Voice is the only path
+    // here with a sub-second human-perceptible budget, so latency wins over
+    // coalescing. A kernel that refuses the option is not fatal — just slower.
+    let listener = tokio::net::TcpListener::bind(config.bind_addr())
+        .await?
+        .tap_io(|stream| {
+            let _ = stream.set_nodelay(true);
+        });
     tracing::info!(bind = %config.bind_addr(), "jarvisd listening");
 
     let cancel = serve_shutdown.clone();

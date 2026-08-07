@@ -574,7 +574,27 @@ export type TransientEvent =
       text: string;
       type: "voice.transcript";
       [k: string]: unknown;
+    }
+  | {
+      code: VoiceErrorCodeDto;
+      /**
+       * The capture stream, or the utterance, the failure belongs to.
+       */
+      streamId: string;
+      type: "voice.error";
+      [k: string]: unknown;
     };
+/**
+ * Stable machine codes for a voice-pipeline failure (`voice.error`). Free-form
+ * service text is deliberately **not** on the wire: the client maps the code to
+ * its own message, so no adapter/transport string can reach the UI (docs/06 §5).
+ * Additive only — codes are never renamed or reused.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "VoiceErrorCodeDto".
+ */
+export type VoiceErrorCodeDto =
+  "voice.stt_unavailable" | "voice.stt_failed" | "voice.tts_unavailable" | "voice.tts_failed";
 /**
  * JSON control frames that bracket a voice PCM stream.
  *
@@ -595,7 +615,32 @@ export type VoiceControlDto =
       streamId: string;
       type: "voice.stream.stop";
       [k: string]: unknown;
+    }
+  | {
+      channels: number;
+      /**
+       * The run whose response is being spoken, when there is one.
+       */
+      runId?: string | null;
+      sampleRateHz: number;
+      sampleWidthBytes: number;
+      type: "voice.speak.start";
+      utteranceId: string;
+      [k: string]: unknown;
+    }
+  | {
+      reason: VoiceSpeakEndDto;
+      type: "voice.speak.stop";
+      utteranceId: string;
+      [k: string]: unknown;
     };
+/**
+ * Why spoken output for one utterance ended (F5.2).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "VoiceSpeakEndDto".
+ */
+export type VoiceSpeakEndDto = "completed" | "cancelled" | "failed";
 
 /**
  * Jarvis wire contract v1 (generated — do not edit)

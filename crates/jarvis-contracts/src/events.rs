@@ -205,6 +205,22 @@ pub enum TransientEvent {
         #[serde(rename = "final")]
         is_final: bool,
     },
+    /// A voice-pipeline leg failed (F5.2). Transient for the same reason as
+    /// `voice.transcript`: it describes a live capture/playback attempt, not a
+    /// fact about the run timeline, and a client that was disconnected has
+    /// nothing to recover.
+    ///
+    /// It exists because a stream that simply *ends* means the service finished
+    /// normally (`jarvis_application::voice`) — without this event a dead STT
+    /// service is indistinguishable from a user who said nothing, and a dead TTS
+    /// service is indistinguishable from a silent response. Only a stable
+    /// [`crate::voice::VoiceErrorCodeDto`] crosses the wire; no service text.
+    #[serde(rename = "voice.error")]
+    VoiceError {
+        /// The capture stream, or the utterance, the failure belongs to.
+        stream_id: String,
+        code: crate::voice::VoiceErrorCodeDto,
+    },
 }
 
 impl TransientEvent {
@@ -215,6 +231,7 @@ impl TransientEvent {
             Self::MediaState { .. } => "media.state",
             Self::HudCanvas { .. } => "hud.canvas",
             Self::VoiceTranscript { .. } => "voice.transcript",
+            Self::VoiceError { .. } => "voice.error",
         }
     }
 }

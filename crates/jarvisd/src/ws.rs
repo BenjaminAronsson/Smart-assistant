@@ -20,6 +20,7 @@ use std::time::Duration;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
+use axum::Extension;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::HeaderValue;
@@ -27,15 +28,18 @@ use axum::response::Response;
 use futures_util::stream::{BoxStream, StreamExt, poll_fn};
 use jarvis_application::orchestrator::{RunEventSink, RunUpdate};
 use jarvis_application::ports::{DisplayDirectiveSink, RepositoryError};
-use jarvis_application::voice::{AudioFormat, SpeechTranscriber, TranscriptEvent};
+use jarvis_application::voice::{
+    AudioFormat, ClauseSegmenter, SpeechSynthesizer, SpeechTranscriber, TranscriptEvent, VoiceError,
+};
 use jarvis_contracts::CONTRACT_VERSION;
 use jarvis_contracts::cards::{AgendaEventDto, HudCardDto};
 use jarvis_contracts::deepdive::{CanvasActionDto, HudCanvasDto};
 use jarvis_contracts::display::{DisplayDirective, SurfaceDto};
 use jarvis_contracts::envelope::{Channel, EventEnvelope};
 use jarvis_contracts::events::TransientEvent;
+use jarvis_contracts::voice::{VoiceControlDto, VoiceErrorCodeDto, VoiceSpeakEndDto};
 use jarvis_domain::display::Surface;
-use jarvis_domain::ids::RunId;
+use jarvis_domain::ids::{RunId, SessionId};
 use jarvis_infra::dispatcher::{OutboxPublisher, OutboxRecord, PublishError};
 use serde::Deserialize;
 use time::OffsetDateTime;
@@ -56,6 +60,30 @@ const REPLAY_PAGE: i64 = 256;
 /// below this bound; the browser emits 20–40 ms frames (docs/05 §1), far below
 /// the 64 MiB tungstenite default (DoS hardening, security-auditor F1.5).
 const MAX_INBOUND_FRAME_BYTES: usize = 64 * 1024;
+
+/// Outbound synthesized-audio frame ceiling. A Wyoming `audio-chunk` is normally
+/// a few KB, but the adapter tolerates up to `MAX_PAYLOAD_BYTES` (4 MiB), so the
+/// socket re-chunks rather than emitting one frame a client (or an intermediary)
+/// might refuse. Kept below [`MAX_INBOUND_FRAME_BYTES`] so both directions of the
+/// voice channel obey the same order of magnitude.
+const MAX_OUTBOUND_AUDIO_FRAME_BYTES: usize = 32 * 1024;
+
+/// Clauses that may sit queued for the synthesizer before backpressure is a real
+/// problem rather than jitter. A model answer of 64 unspoken clauses means
+/// synthesis has fallen hopelessly behind the response; the socket loop must
+/// never *block* on this channel (it also carries every other client's events),
+/// so an overflow is reported as a TTS failure instead of being waited out or
+/// silently dropped.
+const CLAUSE_QUEUE_CAPACITY: usize = 64;
+
+/// PCM chunks buffered between the synthesis task and the socket loop.
+const AUDIO_QUEUE_CAPACITY: usize = 32;
+
+/// Bound on how long a cancelled synthesis task is awaited before the socket
+/// loop stops waiting for it. Barge-in must be prompt (docs/02 §9: TTS "stops
+/// immediately on barge-in"), and the task is already detached from the audio
+/// path by then — the receiver is dropped, so it can emit nothing further.
+const SPEECH_CANCEL_GRACE: Duration = Duration::from_millis(250);
 
 /// Read side of the persisted event log (docs/05 §3), abstracted so the hub and
 /// timeline endpoint can be driven by a fake in tests. Implemented by
@@ -200,6 +228,31 @@ impl WsHub {
             stream_id: stream_id.to_owned(),
             text,
             is_final,
+        };
+        let (event_type, payload) =
+            split_tagged(serde_json::to_value(&event).expect("transient event serializes"));
+        let envelope = EventEnvelope {
+            v: CONTRACT_VERSION,
+            seq: self.high_water.load(Ordering::SeqCst),
+            channel: Channel::Voice,
+            event_type,
+            occurred_at: now_rfc3339(),
+            trace_id: None,
+            resource_version: None,
+            payload,
+        };
+        let _ = self.tx.send(Arc::new(envelope));
+    }
+
+    /// Broadcast a voice-pipeline failure (F5.2). Without this the browser sees
+    /// only the absence of a transcript, which is indistinguishable from the
+    /// user having said nothing — the dishonest failure state
+    /// [`jarvis_application::voice::TranscriptEvent::Error`] exists to prevent.
+    /// Only the stable code crosses the wire, never the adapter's message.
+    fn broadcast_voice_error(&self, stream_id: &str, code: VoiceErrorCodeDto) {
+        let event = TransientEvent::VoiceError {
+            stream_id: stream_id.to_owned(),
+            code,
         };
         let (event_type, payload) =
             split_tagged(serde_json::to_value(&event).expect("transient event serializes"));
@@ -425,6 +478,14 @@ pub struct WsState {
     /// Optional M5 STT adapter. `None` keeps voice capture visible but disabled
     /// at the daemon boundary; the browser still fails closed on no transcript.
     pub transcriber: Option<Arc<dyn SpeechTranscriber>>,
+    /// Optional M5 TTS adapter (F5.2). `None` means the round trip still works
+    /// end to end — transcript, run, streamed text — it is simply not spoken.
+    pub synthesizer: Option<Arc<dyn SpeechSynthesizer>>,
+    /// The run surface, so a **final transcript starts a run through exactly the
+    /// path typed text takes** (`RunApi::start_turn`). `None` in deployments/
+    /// tests that mount the socket without the run surface: the transcript is
+    /// still broadcast, but nothing is started.
+    pub runs: Option<crate::runs::RunApi>,
 }
 
 struct ActiveVoiceStream {
@@ -439,15 +500,49 @@ fn audio_stream(rx: mpsc::Receiver<Vec<u8>>) -> BoxStream<'static, Vec<u8>> {
     Box::pin(poll_fn(move |cx| rx.poll_recv(cx)))
 }
 
+/// Map an adapter-side failure to the stable wire code for its leg. The
+/// adapter's own message is deliberately dropped here (it is only ever logged),
+/// so no transport text reaches the browser.
+fn stt_error_code(error: &VoiceError) -> VoiceErrorCodeDto {
+    match error {
+        VoiceError::Unavailable(_) => VoiceErrorCodeDto::SttUnavailable,
+        VoiceError::Malformed(_) | VoiceError::Cancelled => VoiceErrorCodeDto::SttFailed,
+    }
+}
+
+fn tts_error_code(error: &VoiceError) -> VoiceErrorCodeDto {
+    match error {
+        VoiceError::Unavailable(_) => VoiceErrorCodeDto::TtsUnavailable,
+        VoiceError::Malformed(_) | VoiceError::Cancelled => VoiceErrorCodeDto::TtsFailed,
+    }
+}
+
+/// A settled voice turn on its way from the transcription task to the socket
+/// loop. It carries its own session because the capture stream it came from is
+/// already torn down by the time the loop sees it (release-to-talk *is* the end
+/// of the stream) — looking the session up from the live stream would lose it.
+struct VoiceTurn {
+    stream_id: String,
+    session_id: Option<SessionId>,
+    text: String,
+}
+
+/// `session_id` is the conversation this push-to-talk turn belongs to, from the
+/// `voice.stream.start` frame. Absent ⇒ the transcript is displayed but no run
+/// is started: a run needs a session, and inventing one server-side would be a
+/// second, weaker way to create conversations than the audited REST endpoint.
 fn start_voice_stream(
     transcriber: Arc<dyn SpeechTranscriber>,
     hub: Arc<WsHub>,
     stream_id: String,
+    session_id: Option<SessionId>,
     format: AudioFormat,
     cancel: CancellationToken,
+    finals: mpsc::Sender<VoiceTurn>,
 ) -> ActiveVoiceStream {
     let (tx, rx) = mpsc::channel(32);
     let task_stream_id = stream_id.clone();
+    let task_session_id = session_id.clone();
     let task_cancel = cancel.clone();
     let task = tokio::spawn(async move {
         let result = transcriber
@@ -457,6 +552,7 @@ fn start_voice_stream(
             Ok(transcript) => transcript,
             Err(error) => {
                 tracing::warn!(%error, stream_id = %task_stream_id, "voice transcription could not start");
+                hub.broadcast_voice_error(&task_stream_id, stt_error_code(&error));
                 return;
             }
         };
@@ -466,16 +562,28 @@ fn start_voice_stream(
                     hub.broadcast_voice_transcript(&task_stream_id, text, false)
                 }
                 TranscriptEvent::Final(text) => {
-                    hub.broadcast_voice_transcript(&task_stream_id, text, true)
+                    hub.broadcast_voice_transcript(&task_stream_id, text.clone(), true);
+                    // Hand the settled transcript to the socket loop, which owns
+                    // the authenticated device identity and therefore the only
+                    // path that may start a run. One final per turn: a service
+                    // emitting more would otherwise be able to start unbounded
+                    // runs from a single button press.
+                    let _ = finals
+                        .send(VoiceTurn {
+                            stream_id: task_stream_id.clone(),
+                            session_id: task_session_id.clone(),
+                            text,
+                        })
+                        .await;
+                    break;
                 }
-                // A mid-stream STT failure. Logged rather than dropped, but the
-                // browser currently sees only "no transcript" — indistinguishable
-                // from silence. Surfacing it to the user needs a `voice.error`
-                // transient event in jarvis-contracts (not added here: the voice
-                // contract surface is still in flight). Until then this is a
-                // known, deliberate gap, not an oversight.
+                // A mid-stream STT failure. A stream that simply ends means the
+                // service finished normally, so this must surface as its own
+                // event — otherwise a dead STT service is indistinguishable from
+                // silence to the user (F5.1's `TranscriptEvent::Error` doc).
                 TranscriptEvent::Error(error) => {
                     tracing::warn!(%error, stream_id = %task_stream_id, "voice transcription failed mid-stream");
+                    hub.broadcast_voice_error(&task_stream_id, stt_error_code(&error));
                     break;
                 }
             }
@@ -503,6 +611,261 @@ async fn stop_voice_stream(active: &mut Option<ActiveVoiceStream>) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Spoken response leg (F5.2, docs/02 §9)
+// ---------------------------------------------------------------------------
+
+/// One item on the synthesis task → socket-loop path. The task never touches the
+/// `WebSocket` (the socket loop owns it exclusively); it reports what it
+/// produced and the loop decides what reaches the client.
+enum SpeechChunk {
+    /// The first clause synthesized; carries the negotiated PCM format.
+    Started(AudioFormat),
+    Audio(Vec<u8>),
+    Ended(VoiceSpeakEndDto, Option<VoiceErrorCodeDto>),
+}
+
+/// Spoken output for one run's response, in flight on this socket.
+struct ActiveSpeech {
+    utterance_id: String,
+    run_id: RunId,
+    /// Cancelled on barge-in / socket close / shutdown. A child of the socket's
+    /// token, so every ancestor cancellation reaches it (invariant #4) — this is
+    /// the existing `CancellationToken` plumbing, not a second mechanism.
+    cancel: CancellationToken,
+    task: tokio::task::JoinHandle<()>,
+    /// `None` once the response finished and the queue was closed.
+    clauses: Option<mpsc::Sender<String>>,
+    audio: mpsc::Receiver<SpeechChunk>,
+    segmenter: ClauseSegmenter,
+    announced: bool,
+}
+
+/// Drive synthesis for one utterance: clauses in, PCM out, strictly in order.
+///
+/// Sequential by construction — clause N+1 is not synthesized until clause N's
+/// audio has been handed over — because spoken output that arrives out of order
+/// is worse than spoken output that arrives late.
+async fn speak_task(
+    synthesizer: Arc<dyn SpeechSynthesizer>,
+    mut clauses: mpsc::Receiver<String>,
+    out: mpsc::Sender<SpeechChunk>,
+    cancel: CancellationToken,
+) {
+    let mut announced = false;
+    let mut ended = VoiceSpeakEndDto::Completed;
+    let mut failure: Option<VoiceErrorCodeDto> = None;
+
+    'utterance: loop {
+        let clause = tokio::select! {
+            biased;
+            () = cancel.cancelled() => None,
+            clause = clauses.recv() => clause,
+        };
+        let Some(clause) = clause else { break };
+
+        let (format, mut pcm) = match synthesizer.synthesize(&clause, cancel.clone()).await {
+            Ok(started) => started,
+            Err(VoiceError::Cancelled) => {
+                ended = VoiceSpeakEndDto::Cancelled;
+                break;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "speech synthesis could not start");
+                ended = VoiceSpeakEndDto::Failed;
+                failure = Some(tts_error_code(&error));
+                break;
+            }
+        };
+        if !announced {
+            if out.send(SpeechChunk::Started(format)).await.is_err() {
+                return; // socket loop gone; nothing left to report to
+            }
+            announced = true;
+        }
+
+        loop {
+            let next = tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    ended = VoiceSpeakEndDto::Cancelled;
+                    break 'utterance;
+                }
+                next = pcm.next() => next,
+            };
+            match next {
+                Some(Ok(bytes)) => {
+                    if out.send(SpeechChunk::Audio(bytes)).await.is_err() {
+                        return;
+                    }
+                }
+                // A truncated utterance is reported, never passed off as a
+                // complete one (the `Result` chunk exists for exactly this).
+                Some(Err(error)) => {
+                    tracing::warn!(%error, "speech synthesis failed mid-utterance");
+                    ended = VoiceSpeakEndDto::Failed;
+                    failure = Some(tts_error_code(&error));
+                    break 'utterance;
+                }
+                None => break, // this clause finished; go on to the next
+            }
+        }
+    }
+
+    if cancel.is_cancelled() {
+        ended = VoiceSpeakEndDto::Cancelled;
+        failure = None;
+    }
+    let _ = out.send(SpeechChunk::Ended(ended, failure)).await;
+}
+
+fn begin_speech(
+    synthesizer: Arc<dyn SpeechSynthesizer>,
+    run_id: RunId,
+    cancel: CancellationToken,
+) -> ActiveSpeech {
+    let (clause_tx, clause_rx) = mpsc::channel(CLAUSE_QUEUE_CAPACITY);
+    let (audio_tx, audio_rx) = mpsc::channel(AUDIO_QUEUE_CAPACITY);
+    let task = tokio::spawn(speak_task(synthesizer, clause_rx, audio_tx, cancel.clone()));
+    ActiveSpeech {
+        // Opaque, per-utterance: the client uses it only to discard audio that
+        // belongs to an utterance it has already been told ended.
+        utterance_id: ulid::Ulid::new().to_string(),
+        run_id,
+        cancel,
+        task,
+        clauses: Some(clause_tx),
+        audio: audio_rx,
+        segmenter: ClauseSegmenter::new(),
+        announced: false,
+    }
+}
+
+/// Await the next chunk of the in-flight utterance, or park forever when nothing
+/// is being spoken (so the socket's `select!` has a branch it can always poll).
+async fn next_speech_chunk(speech: &mut Option<ActiveSpeech>) -> Option<SpeechChunk> {
+    match speech {
+        Some(active) => active.audio.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Stop the in-flight utterance **now** (barge-in, socket close, shutdown).
+///
+/// Taking the [`ActiveSpeech`] out of the socket loop drops its receiver, so the
+/// loop structurally cannot emit another audio frame for that utterance no
+/// matter what the synthesis task does next; cancelling the token then aborts
+/// the synthesis stream at the adapter. The task is awaited only briefly — it is
+/// already detached from the audio path — so barge-in is not gated on a slow
+/// TTS service winding down.
+async fn cancel_speech(
+    socket: &mut WebSocket,
+    hub: &WsHub,
+    speech: &mut Option<ActiveSpeech>,
+) -> Result<(), ()> {
+    let Some(mut active) = speech.take() else {
+        return Ok(());
+    };
+    active.cancel.cancel();
+    drop(active.clauses.take());
+    if tokio::time::timeout(SPEECH_CANCEL_GRACE, &mut active.task)
+        .await
+        .is_err()
+    {
+        // Cancellation is signalled and the audio path is severed; leaving the
+        // task to unwind on its own is bounded by the adapter's own cancellation
+        // handling, and the socket must not stall waiting for it.
+        active.task.abort();
+    }
+    if active.announced {
+        send_speak_control(
+            socket,
+            hub,
+            &VoiceControlDto::SpeakStop {
+                utterance_id: active.utterance_id,
+                reason: VoiceSpeakEndDto::Cancelled,
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Feed one broadcast envelope into the in-flight utterance: text deltas for the
+/// spoken run become clauses; its terminal event closes the clause queue.
+///
+/// Reading the run's text off the socket's own subscription is deliberate — the
+/// response is already on this stream, so no second sink, no second copy of the
+/// answer, and no coupling from the run engine to the voice channel.
+fn feed_speech(speech: &mut Option<ActiveSpeech>, envelope: &EventEnvelope) -> Result<(), ()> {
+    let Some(active) = speech.as_mut() else {
+        return Ok(());
+    };
+    if envelope.payload["runId"].as_str() != Some(active.run_id.as_str()) {
+        return Ok(());
+    }
+    match envelope.event_type.as_str() {
+        "text.delta" => {
+            let Some(text) = envelope.payload["text"].as_str() else {
+                return Ok(());
+            };
+            let clauses = active.segmenter.push(text);
+            let Some(sender) = active.clauses.as_ref() else {
+                return Ok(());
+            };
+            for clause in clauses {
+                // Never block the socket loop on the synthesizer: this task also
+                // carries every other client event. A full queue means synthesis
+                // has fallen hopelessly behind, which is a failure to report,
+                // not a wait to absorb or a clause to silently drop.
+                if sender.try_send(clause).is_err() {
+                    return Err(());
+                }
+            }
+        }
+        // Terminal for the spoken response, either because the run finished or
+        // because it parked in degraded mode: in both cases no further text is
+        // coming, so what has been buffered is spoken and the queue closes
+        // rather than the utterance hanging open until the socket dies.
+        "run.completed" | "run.queued" | "degraded.queued" => {
+            if let Some(sender) = active.clauses.as_ref()
+                && let Some(tail) = active.segmenter.flush()
+                && sender.try_send(tail).is_err()
+            {
+                return Err(());
+            }
+            // Closing the queue is what tells the synthesis task the response is
+            // complete; it drains what is queued, then reports `Completed`.
+            drop(active.clauses.take());
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Send a `voice.speak.*` control frame. Server→client text frames are always
+/// envelopes (docs/05 §3), so the `VoiceControlDto` tag rides the envelope
+/// `type` exactly like a transient event's.
+async fn send_speak_control(
+    socket: &mut WebSocket,
+    hub: &WsHub,
+    control: &VoiceControlDto,
+) -> Result<(), ()> {
+    let (event_type, payload) =
+        split_tagged(serde_json::to_value(control).expect("voice control serializes"));
+    let envelope = EventEnvelope {
+        v: CONTRACT_VERSION,
+        seq: hub.high_water(),
+        channel: Channel::Voice,
+        event_type,
+        occurred_at: now_rfc3339(),
+        trace_id: None,
+        resource_version: None,
+        payload,
+    };
+    send_envelope(socket, &envelope).await
+}
+
 /// `GET /ws/v1` — authenticated WebSocket upgrade (the bearer middleware has
 /// already validated the device when this runs).
 ///
@@ -519,6 +882,14 @@ async fn stop_voice_stream(active: &mut Option<ActiveVoiceStream>) {
 pub async fn ws_upgrade(
     State(state): State<WsState>,
     Query(params): Query<WsParams>,
+    // The device this socket authenticated as (inserted by `require_device`,
+    // which every `/ws/v1` upgrade passes through). Carried into the socket task
+    // because a voice turn started here must acquire **exactly** the
+    // authorization context a typed message from the same device would — a run
+    // spawned without an attributable device is deliberately given no policy
+    // context at all (CF-15 fail-closed, `runs::RunEngine::spawn`), and a voice
+    // transcript must not be the one input that quietly lands in that state.
+    Extension(device): Extension<crate::auth::DeviceContext>,
     ws: WebSocketUpgrade,
 ) -> Response {
     // Absent `since` = live-only from now; `since=0` = replay everything (outbox
@@ -543,15 +914,24 @@ pub async fn ws_upgrade(
             crate::auth::WS_DEVICE_TOKEN_PROTOCOL,
         ));
     }
-    ws.on_upgrade(move |socket| handle_socket(socket, state, since))
+    ws.on_upgrade(move |socket| handle_socket(socket, state, since, device))
 }
 
-async fn handle_socket(mut socket: WebSocket, state: WsState, since: Option<i64>) {
+async fn handle_socket(
+    mut socket: WebSocket,
+    state: WsState,
+    since: Option<i64>,
+    device: crate::auth::DeviceContext,
+) {
     // Subscribe BEFORE replaying so no live event slips through the gap. Any
     // overlap between replay and live is deduped by the client on `seq` (the
     // outbox id is unique and monotonic).
     let mut rx = state.hub.subscribe();
     let mut voice_stream: Option<ActiveVoiceStream> = None;
+    let mut speech: Option<ActiveSpeech> = None;
+    // Settled transcripts travel task → loop, because only the loop holds the
+    // authenticated device identity a run must be attributed to.
+    let (finals_tx, mut finals_rx) = mpsc::channel::<VoiceTurn>(4);
 
     if let Some(since) = since
         && replay_since(&mut socket, &state, since).await.is_err()
@@ -559,69 +939,106 @@ async fn handle_socket(mut socket: WebSocket, state: WsState, since: Option<i64>
         return; // client gone (or replay failed → it can REST-resync)
     }
 
+    macro_rules! shut_down {
+        () => {{
+            stop_voice_stream(&mut voice_stream).await;
+            let _ = cancel_speech(&mut socket, &state.hub, &mut speech).await;
+            return;
+        }};
+    }
+
     loop {
         tokio::select! {
             biased;
             _ = state.shutdown.cancelled() => {
                 stop_voice_stream(&mut voice_stream).await;
+                let _ = cancel_speech(&mut socket, &state.hub, &mut speech).await;
                 let _ = socket.send(Message::Close(None)).await;
                 return;
             }
             received = rx.recv() => match received {
                 Ok(envelope) => {
                     if send_envelope(&mut socket, &envelope).await.is_err() {
-                        stop_voice_stream(&mut voice_stream).await;
-                        return;
+                        shut_down!();
+                    }
+                    // The spoken response is assembled from the run's own text
+                    // deltas as they pass through this socket (F5.2).
+                    if feed_speech(&mut speech, &envelope).is_err() {
+                        tracing::warn!("speech clause queue overflowed; cancelling the utterance");
+                        state.hub.broadcast_voice_error(
+                            speech.as_ref().map(|s| s.utterance_id.as_str()).unwrap_or_default(),
+                            VoiceErrorCodeDto::TtsFailed,
+                        );
+                        if cancel_speech(&mut socket, &state.hub, &mut speech).await.is_err() {
+                            shut_down!();
+                        }
                     }
                 }
                 // Too far behind: close so the client reconnects and resyncs
                 // (persisted events are recovered via `?since=` / REST).
                 Err(broadcast::error::RecvError::Lagged(_)) => {
                     stop_voice_stream(&mut voice_stream).await;
+                    let _ = cancel_speech(&mut socket, &state.hub, &mut speech).await;
                     let _ = socket.send(Message::Close(None)).await;
                     return;
                 }
-                Err(broadcast::error::RecvError::Closed) => {
-                    stop_voice_stream(&mut voice_stream).await;
-                    return;
-                }
+                Err(broadcast::error::RecvError::Closed) => shut_down!(),
             },
             // Inbound voice frames are the one exception to REST-only commands;
             // run control remains on the audited REST surface.
+            //
+            // Polled BEFORE the outbound speech arms, deliberately: `biased`
+            // means an always-ready arm starves the ones after it, and a
+            // faster-than-realtime synthesizer keeps the audio channel
+            // permanently ready. With the order reversed, the very frame that
+            // triggers barge-in could never be read while audio was flowing —
+            // the one case this feature exists to handle.
             inbound = socket.recv() => match inbound {
-                Some(Ok(Message::Close(_))) | None => {
-                    stop_voice_stream(&mut voice_stream).await;
-                    return;
-                }
+                Some(Ok(Message::Close(_))) | None => shut_down!(),
                 Some(Ok(Message::Text(text))) => {
-                    let Ok(control) = serde_json::from_str::<jarvis_contracts::voice::VoiceControlDto>(&text) else {
+                    let Ok(control) = serde_json::from_str::<VoiceControlDto>(&text) else {
                         continue;
                     };
                     match control {
-                        jarvis_contracts::voice::VoiceControlDto::StreamStart {
+                        VoiceControlDto::StreamStart {
                             stream_id,
+                            session_id,
                             sample_rate_hz,
                             sample_width_bytes,
                             channels,
-                            ..
                         } => {
+                            // BARGE-IN (docs/02 §9: TTS "stops immediately on
+                            // barge-in"). The user speaking again supersedes the
+                            // answer being spoken, so synthesis is cancelled
+                            // here — before any audio of the new turn is even
+                            // read — through the existing cancellation token
+                            // (invariant #4), not a new mechanism.
+                            if cancel_speech(&mut socket, &state.hub, &mut speech).await.is_err() {
+                                shut_down!();
+                            }
                             stop_voice_stream(&mut voice_stream).await;
+                            // An unparseable session id confers nothing: the
+                            // turn is transcribed and displayed, but no run is
+                            // started against a session that does not exist.
+                            let session_id = session_id.and_then(|id| id.parse::<SessionId>().ok());
                             if let Some(transcriber) = &state.transcriber {
                                 let cancel = state.shutdown.child_token();
                                 voice_stream = Some(start_voice_stream(
                                     Arc::clone(transcriber),
                                     Arc::clone(&state.hub),
                                     stream_id,
+                                    session_id,
                                     AudioFormat {
                                         sample_rate_hz,
                                         sample_width_bytes,
                                         channels,
                                     },
                                     cancel,
+                                    finals_tx.clone(),
                                 ));
                             }
                         }
-                        jarvis_contracts::voice::VoiceControlDto::StreamStop { stream_id } => {
+                        VoiceControlDto::StreamStop { stream_id } => {
                             if voice_stream
                                 .as_ref()
                                 .is_some_and(|active| active.stream_id == stream_id)
@@ -629,6 +1046,10 @@ async fn handle_socket(mut socket: WebSocket, state: WsState, since: Option<i64>
                                 stop_voice_stream(&mut voice_stream).await;
                             }
                         }
+                        // Speak frames are daemon→client only; a client that
+                        // sends one is ignored rather than obeyed — nothing on
+                        // the inbound path may cause the daemon to speak.
+                        VoiceControlDto::SpeakStart { .. } | VoiceControlDto::SpeakStop { .. } => {}
                     }
                 }
                 Some(Ok(Message::Binary(bytes))) => {
@@ -637,11 +1058,116 @@ async fn handle_socket(mut socket: WebSocket, state: WsState, since: Option<i64>
                     }
                 }
                 Some(Ok(_)) => {}
-                Some(Err(_)) => {
-                    stop_voice_stream(&mut voice_stream).await;
-                    return;
-                }
+                Some(Err(_)) => shut_down!(),
             },
+            // A settled transcript. It becomes a run through `RunApi::start_turn`
+            // — the same use case `POST /sessions/{id}/messages` calls — so it
+            // gets M4's deterministic-grammar-first routing, the policy context
+            // of *this* authenticated device, and no shortcut of any kind
+            // (invariant #1). Awaited inline rather than spawned so the run is
+            // durably created before the loop resumes: the deltas it will emit
+            // are already buffered on `rx`, so binding speech to it here cannot
+            // miss the start of the answer.
+            Some(turn) = finals_rx.recv() => {
+                start_voice_turn(&state, &device, &mut speech, turn).await;
+            }
+            chunk = next_speech_chunk(&mut speech) => {
+                if forward_speech_chunk(&mut socket, &state, &mut speech, chunk).await.is_err() {
+                    shut_down!();
+                }
+            }
+        }
+    }
+}
+
+/// Turn a settled transcript into a run, then bind spoken output to it.
+async fn start_voice_turn(
+    state: &WsState,
+    device: &crate::auth::DeviceContext,
+    speech: &mut Option<ActiveSpeech>,
+    turn: VoiceTurn,
+) {
+    let stream_id = turn.stream_id;
+    let Some(runs) = state.runs.as_ref() else {
+        return; // no run surface mounted; transcript display only
+    };
+    let Some(session_id) = turn.session_id else {
+        tracing::debug!(%stream_id, "voice transcript has no session; not starting a run");
+        return;
+    };
+
+    let ack = match runs.start_turn(&session_id, device, turn.text).await {
+        Ok(ack) => ack,
+        Err(error) => {
+            tracing::warn!(?error, %stream_id, "voice transcript could not start a run");
+            return;
+        }
+    };
+
+    if let Some(synthesizer) = state.synthesizer.as_ref() {
+        // The utterance's token is a child of the socket's shutdown token, so
+        // shutdown, socket loss and barge-in all reach it (invariant #4).
+        *speech = Some(begin_speech(
+            Arc::clone(synthesizer),
+            ack.run_id,
+            state.shutdown.child_token(),
+        ));
+    }
+}
+
+/// Relay one item from the synthesis task to the client.
+async fn forward_speech_chunk(
+    socket: &mut WebSocket,
+    state: &WsState,
+    speech: &mut Option<ActiveSpeech>,
+    chunk: Option<SpeechChunk>,
+) -> Result<(), ()> {
+    let Some(active) = speech.as_mut() else {
+        return Ok(());
+    };
+    match chunk {
+        Some(SpeechChunk::Started(format)) => {
+            active.announced = true;
+            let control = VoiceControlDto::SpeakStart {
+                utterance_id: active.utterance_id.clone(),
+                run_id: Some(active.run_id.as_str().to_owned()),
+                sample_rate_hz: format.sample_rate_hz,
+                sample_width_bytes: format.sample_width_bytes,
+                channels: format.channels,
+            };
+            send_speak_control(socket, &state.hub, &control).await
+        }
+        Some(SpeechChunk::Audio(bytes)) => {
+            for frame in bytes.chunks(MAX_OUTBOUND_AUDIO_FRAME_BYTES) {
+                socket
+                    .send(Message::Binary(frame.to_vec().into()))
+                    .await
+                    .map_err(|_| ())?;
+            }
+            Ok(())
+        }
+        // Terminal for this utterance, either way: report it, then forget it.
+        Some(SpeechChunk::Ended(reason, failure)) => {
+            let utterance_id = active.utterance_id.clone();
+            let announced = active.announced;
+            *speech = None;
+            if let Some(code) = failure {
+                state.hub.broadcast_voice_error(&utterance_id, code);
+            }
+            if announced {
+                let control = VoiceControlDto::SpeakStop {
+                    utterance_id,
+                    reason,
+                };
+                return send_speak_control(socket, &state.hub, &control).await;
+            }
+            Ok(())
+        }
+        // The task ended without a terminal chunk (it only does that when the
+        // socket loop is gone); nothing left to speak.
+        None => {
+            *speech = None;
+            Ok(())
         }
     }
 }
@@ -862,16 +1388,19 @@ mod tests {
     async fn voice_stream_routes_pcm_to_the_transcriber_and_broadcasts_hypotheses() {
         let hub = WsHub::new();
         let mut rx = hub.subscribe();
+        let (finals_tx, mut finals_rx) = mpsc::channel(4);
         let mut active = Some(start_voice_stream(
             Arc::new(FakeTranscriber),
             Arc::clone(&hub),
             "stream-1".to_owned(),
+            None,
             AudioFormat {
                 sample_rate_hz: 16_000,
                 sample_width_bytes: 2,
                 channels: 1,
             },
             CancellationToken::new(),
+            finals_tx,
         ));
         active
             .as_ref()
@@ -898,6 +1427,65 @@ mod tests {
         );
         assert_eq!(final_event.payload["final"], json!(true));
         assert_eq!(final_event.payload["text"], json!("hello Jarvis"));
+        // The settled transcript is also handed to the socket loop, which is
+        // the only place holding the device identity a run may be attributed to.
+        assert_eq!(
+            finals_rx.recv().await.map(|turn| turn.text).as_deref(),
+            Some("hello Jarvis")
+        );
+    }
+
+    struct BrokenTranscriber;
+
+    #[async_trait]
+    impl SpeechTranscriber for BrokenTranscriber {
+        fn id(&self) -> &str {
+            "broken-stt"
+        }
+
+        async fn transcribe(
+            &self,
+            _audio: BoxStream<'static, Vec<u8>>,
+            _format: AudioFormat,
+            _cancel: CancellationToken,
+        ) -> Result<BoxStream<'static, TranscriptEvent>, VoiceError> {
+            Ok(Box::pin(futures_util::stream::iter([
+                TranscriptEvent::Error(VoiceError::Unavailable("connect failed".to_owned())),
+            ])))
+        }
+    }
+
+    /// A dead STT service must be distinguishable from silence: without a
+    /// `voice.error` event the browser sees only the absence of a transcript.
+    #[tokio::test]
+    async fn a_broken_stt_service_surfaces_voice_error_rather_than_silence() {
+        let hub = WsHub::new();
+        let mut rx = hub.subscribe();
+        let (finals_tx, mut finals_rx) = mpsc::channel(4);
+        let mut active = Some(start_voice_stream(
+            Arc::new(BrokenTranscriber),
+            Arc::clone(&hub),
+            "stream-err".to_owned(),
+            None,
+            AudioFormat {
+                sample_rate_hz: 16_000,
+                sample_width_bytes: 2,
+                channels: 1,
+            },
+            CancellationToken::new(),
+            finals_tx,
+        ));
+        stop_voice_stream(&mut active).await;
+
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.channel, Channel::Voice);
+        assert_eq!(event.event_type, "voice.error");
+        assert_eq!(
+            event.payload,
+            json!({ "streamId": "stream-err", "code": "voice.stt_unavailable" })
+        );
+        // No transcript is invented from a failed recognition, so no run starts.
+        assert!(finals_rx.recv().await.is_none());
     }
 
     #[test]

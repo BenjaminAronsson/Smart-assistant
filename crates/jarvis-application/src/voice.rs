@@ -117,3 +117,141 @@ pub enum VoiceError {
     #[error("malformed voice service response")]
     Malformed(String),
 }
+
+/// Longest run of response text this will hold back waiting for a clause
+/// terminator. A model that answers in one long comma-free sentence must not
+/// delay the *first* audio past the NFR-04 "first audio < 1.2 s" budget, and the
+/// buffer must not grow with the response length either — so past this point the
+/// segmenter breaks at the last word boundary instead of waiting.
+const MAX_PENDING_CLAUSE_BYTES: usize = 160;
+
+/// Splits streamed response text into speakable clauses (docs/02 §9: TTS "starts
+/// from complete clauses"). Pure text logic with no I/O, so it lives beside the
+/// ports rather than in the daemon, and its boundary rules are unit-testable
+/// without a synthesizer.
+///
+/// A clause ends at `.`/`!`/`?`/`;`/`:`/newline **that is already followed by
+/// whitespace in the buffer**. Requiring the following whitespace to have
+/// arrived is what keeps `34.5`, `16:9` and `v1.2` intact: a terminator at the
+/// very end of the buffer so far is not yet known to be a terminator, so the
+/// segmenter waits for the next delta instead of guessing.
+#[derive(Debug, Default)]
+pub struct ClauseSegmenter {
+    pending: String,
+}
+
+impl ClauseSegmenter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Append one streamed delta and return every clause it completed, in order.
+    pub fn push(&mut self, delta: &str) -> Vec<String> {
+        self.pending.push_str(delta);
+        let mut clauses = Vec::new();
+        while let Some(split) = self.next_split() {
+            let rest = self.pending.split_off(split);
+            let clause = std::mem::replace(&mut self.pending, rest);
+            let clause = clause.trim();
+            if !clause.is_empty() {
+                clauses.push(clause.to_owned());
+            }
+        }
+        clauses
+    }
+
+    /// The tail after the last complete clause — the final partial sentence,
+    /// spoken once the response is known to be finished.
+    pub fn flush(&mut self) -> Option<String> {
+        let tail = std::mem::take(&mut self.pending);
+        let tail = tail.trim();
+        (!tail.is_empty()).then(|| tail.to_owned())
+    }
+
+    /// Byte index just past the end of the next complete clause, if any.
+    /// Terminators are ASCII, so `index + 1` is always a char boundary.
+    fn next_split(&self) -> Option<usize> {
+        let bytes = self.pending.as_bytes();
+        for (index, byte) in bytes.iter().enumerate() {
+            if !matches!(byte, b'.' | b'!' | b'?' | b';' | b':' | b'\n') || index + 1 == bytes.len()
+            {
+                // A terminator at the very end of what has arrived so far is
+                // not yet known to be one ("34." may become "34.5"), so it is
+                // left for the next delta to decide.
+                continue;
+            }
+            if bytes[index + 1].is_ascii_whitespace() {
+                return Some(index + 1);
+            }
+        }
+        // No usable terminator, but the buffer has grown past the hold-back
+        // bound: break at the last word boundary so speech starts (and memory
+        // stays bounded) rather than waiting for a sentence that may never end.
+        if self.pending.len() > MAX_PENDING_CLAUSE_BYTES {
+            return self
+                .pending
+                .char_indices()
+                .filter(|(_, c)| c.is_whitespace())
+                .map(|(at, c)| at + c.len_utf8())
+                .next_back();
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ClauseSegmenter;
+
+    #[test]
+    fn a_sentence_is_emitted_once_its_terminator_is_followed_by_space() {
+        let mut segmenter = ClauseSegmenter::new();
+        assert!(segmenter.push("Hello there").is_empty());
+        // The '.' alone is not yet a boundary — the next character decides.
+        assert!(segmenter.push(".").is_empty());
+        assert_eq!(segmenter.push(" And more"), vec!["Hello there."]);
+        assert_eq!(segmenter.flush().as_deref(), Some("And more"));
+    }
+
+    #[test]
+    fn a_decimal_point_is_not_a_clause_boundary() {
+        let mut segmenter = ClauseSegmenter::new();
+        // The M4 deterministic math answer: splitting at "34." would speak a
+        // wrong number, which is worse than speaking late.
+        assert!(segmenter.push("15% of 230 = 34.5").is_empty());
+        assert_eq!(segmenter.flush().as_deref(), Some("15% of 230 = 34.5"));
+    }
+
+    #[test]
+    fn several_clauses_in_one_delta_come_out_in_order() {
+        let mut segmenter = ClauseSegmenter::new();
+        assert_eq!(
+            segmenter.push("One. Two! Three? "),
+            vec!["One.", "Two!", "Three?"]
+        );
+        assert_eq!(segmenter.flush(), None);
+    }
+
+    #[test]
+    fn an_unterminated_run_breaks_at_a_word_boundary_rather_than_growing() {
+        let mut segmenter = ClauseSegmenter::new();
+        let long = "word ".repeat(60); // 300 chars, no terminator anywhere
+        let clauses = segmenter.push(&long);
+        assert!(
+            !clauses.is_empty(),
+            "speech must start before the sentence ends"
+        );
+        let spoken: String = clauses.join(" ");
+        assert!(spoken.split_whitespace().all(|w| w == "word"));
+        // Nothing was lost or duplicated across the break.
+        let tail = segmenter.flush().unwrap_or_default();
+        let total = spoken.split_whitespace().count() + tail.split_whitespace().count();
+        assert_eq!(total, 60);
+    }
+
+    #[test]
+    fn flush_on_an_empty_segmenter_speaks_nothing() {
+        assert_eq!(ClauseSegmenter::new().flush(), None);
+        assert_eq!(ClauseSegmenter::new().push("   "), Vec::<String>::new());
+    }
+}

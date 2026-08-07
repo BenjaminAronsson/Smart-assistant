@@ -448,6 +448,100 @@ impl RunApi {
     }
 }
 
+/// Why a turn could not be started. Mapped to an RFC 9457 problem body at the
+/// REST edge and to a `voice.error`/log at the voice edge — the shared use case
+/// itself stays transport-neutral.
+#[derive(Debug)]
+pub enum StartTurnError {
+    UnknownSession,
+    EmptyText,
+    Storage(RepositoryError),
+}
+
+impl RunApi {
+    /// Start one conversational turn on behalf of an **already authenticated**
+    /// device: persist the user's utterance, route the deep-dive turn, create
+    /// the run durably, and spawn it carrying that device's authorization
+    /// context.
+    ///
+    /// This is the single implementation of "text becomes a run". Both entry
+    /// points call it — [`submit_message`] (typed input, `POST
+    /// /sessions/{id}/messages`) and the voice channel's final transcript
+    /// (`crate::ws`) — precisely so a voice transcript cannot acquire a
+    /// different, weaker path than typed text (invariant #1). In particular the
+    /// run's [`PolicyContext`] is derived here, from the caller-supplied
+    /// [`DeviceContext`] and nothing else: never from the utterance, and never
+    /// synthesised for an unattributable caller.
+    pub async fn start_turn(
+        &self,
+        session_id: &SessionId,
+        device: &DeviceContext,
+        text: String,
+    ) -> Result<RunAck, StartTurnError> {
+        // A clean "unknown session" rather than surfacing a storage FK.
+        if self
+            .sessions
+            .get(session_id)
+            .await
+            .map_err(StartTurnError::Storage)?
+            .is_none()
+        {
+            return Err(StartTurnError::UnknownSession);
+        }
+
+        if text.trim().is_empty() {
+            return Err(StartTurnError::EmptyText);
+        }
+
+        let now = truncate_to_micros(SystemTime::now());
+        let user_message = Message::new(
+            fresh_id::<MessageId>(),
+            session_id.clone(),
+            MessageRole::User,
+            text.clone(),
+            now,
+        );
+        self.messages
+            .append(&user_message)
+            .await
+            .map_err(StartTurnError::Storage)?;
+
+        // Route the deep-dive turn (F3b.6, FR-27/ADR-017) before the run starts,
+        // so the canvas instruction reaches the HUD with the turn it belongs to
+        // rather than after the answer has begun streaming into it. Pure
+        // classification plus a broadcast: it cannot fail and cannot delay the
+        // run.
+        if let Some(deepdive) = &self.deepdive {
+            deepdive.observe_turn(session_id, &text).await;
+        }
+
+        let run = Run::new(
+            fresh_id::<RunId>(),
+            session_id.clone(),
+            RunBudget::default_interactive(),
+        );
+        self.runs
+            .create(&run)
+            .await
+            .map_err(StartTurnError::Storage)?;
+
+        let ack = RunAck {
+            run_id: run.id.clone(),
+            session_id: session_id.clone(),
+            state: run.state.into(),
+        };
+        // Spawn AFTER the durable create so the run is recoverable even if the
+        // process dies before the first checkpoint. The run carries the deciding
+        // device's authorization context (actor + granted scopes) — the only
+        // place a run acquires tool authority (invariant #1); never derived from
+        // the message.
+        self.engine
+            .spawn(run, RunInput { text }, Some(policy_context(device)));
+
+        Ok(ack)
+    }
+}
+
 /// `POST /api/v1/sessions/{id}/messages` — submit input and start a run.
 pub async fn submit_message(
     State(api): State<RunApi>,
@@ -459,66 +553,19 @@ pub async fn submit_message(
         .parse()
         .map_err(|_| not_found("no such session"))?;
 
-    // A clean 404 for an unknown session rather than surfacing a storage FK.
-    if api
-        .sessions
-        .get(&session_id)
+    let ack = api
+        .start_turn(&session_id, &device, first_text(&request))
         .await
-        .map_err(repository_problem)?
-        .is_none()
-    {
-        return Err(not_found("no such session"));
-    }
-
-    let text = first_text(&request);
-    if text.trim().is_empty() {
-        return Err(problem(
-            StatusCode::BAD_REQUEST,
-            ErrorCode::ValidationFailed,
-            "content must include a non-empty text block",
-            None,
-        ));
-    }
-
-    let now = truncate_to_micros(SystemTime::now());
-    let user_message = Message::new(
-        fresh_id::<MessageId>(),
-        session_id.clone(),
-        MessageRole::User,
-        text.clone(),
-        now,
-    );
-    api.messages
-        .append(&user_message)
-        .await
-        .map_err(repository_problem)?;
-
-    // Route the deep-dive turn (F3b.6, FR-27/ADR-017) before the run starts, so
-    // the canvas instruction reaches the HUD with the turn it belongs to rather
-    // than after the answer has begun streaming into it. Pure classification
-    // plus a broadcast: it cannot fail and cannot delay the run.
-    if let Some(deepdive) = &api.deepdive {
-        deepdive.observe_turn(&session_id, &text).await;
-    }
-
-    let run = Run::new(
-        fresh_id::<RunId>(),
-        session_id.clone(),
-        RunBudget::default_interactive(),
-    );
-    api.runs.create(&run).await.map_err(repository_problem)?;
-
-    let ack = RunAck {
-        run_id: run.id.clone(),
-        session_id,
-        state: run.state.into(),
-    };
-    // Spawn AFTER the durable create so the run is recoverable even if the
-    // process dies before the first checkpoint. The run carries the deciding
-    // device's authorization context (actor + granted scopes) — the only place a
-    // run acquires tool authority (invariant #1); never derived from the message.
-    api.engine
-        .spawn(run, RunInput { text }, Some(policy_context(&device)));
+        .map_err(|error| match error {
+            StartTurnError::UnknownSession => not_found("no such session"),
+            StartTurnError::EmptyText => problem(
+                StatusCode::BAD_REQUEST,
+                ErrorCode::ValidationFailed,
+                "content must include a non-empty text block",
+                None,
+            ),
+            StartTurnError::Storage(error) => repository_problem(error),
+        })?;
 
     Ok((StatusCode::ACCEPTED, Json(ack)))
 }
