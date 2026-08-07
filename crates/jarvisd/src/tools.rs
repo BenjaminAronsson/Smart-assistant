@@ -17,8 +17,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
+use jarvis_adapters::home_assistant::{
+    EntityAllowlist, HomeAssistantClient, HomeBroadTool, HomeGetStateTool, HomeSetLightTool,
+};
 use jarvis_adapters::mcp_host::{HostPolicyTable, McpHost};
 use jarvis_adapters::smtp::{SmtpConfig, SmtpTool};
+use jarvis_adapters::spotify::{SpotifyClient, descriptors as spotify_descriptors};
 use jarvis_adapters::tools::example_light::ExampleLightTool;
 use jarvis_adapters::tools::example_message::ExampleMessageTool;
 use jarvis_adapters::tools::fs_read::FsReadTool;
@@ -177,6 +181,58 @@ pub fn register_media_tools(
                 cast.audit,
             )))
             .map_err(|e| anyhow::anyhow!("registering media.open_url: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Register the curated Home Assistant tools (F5.3, FR-14, ADR-006, docs/02
+/// §10). jarvisd calls this **only** when `[integrations.home_assistant]` is
+/// enabled — no configured HA ⇒ no home tools ⇒ no ambient authority over
+/// physical devices.
+///
+/// All four register together and share one `allowlist`. The set is *curated*,
+/// never a passthrough to HA's service namespace: `home.get_state` (R0),
+/// `home.set_light` (R1, reversible), and `home.execute_scene` /
+/// `home.run_script` (R2, approval). Because `policy::evaluate` does not
+/// inspect arguments, the allowlist is enforced inside each executor rather
+/// than by the tier — the registry only guarantees the tier and the timeout.
+pub fn register_home_assistant_tools(
+    registry: &mut ToolRegistry,
+    client: Arc<HomeAssistantClient>,
+    allowlist: Arc<EntityAllowlist>,
+) -> anyhow::Result<()> {
+    for descriptor in [
+        HomeGetStateTool::descriptor(client.clone(), allowlist.clone()),
+        HomeSetLightTool::descriptor(client.clone(), allowlist.clone()),
+        HomeBroadTool::scene_descriptor(client.clone(), allowlist.clone()),
+        HomeBroadTool::script_descriptor(client, allowlist),
+    ] {
+        let id = descriptor.id.clone();
+        registry
+            .register(wrap_with_timeout(descriptor))
+            .map_err(|e| anyhow::anyhow!("registering {id}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Register the Spotify tools (F5.6, FR-21, ADR-012/022, docs/02 §11a).
+/// Opt-in on `[integrations.spotify]`, same stance as the other external
+/// integrations.
+///
+/// The volume cap lives in the *tools*, not the tier: `spotify.volume` (R1)
+/// refuses anything above the configured cap and names `spotify.volume_boost`
+/// (R2, approval) as the authorized path — the same pairing `media.playback` /
+/// `media.volume_boost` uses, and for the same reason (argument-blind policy).
+/// The set contains no library-mutating tool by construction.
+pub fn register_spotify_tools(
+    registry: &mut ToolRegistry,
+    client: Arc<SpotifyClient>,
+) -> anyhow::Result<()> {
+    for descriptor in spotify_descriptors(client) {
+        let id = descriptor.id.clone();
+        registry
+            .register(wrap_with_timeout(descriptor))
+            .map_err(|e| anyhow::anyhow!("registering {id}: {e}"))?;
     }
     Ok(())
 }

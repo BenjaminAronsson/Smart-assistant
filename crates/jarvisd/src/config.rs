@@ -425,6 +425,13 @@ pub struct IntegrationsConfig {
     /// external message authority is never ambient.
     #[serde(default)]
     pub smtp: SmtpConfig,
+    /// `[integrations.home_assistant]` (M5, FR-14, ADR-006). Disabled by
+    /// default; authority over physical devices is never ambient.
+    #[serde(default)]
+    pub home_assistant: HomeAssistantConfig,
+    /// `[integrations.spotify]` (M5, FR-21, ADR-012/022). Disabled by default.
+    #[serde(default)]
+    pub spotify: SpotifyConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -489,6 +496,115 @@ impl Default for SmtpConfig {
             username: String::new(),
             password_secret: default_smtp_password_secret(),
             from_address: String::new(),
+        }
+    }
+}
+
+/// `[integrations.home_assistant]` (M5 F5.3, FR-14, ADR-006, docs/02 §10).
+///
+/// Disabled by default, and the four allowlists are **empty** by default: an
+/// enabled-but-unpopulated section controls nothing. That is deliberate —
+/// HA is the one integration that changes *physical* state, so ambient
+/// authority over it must never be the accident of turning a flag on.
+///
+/// `base_url` must be HTTPS: a long-lived bearer token is sent on every
+/// request, and this adapter refuses to put it on the wire in clear text
+/// (docs/06 §7). Many HA installs are plain HTTP on the LAN; that needs TLS
+/// in front of HA rather than a quiet exception here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HomeAssistantConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// `https://…` base URL of the Home Assistant instance.
+    #[serde(default)]
+    pub base_url: String,
+    /// Secret reference (`env:VAR`/`keyring:…`) resolving to a **dedicated,
+    /// least-privilege** long-lived access token (docs/02 §10) — never the
+    /// owner's primary credential.
+    #[serde(default = "default_ha_token_secret")]
+    pub token_secret: String,
+    /// Entities `home.get_state` may read. Reading a presence or occupancy
+    /// sensor is itself a privacy effect, so reads are allowlisted too.
+    #[serde(default)]
+    pub readable: Vec<String>,
+    /// `light.*` entities `home.set_light` may switch (R1).
+    #[serde(default)]
+    pub lights: Vec<String>,
+    /// `scene.*` entities `home.execute_scene` may run (R2, approval).
+    #[serde(default)]
+    pub scenes: Vec<String>,
+    /// `script.*` entities `home.run_script` may run (R2, approval).
+    #[serde(default)]
+    pub scripts: Vec<String>,
+}
+
+fn default_ha_token_secret() -> String {
+    "keyring:jarvis/home-assistant".to_owned()
+}
+
+impl Default for HomeAssistantConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: String::new(),
+            token_secret: default_ha_token_secret(),
+            readable: Vec::new(),
+            lights: Vec::new(),
+            scenes: Vec::new(),
+            scripts: Vec::new(),
+        }
+    }
+}
+
+/// `[integrations.spotify]` (M5 F5.6, FR-21, ADR-012, ADR-022, docs/02 §11a).
+///
+/// Disabled by default. The refresh token is a secret *reference*; minting the
+/// first one (browser consent against [`jarvis_adapters::spotify::OAUTH_SCOPES`])
+/// is an enrollment step outside this daemon. Scopes stay at playlist-*read* —
+/// the adapter holds no library-mutation authority at all.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpotifyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// OAuth client id (public by design in the PKCE flow — not a secret).
+    #[serde(default)]
+    pub client_id: String,
+    /// Secret reference resolving to the OAuth **refresh** token.
+    #[serde(default = "default_spotify_refresh_secret")]
+    pub refresh_token_secret: String,
+    /// Ceiling for `spotify.volume` (R1). Above it, only the separate
+    /// `spotify.volume_boost` (R2, approval) applies — hearing protection is a
+    /// real reversibility question (docs/02 §11a).
+    #[serde(default = "default_spotify_max_volume")]
+    pub max_volume_pct: u8,
+    /// Optional ISO-3166-1 alpha-2 market for catalogue relevance.
+    #[serde(default)]
+    pub market: Option<String>,
+    /// Friendly name → Spotify Connect device id, so a spoken "in the kitchen"
+    /// resolves without the user reciting an opaque id.
+    #[serde(default)]
+    pub device_aliases: std::collections::BTreeMap<String, String>,
+}
+
+fn default_spotify_refresh_secret() -> String {
+    "keyring:jarvis/spotify".to_owned()
+}
+
+fn default_spotify_max_volume() -> u8 {
+    70
+}
+
+impl Default for SpotifyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            client_id: String::new(),
+            refresh_token_secret: default_spotify_refresh_secret(),
+            max_volume_pct: default_spotify_max_volume(),
+            market: None,
+            device_aliases: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -731,14 +847,20 @@ impl Config {
                 !self.integrations.smtp.from_address.trim().is_empty(),
                 "[integrations.smtp].from_address is required when SMTP is enabled"
             );
-            validate_secret_ref(&self.integrations.smtp.password_secret)?;
+            validate_secret_ref_named(
+                "[integrations.smtp].password_secret",
+                &self.integrations.smtp.password_secret,
+            )?;
         }
         if self.integrations.caldav.enabled {
             anyhow::ensure!(
                 !self.integrations.caldav.server_url.trim().is_empty(),
                 "[integrations.caldav].server_url is required when CalDAV is enabled"
             );
-            validate_secret_ref(&self.integrations.caldav.password_secret)?;
+            validate_secret_ref_named(
+                "[integrations.caldav].password_secret",
+                &self.integrations.caldav.password_secret,
+            )?;
         }
         if self.voice.enabled {
             anyhow::ensure!(
@@ -761,6 +883,37 @@ impl Config {
                 "[voice].audio.format must be s16le"
             );
         }
+        if self.integrations.home_assistant.enabled {
+            // HTTPS is not negotiable here: a least-privilege but still
+            // powerful bearer token rides on every request (docs/06 §7).
+            anyhow::ensure!(
+                self.integrations
+                    .home_assistant
+                    .base_url
+                    .starts_with("https://"),
+                "[integrations.home_assistant].base_url must be https:// — the access token \
+                 is sent on every request and must not cross the network in clear text; \
+                 put TLS in front of Home Assistant rather than relaxing this"
+            );
+            validate_secret_ref_named(
+                "[integrations.home_assistant].token_secret",
+                &self.integrations.home_assistant.token_secret,
+            )?;
+        }
+        if self.integrations.spotify.enabled {
+            anyhow::ensure!(
+                !self.integrations.spotify.client_id.trim().is_empty(),
+                "[integrations.spotify].client_id is required when Spotify is enabled"
+            );
+            anyhow::ensure!(
+                (1..=100).contains(&self.integrations.spotify.max_volume_pct),
+                "[integrations.spotify].max_volume_pct must be 1..=100"
+            );
+            validate_secret_ref_named(
+                "[integrations.spotify].refresh_token_secret",
+                &self.integrations.spotify.refresh_token_secret,
+            )?;
+        }
         Ok(())
     }
 
@@ -769,12 +922,12 @@ impl Config {
     }
 }
 
-fn validate_secret_ref(reference: &str) -> anyhow::Result<()> {
+fn validate_secret_ref_named(field: &str, reference: &str) -> anyhow::Result<()> {
     // NEVER echo the rejected value: the failing case is precisely "someone
     // pasted a literal secret", and this error reaches stderr/journald.
     anyhow::ensure!(
         reference.starts_with("env:") || reference.starts_with("keyring:"),
-        "database.url_secret (scheme {:?}) is not a secret reference — secrets must be \
+        "{field} (scheme {:?}) is not a secret reference — secrets must be \
          `env:VAR` or `keyring:service/entry` references, never literal values \
          (invariant 5); the rejected value is withheld from this message",
         scheme_of(reference)
@@ -782,9 +935,21 @@ fn validate_secret_ref(reference: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Everything before the first `:` — safe to echo; never the remainder.
+fn validate_secret_ref(reference: &str) -> anyhow::Result<()> {
+    validate_secret_ref_named("database.url_secret", reference)
+}
+
+/// The scheme part of a reference — safe to echo; never the remainder.
+///
+/// A value with **no** `:` at all has no scheme, and returning "everything
+/// before the first `:`" would then return the whole value. That is precisely
+/// the case this function exists to protect (someone pasted a raw token or
+/// password), so it must not be echoed: an opaque marker goes out instead.
 fn scheme_of(reference: &str) -> &str {
-    reference.split(':').next().unwrap_or_default()
+    match reference.split_once(':') {
+        Some((scheme, _)) => scheme,
+        None => "<no scheme>",
+    }
 }
 
 /// Resolve a secret reference at the adapter boundary. The value comes back

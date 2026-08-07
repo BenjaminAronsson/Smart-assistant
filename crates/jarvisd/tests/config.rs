@@ -168,3 +168,114 @@ fn resolve_secret_ref_keyring_unavailable_is_generic() {
 fn resolve_secret_ref_bogus_scheme_is_err() {
     assert!(resolve_secret_ref("bogus").is_err());
 }
+
+// --- M5 integrations: Home Assistant and Spotify ----------------------
+//
+// Both are opt-in and both hold real-world authority — HA over *physical*
+// devices, Spotify over the owner's account — so the defaults and the
+// enabled-path validation are part of the security surface, not ergonomics.
+
+// Disabled by default: turning nothing on must not grant home authority.
+#[test]
+fn m5_integrations_are_disabled_by_default() {
+    let config = Config::from_figment(empty_figment()).expect("defaults must validate");
+    assert!(!config.integrations.home_assistant.enabled);
+    assert!(!config.integrations.spotify.enabled);
+}
+
+// An enabled HA section with empty allowlists controls nothing. This is the
+// fail-closed property: authority comes from explicitly listing entities,
+// never from flipping `enabled`.
+#[test]
+fn enabling_home_assistant_alone_allowlists_no_entity() {
+    let figment = figment_with(serde_json::json!({
+        "integrations": { "home_assistant": {
+            "enabled": true,
+            "base_url": "https://ha.example.test:8123",
+        }}
+    }));
+    let config = Config::from_figment(figment).expect("https + default secret ref validates");
+    let ha = &config.integrations.home_assistant;
+    assert!(ha.readable.is_empty() && ha.lights.is_empty());
+    assert!(ha.scenes.is_empty() && ha.scripts.is_empty());
+}
+
+// docs/06 §7: a long-lived bearer token rides on every HA request, so plain
+// http is refused outright rather than warned about — the common LAN setup
+// needs TLS in front of HA, which is a deployment decision, not a default.
+#[test]
+fn plain_http_home_assistant_is_refused() {
+    let figment = figment_with(serde_json::json!({
+        "integrations": { "home_assistant": {
+            "enabled": true,
+            "base_url": "http://ha.example.test:8123",
+        }}
+    }));
+    let message = Config::from_figment(figment)
+        .expect_err("http:// must be rejected when HA is enabled")
+        .to_string();
+    assert!(
+        message.contains("https://"),
+        "error must name the required scheme, got: {message}"
+    );
+}
+
+// Invariant 5 at the config boundary: the HA token and the Spotify refresh
+// token are references, never literals. The rejection must not echo the
+// pasted value.
+#[test]
+fn m5_literal_credentials_are_rejected_without_echoing_them() {
+    let cases = [
+        (
+            "home_assistant",
+            serde_json::json!({
+                "enabled": true,
+                "base_url": "https://ha.example.test:8123",
+                "token_secret": "eyJhbGciOiJIUzI1NiJ9.SECRETVALUE",
+            }),
+        ),
+        (
+            "spotify",
+            serde_json::json!({
+                "enabled": true,
+                "client_id": "client-abc",
+                "refresh_token_secret": "AQC-SECRETVALUE",
+            }),
+        ),
+    ];
+    for (section, section_body) in cases {
+        let figment = figment_with(serde_json::json!({
+            "integrations": { section: section_body }
+        }));
+        let message = Config::from_figment(figment)
+            .expect_err("a literal credential must be rejected")
+            .to_string();
+        assert!(
+            !message.contains("SECRETVALUE"),
+            "the rejected credential must never appear in the error, got: {message}"
+        );
+        assert!(
+            message.contains("env:") && message.contains("keyring:"),
+            "error must name the accepted schemes, got: {message}"
+        );
+    }
+}
+
+// The volume cap is the R1/R2 boundary for hearing protection (docs/02 §11a),
+// so a nonsensical cap is a startup failure, not a value clamped at runtime.
+#[test]
+fn spotify_volume_cap_must_be_a_real_percentage() {
+    for cap in [0u8, 101] {
+        let figment = figment_with(serde_json::json!({
+            "integrations": { "spotify": {
+                "enabled": true,
+                "client_id": "client-abc",
+                "max_volume_pct": cap,
+            }}
+        }));
+        assert!(
+            Config::from_figment(figment).is_err(),
+            "max_volume_pct {cap} must be rejected"
+        );
+    }
+}

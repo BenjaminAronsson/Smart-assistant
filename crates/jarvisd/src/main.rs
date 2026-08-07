@@ -229,6 +229,58 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         jarvisd::tools::register_media_tools(&mut registry, controller.clone(), max_volume, cast)?;
     }
 
+    // Home Assistant (F5.3, FR-14, ADR-006): opt-in, same consent stance as the
+    // web/media tools. This is the first integration that changes *physical*
+    // state, so absent config means no home tools at all — never a default-on
+    // capability. The token is resolved here, at the composition root, and
+    // handed to the adapter as a value (invariant 5); the allowlists come from
+    // config, and an enabled section with empty lists controls nothing.
+    if config.integrations.home_assistant.enabled {
+        let ha = &config.integrations.home_assistant;
+        let token = jarvisd::config::resolve_secret_ref(&ha.token_secret)?;
+        let ha_config = jarvis_adapters::home_assistant::HomeAssistantConfig::new(
+            &ha.base_url,
+            token.expose().to_owned(),
+        )
+        .map_err(|error| anyhow::anyhow!("invalid Home Assistant configuration: {error}"))?;
+        let allowlist = Arc::new(
+            jarvis_adapters::home_assistant::EntityAllowlist::new(
+                &ha.readable,
+                &ha.lights,
+                &ha.scenes,
+                &ha.scripts,
+            )
+            .map_err(|error| anyhow::anyhow!("invalid Home Assistant allowlist: {error}"))?,
+        );
+        let client = Arc::new(
+            jarvis_adapters::home_assistant::HomeAssistantClient::new(ha_config).map_err(
+                |error| anyhow::anyhow!("could not initialize Home Assistant client: {error}"),
+            )?,
+        );
+        jarvisd::tools::register_home_assistant_tools(&mut registry, client, allowlist)?;
+    }
+
+    // Spotify (F5.6, FR-21, ADR-012/022): opt-in. `max_volume_pct` is validated
+    // at config load; the R1/R2 volume split is enforced inside the tools, not
+    // by the tier, because `policy::evaluate` cannot see arguments.
+    if config.integrations.spotify.enabled {
+        let spotify = &config.integrations.spotify;
+        let refresh = jarvisd::config::resolve_secret_ref(&spotify.refresh_token_secret)?;
+        let max_volume = jarvis_domain::media::VolumePct::new(spotify.max_volume_pct)
+            .map_err(|error| anyhow::anyhow!("invalid [integrations.spotify]: {error}"))?;
+        let mut spotify_config = jarvis_adapters::spotify::SpotifyConfig::new(
+            spotify.client_id.clone(),
+            refresh.expose().to_owned(),
+            max_volume,
+        )
+        .with_device_aliases(spotify.device_aliases.clone());
+        if let Some(market) = &spotify.market {
+            spotify_config = spotify_config.with_market(market.clone());
+        }
+        let client = Arc::new(jarvis_adapters::spotify::SpotifyClient::new(spotify_config));
+        jarvisd::tools::register_spotify_tools(&mut registry, client)?;
+    }
+
     let tool_plane = jarvisd::runs::ToolPlane {
         registry: Arc::new(registry),
         audit: Arc::new(jarvis_infra::audit_sink::PgAuditSink::new(pool.clone())),
