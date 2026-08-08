@@ -1,12 +1,13 @@
-//! Home Assistant curated tool layer (M5 F5.3, FR-14, docs/02 §10, ADR-006).
+//! Home Assistant curated tool layer (M5 F5.3/F5.4, FR-14, FR-28, docs/02 §10,
+//! ADR-006, ADR-018).
 //!
 //! HA is the **home system of record**. This adapter is a client of it, never a
 //! replacement: it holds a dedicated least-privilege long-lived token, caches
 //! *entity metadata* (friendly name, area) and never live state, and exposes a
 //! deliberately **curated** tool surface — `home.get_state`, `home.set_light`,
-//! `home.execute_scene`, `home.run_script` — rather than a passthrough to HA's
-//! whole service namespace. The home keeps working when Jarvis is down because
-//! nothing here is on HA's own control path.
+//! `home.set_area_lights`, `home.execute_scene`, `home.run_script` — rather than
+//! a passthrough to HA's whole service namespace. The home keeps working when
+//! Jarvis is down because nothing here is on HA's own control path.
 //!
 //! ## Why the tiers are what they are (docs/06 §3, re-read for M5)
 //!
@@ -44,17 +45,41 @@
 //! 2. [`ToolExecutor::execute`] — re-checks before touching the transport, so a
 //!    direct invocation cannot skip step 1.
 //!
-//! The R2 tools additionally re-derive the grant's argument fingerprint and
-//! check the grant's `target_resource` against [`target_resource`] for this
-//! entity, so an approval for one scene cannot execute another.
+//! The R2 tools additionally re-derive the grant's argument fingerprint (which
+//! covers `entity_id`, a required argument) and check the grant's
+//! `target_resource` against [`grant_target_resource`], so an approval for one
+//! scene cannot execute another.
 //!
-//! ## F5.4 seam
+//! ## Plural area commands (F5.4, FR-28, ADR-018)
 //!
-//! Area/device-class expansion to an entity *set* with honest partial-failure
-//! reporting is F5.4 (FR-28, ADR-018), not this slice. The seams it needs exist
-//! and are marked `F5.4 seam:` below — [`HomeAssistantClient::refresh_metadata`]
-//! (the area index), [`EntityAllowlist::lights`] (the resolvable set), and
-//! [`HomeSetLightTool::apply_one`] (the per-entity unit a loop will call).
+//! [`HomeSetAreaLightsTool`] turns "the living room lamps" into a concrete
+//! entity **set** and drives it per entity. Three rules make that safe and
+//! honest; each is argued at its implementation site:
+//!
+//! 1. **Resolution is over the allowlist, never over HA.** The candidate set is
+//!    [`EntityAllowlist::lights`]; HA metadata only *filters* it by area. An
+//!    entity the owner never allowlisted cannot become reachable by sharing a
+//!    room with one that is.
+//! 2. **The tier stays R1, with an in-executor fan-out cap.** See
+//!    [`HomeSetAreaLightsTool::policy`] for the full argument — briefly: every
+//!    member of the set is individually R1, the same actor can already reach the
+//!    identical effect with N `home.set_light` calls, so an R2 gate here would
+//!    buy friction rather than containment. What genuinely differs — fan-out —
+//!    is bounded numerically by [`MAX_AREA_ENTITIES`].
+//! 3. **The report is honest or it is an error.** A partial result says "2 of 3"
+//!    and names the entity that failed; a total failure is an `Err`, never a
+//!    partial success; an area that resolves to nothing is an `Err`, never a
+//!    silent success. The undo is composed from the per-entity pre-reads, so it
+//!    restores each light to *its own* prior state rather than blanket-off.
+//!
+//! **Known limitation, stated rather than hidden.** `EntityMetadata::area` is
+//! populated only where HA exposes `area_id` on state attributes; true registry
+//! area membership needs HA's WebSocket registry API, which this adapter does
+//! not speak. Lights with no area are counted and surfaced — either as a caveat
+//! appended to a successful result, or as part of the refusal when nothing
+//! resolved. They are never silently treated as "no match", because a command
+//! that quietly does nothing is the dishonest failure mode ADR-018 exists to
+//! prevent.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -164,11 +189,28 @@ impl fmt::Display for EntityId {
     }
 }
 
-/// The resource string a grant for a home mutation must cover. Exported so the
-/// daemon's grant minting and this executor's validation use one function rather
-/// than two string literals that can drift apart (docs/06 §4).
-pub fn target_resource(entity: &EntityId) -> String {
-    format!("home:{entity}")
+/// The resource string a grant for a home mutation must cover. Exported so a
+/// minting site and this executor's validation use one function rather than two
+/// string literals that can drift apart (docs/06 §4).
+///
+/// It is the **tool id**, not an entity-scoped string. That is what a real grant
+/// covers: the orchestrator mints `GrantBinding::target_resource` from the
+/// proposal's tool id (`jarvis-application/src/orchestrator.rs`, the
+/// `WaitingApproval` arm), and `ResourcePattern::matches` is exact string
+/// equality for a pattern with no trailing `*`. An earlier version of this
+/// function returned `home:{entity}`, which no minting site ever produces — so
+/// **every approved `home.execute_scene` / `home.run_script` was denied at the
+/// executor**, after `PgGrantStore::check_and_consume` had already burned the
+/// single-use grant. The owner approved, the grant was spent, nothing happened,
+/// and retrying needed a fresh approval. Silently breaking an approved action is
+/// the worse failure, so the executor checks what is actually minted.
+///
+/// The **entity is still bound**: `entity_id` is a required argument of both R2
+/// tools, so it is inside `normalized_args_sha256`, and a grant approved for one
+/// scene fails the fingerprint check in [`check_grant`] when presented for
+/// another.
+pub fn grant_target_resource(tool_id: &ToolId) -> String {
+    tool_id.as_str().to_owned()
 }
 
 // ---------------------------------------------------------------------------
@@ -190,8 +232,8 @@ pub enum AllowlistError {
 /// Empty means empty: an unconfigured Jarvis controls nothing. That is the
 /// fail-closed reading — a missing allowlist is not "allow all".
 ///
-/// F5.4 seam: area/device-class resolution will map a spoken area onto a subset
-/// of [`EntityAllowlist::lights`]; the allowlist stays the outer bound, so
+/// F5.4: area resolution maps a spoken area onto a subset of
+/// [`EntityAllowlist::lights`]; the allowlist stays the outer bound, so
 /// expansion can never reach an entity that single-entity control could not.
 #[derive(Debug, Clone, Default)]
 pub struct EntityAllowlist {
@@ -241,7 +283,9 @@ impl EntityAllowlist {
         entity.domain() == "script" && self.scripts.contains(entity)
     }
 
-    /// F5.4 seam: the resolvable light set for area expansion.
+    /// The resolvable light set for area expansion (F5.4). This is deliberately
+    /// the *only* enumeration the area tool has: it can filter this set, never
+    /// extend it.
     pub fn lights(&self) -> impl Iterator<Item = &EntityId> {
         self.lights.iter()
     }
@@ -578,7 +622,9 @@ pub struct EntityMetadata {
     /// Sanitized: HA content is data, never markup or control sequences.
     pub friendly_name: String,
     /// `Some` only where HA exposes `area_id` on the state attributes. Full
-    /// area membership needs HA's WebSocket registry API — F5.4 seam.
+    /// area membership needs HA's WebSocket registry API, which this adapter
+    /// does not speak — so `None` means "unknown", never "no area", and F5.4
+    /// reports the difference instead of hiding it.
     pub area: Option<String>,
 }
 
@@ -696,8 +742,8 @@ impl HomeAssistantClient {
         Ok(self.state(entity, cancel).await?.metadata)
     }
 
-    /// F5.4 seam: build the whole entity/area index in one request. Bounded in
-    /// both bytes (by the transport) and entity count (here).
+    /// Build the whole entity/area index in one request (the F5.4 resolution
+    /// input). Bounded in both bytes (by the transport) and entity count (here).
     pub async fn refresh_metadata(
         &self,
         cancel: &CancellationToken,
@@ -893,11 +939,15 @@ fn not_allowlisted(entity: &EntityId) -> ToolError {
 /// Re-validate a grant at the executor, immediately before the effect
 /// (docs/06 §4, policy-grants skill step 5). The orchestrator's `GrantValidator`
 /// is the primary gate; this is the tool's own fail-closed check so a direct
-/// invocation of the executor cannot bypass it.
+/// invocation of the executor cannot bypass it. It therefore re-checks
+/// *everything* that matters, expiry included. Kept symmetric with
+/// [`crate::spotify`]'s `check_grant`.
+///
+/// The target entity is bound through `normalized_args_sha256` rather than
+/// through the resource pattern — see [`grant_target_resource`] for why.
 fn check_grant(
     grant: Option<&ExecutionGrant>,
     invocation: &ToolInvocation,
-    entity: &EntityId,
     now: SystemTime,
 ) -> Result<(), ToolError> {
     let Some(grant) = grant else {
@@ -911,7 +961,9 @@ fn check_grant(
         || grant.tool_version != invocation.tool_version
         || !grant.single_use
         || grant.normalized_args_sha256 != fingerprint
-        || !grant.target_resource.matches(&target_resource(entity))
+        || !grant
+            .target_resource
+            .matches(&grant_target_resource(&invocation.tool_id))
         || grant.expires_at <= now
     {
         return Err(ToolError::Denied(format!(
@@ -1138,35 +1190,40 @@ impl HomeSetLightTool {
         }
         Ok((entity, LightState::parse(state)?))
     }
+}
 
-    /// The single-entity unit of work.
-    ///
-    /// F5.4 seam: area expansion will call this once per resolved entity and
-    /// collect `Result`s, so a partial failure is reported honestly instead of
-    /// being collapsed into one success/failure for the whole area.
-    async fn apply_one(
-        &self,
-        entity: &EntityId,
-        desired: LightState,
-        cancel: &CancellationToken,
-    ) -> Result<ToolResult, ToolError> {
-        // Read the prior state first. A "reversible" action whose undo cannot be
-        // described is not reversible, so a failed pre-read fails the call
-        // rather than mutating blind.
-        let before = self.client.state(entity, cancel).await?;
-        if cancel.is_cancelled() {
-            return Err(ToolError::Cancelled);
-        }
-        self.client
-            .call_service(desired.service(), entity, cancel)
-            .await?;
-        let label = before.metadata.label();
-        Ok(ToolResult {
-            content: format!("{label} is now {}.", desired.as_str()),
-            truncated: false,
-            compensation: Some(format!("Set {label} back to {}.", before.state)),
-        })
+/// The single-entity unit of work, shared by `home.set_light` and the F5.4 area
+/// fan-out.
+///
+/// It is a free function rather than a method precisely so the plural tool calls
+/// the *identical* code path per entity — including the fail-closed pre-read —
+/// and collects `Result`s. A partial failure is therefore a list of per-entity
+/// outcomes, never one collapsed success/failure for the whole area.
+///
+/// The caller is responsible for the allowlist check; this function performs no
+/// authorization of its own and is not reachable from outside the module.
+async fn apply_one(
+    client: &HomeAssistantClient,
+    entity: &EntityId,
+    desired: LightState,
+    cancel: &CancellationToken,
+) -> Result<ToolResult, ToolError> {
+    // Read the prior state first. A "reversible" action whose undo cannot be
+    // described is not reversible, so a failed pre-read fails the call
+    // rather than mutating blind.
+    let before = client.state(entity, cancel).await?;
+    if cancel.is_cancelled() {
+        return Err(ToolError::Cancelled);
     }
+    client
+        .call_service(desired.service(), entity, cancel)
+        .await?;
+    let label = before.metadata.label();
+    Ok(ToolResult {
+        content: format!("{label} is now {}.", desired.as_str()),
+        truncated: false,
+        compensation: Some(format!("Set {label} back to {}.", before.state)),
+    })
 }
 
 #[async_trait]
@@ -1181,9 +1238,406 @@ impl ToolExecutor for HomeSetLightTool {
             return Err(ToolError::Cancelled);
         }
         let (entity, desired) = self.target(&invocation.arguments)?;
-        self.apply_one(&entity, desired, &cancel).await
+        apply_one(&self.client, &entity, desired, &cancel).await
     }
 
+    fn validate_args(&self, arguments: &CanonicalValue) -> Result<(), ToolError> {
+        self.target(arguments).map(|_| ())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// home.set_area_lights (R1 + allowlist + fan-out cap) — F5.4, FR-28, ADR-018
+// ---------------------------------------------------------------------------
+
+/// The hard fan-out bound for one plural command.
+///
+/// This is the control that answers "a plural command has a strictly larger
+/// blast radius than the single-entity R1 `set_light`": the difference between
+/// the two is *exactly* the fan-out, so the fan-out is what gets bounded. A
+/// house whose living room somehow resolves to 40 allowlisted lights gets a
+/// refusal naming the count, not a 40-entity sweep. Sixteen comfortably covers a
+/// real room while keeping the worst case reviewable in one spoken sentence.
+const MAX_AREA_ENTITIES: usize = 16;
+const MAX_AREA_NAME_CHARS: usize = 48;
+
+/// A normalized area name — HA's `area_id` slug shape.
+///
+/// Both sides of the comparison are normalized so the spoken form ("Living
+/// Room", "the living room") matches HA's stored `area_id` ("living_room")
+/// without a lookup table. Non-ASCII letters are kept and lowercased rather than
+/// transliterated: HA's own slugifier may fold them differently, and guessing
+/// wrong would silently mis-resolve, so an unmatched area is reported as "no
+/// lights in that area" rather than quietly matching the wrong room.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AreaKey(String);
+
+fn normalize_area(value: &str) -> Option<AreaKey> {
+    let mut key = String::new();
+    for ch in value.chars() {
+        if ch.is_alphanumeric() {
+            key.extend(ch.to_lowercase());
+        } else if !key.ends_with('_') {
+            key.push('_');
+        }
+    }
+    let key = key.trim_matches('_').to_owned();
+    (!key.is_empty()).then_some(AreaKey(key))
+}
+
+/// The human-facing area text: sanitized like every other HA-adjacent string,
+/// with a leading article dropped so the rendered result reads "in the living
+/// room" rather than "in the the living room".
+fn area_label(value: &str) -> String {
+    // `clean_text` has already collapsed runs of whitespace, so the article is
+    // exactly the first space-separated word. Split on the char boundary rather
+    // than byte-slicing a lowercased copy: case folding is not length-preserving
+    // for every scalar, and an area name is untrusted text.
+    let cleaned = clean_text(value, MAX_AREA_NAME_CHARS);
+    match cleaned.split_once(' ') {
+        Some((article, rest)) if article.eq_ignore_ascii_case("the") && !rest.is_empty() => {
+            rest.to_owned()
+        }
+        _ => cleaned,
+    }
+}
+
+fn lights_noun(count: usize) -> &'static str {
+    if count == 1 { "light" } else { "lights" }
+}
+
+/// "A", "A and B", "A, B and C" — the result is spoken aloud (F5.5), so it is
+/// written to be heard, not parsed.
+fn join_labels(labels: &[String]) -> String {
+    match labels {
+        [] => String::new(),
+        [only] => only.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// The honesty clause for the `area_id` gap. Never omitted when it applies:
+/// silently dropping lights whose area HA did not report is precisely the
+/// failure ADR-018 forbids.
+fn unknown_area_caveat(count: usize) -> String {
+    if count == 0 {
+        return String::new();
+    }
+    let verb = if count == 1 { "has" } else { "have" };
+    format!(
+        " {count} allowlisted {} {verb} no known area in Home Assistant and could not be considered.",
+        lights_noun(count)
+    )
+}
+
+fn cancelled_caveat(skipped: &[String]) -> String {
+    if skipped.is_empty() {
+        return String::new();
+    }
+    let verb = if skipped.len() == 1 { "was" } else { "were" };
+    format!(
+        " {} {verb} not attempted because the request was cancelled.",
+        join_labels(skipped)
+    )
+}
+
+/// What an area resolved to, plus what could not be judged.
+#[derive(Debug, Default)]
+struct AreaResolution {
+    /// Allowlisted lights whose HA area matches, in entity-id order so the
+    /// spoken result and the audit trail are deterministic.
+    matched: Vec<EntityMetadata>,
+    /// Allowlisted lights HA reported no area for (or does not know at all).
+    /// Counted, never silently discarded.
+    unknown_area: usize,
+}
+
+/// `home.set_area_lights` — turn every allowlisted light in one area on or off.
+///
+/// The **device class is fixed to `light.*` by the tool's identity**, exactly as
+/// `home.set_light` pins it. That is the conservative reading of FR-28's
+/// "area/device-class": a plural command for another class (switches, covers)
+/// must be a tool built for that class with its own tier, not a `device_class`
+/// argument this one's tier cannot see.
+///
+/// An area is **required**. There is deliberately no "everywhere" form: a
+/// whole-house sweep is a different blast radius from a room, and it is not
+/// what FR-28 asks for.
+pub struct HomeSetAreaLightsTool {
+    client: Arc<HomeAssistantClient>,
+    allowlist: Arc<EntityAllowlist>,
+}
+
+impl HomeSetAreaLightsTool {
+    pub fn new(client: Arc<HomeAssistantClient>, allowlist: Arc<EntityAllowlist>) -> Self {
+        Self { client, allowlist }
+    }
+
+    pub fn id() -> ToolId {
+        "home.set_area_lights"
+            .parse()
+            .expect("static tool id is valid")
+    }
+
+    /// Host-owned policy: **R1**, the same tier as `home.set_light`.
+    ///
+    /// This is the F5.4 tier decision, argued against docs/06 §3 rather than
+    /// assumed from the singular case:
+    ///
+    /// * **R1's own row is "reversible, low impact"** and its example is
+    ///   "toggle a light". Every member of the resolved set is, individually,
+    ///   that exact action. The set is bounded by the owner's allowlist, pinned
+    ///   to `light.*`, local to the LAN, and — see below — genuinely reversible
+    ///   per entity. None of R2's row applies: nothing leaves the home, no
+    ///   record is mutated, no automation is changed.
+    /// * **R2 would buy friction, not containment.** The same caller that can
+    ///   invoke this tool can already invoke `home.set_light` N times, each
+    ///   auto-authorized at R1, and reach the identical physical effect. A
+    ///   control the same actor can bypass at the same authority, by the same
+    ///   code path, is theatre — and it would put an approval card in front of
+    ///   the single commonest voice command in a house ("turn off the lights"),
+    ///   which is how owners get trained to blanket-approve.
+    /// * **What actually differs is fan-out, so fan-out is what is bounded** —
+    ///   [`MAX_AREA_ENTITIES`], enforced in-executor because `policy::evaluate`
+    ///   does not inspect arguments (the same constraint that forced two tools
+    ///   for the M3a volume cap and F5.6's volume boost).
+    /// * **If this had been R2, the resolved set would have had to reach the
+    ///   card.** Approving the literal argument "living room" tells a human
+    ///   nothing about which entities it expanded to, and resolution needs HA
+    ///   I/O that `validate_args` (sync) cannot perform — so an honest R2 form
+    ///   of this tool would need the resolved set carried in the arguments and
+    ///   re-verified against HA at execution. That is a real design, and it is
+    ///   the one to build if an owner wants approval here; the correct way to
+    ///   get it is a policy rule through the settings flow (docs/06 §3), which
+    ///   is a human-only decision, not a tier this adapter invents.
+    ///
+    /// `is_reversible` is claimed only because the executor proves it: every
+    /// entity is pre-read, the undo is composed from those pre-reads, and an
+    /// entity whose pre-read fails is not mutated at all.
+    pub fn policy() -> ToolPolicy {
+        ToolPolicy {
+            risk: RiskLevel::R1,
+            is_reversible: true,
+            requires_user_presence: false,
+            timeout: REQUEST_TIMEOUT,
+            required_scopes: [Scope::new(CONTROL_SCOPE).expect("static scope is valid")]
+                .into_iter()
+                .collect(),
+            egress: DataEgress::Local,
+        }
+    }
+
+    pub fn descriptor(
+        client: Arc<HomeAssistantClient>,
+        allowlist: Arc<EntityAllowlist>,
+    ) -> ToolDescriptor {
+        ToolDescriptor {
+            id: Self::id(),
+            version: ToolVersion::new(1, 0, 0),
+            policy: Some(Self::policy()),
+            executor: Arc::new(Self::new(client, allowlist)),
+        }
+    }
+
+    /// Arguments are exactly `{area, state}`. The caller names a *room*, never
+    /// an entity: the expansion is Jarvis's own, derived from HA metadata and
+    /// bounded by the allowlist, so there is no entity list a model could lie
+    /// about. Text proposes the room; it never names the targets.
+    fn target(
+        &self,
+        arguments: &CanonicalValue,
+    ) -> Result<(AreaKey, String, LightState), ToolError> {
+        let values = exact_string_args(arguments, &["area", "state"])?;
+        let [area, state] = values[..] else {
+            return Err(ToolError::SchemaInvalid(
+                "home arguments must be exactly {area, state}".to_owned(),
+            ));
+        };
+        if area.is_empty() || area.len() > MAX_AREA_NAME_CHARS * 4 {
+            return Err(ToolError::SchemaInvalid(
+                "home argument `area` is out of range".to_owned(),
+            ));
+        }
+        let label = area_label(area);
+        let key = normalize_area(&label).ok_or_else(|| {
+            ToolError::SchemaInvalid("home argument `area` is not a usable area name".to_owned())
+        })?;
+        Ok((key, label, LightState::parse(state)?))
+    }
+
+    /// Resolve an area to the concrete allowlisted entity set.
+    ///
+    /// The candidate set is the *allowlist* — HA metadata only filters it. This
+    /// direction is the whole security property: iterating HA and then checking
+    /// the allowlist would be equivalent only as long as the check is never
+    /// forgotten, while iterating the allowlist makes reaching a non-allowlisted
+    /// entity structurally impossible.
+    async fn resolve(
+        &self,
+        area: &AreaKey,
+        cancel: &CancellationToken,
+    ) -> Result<AreaResolution, ToolError> {
+        let lights: Vec<EntityId> = self.allowlist.lights().cloned().collect();
+        if lights.is_empty() {
+            return Ok(AreaResolution::default());
+        }
+        // One bounded index read, and only when the cache cannot already answer
+        // for every candidate. `cached` returns `None` for stale entries too, so
+        // this is also the TTL refresh.
+        if lights
+            .iter()
+            .any(|entity| self.client.cached(entity).is_none())
+        {
+            self.client.refresh_metadata(cancel).await?;
+        }
+        if cancel.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+
+        let mut resolution = AreaResolution::default();
+        for entity in &lights {
+            let Some(metadata) = self.client.cached(entity) else {
+                // HA does not know this allowlisted entity at all. Unknown, not
+                // absent — counted so the caveat can say so.
+                resolution.unknown_area += 1;
+                continue;
+            };
+            match metadata.area.as_deref().and_then(normalize_area) {
+                Some(found) if found == *area => resolution.matched.push(metadata),
+                Some(_) => {}
+                None => resolution.unknown_area += 1,
+            }
+        }
+        tracing::debug!(
+            target: "jarvis.home",
+            area = %area.0,
+            matched = resolution.matched.len(),
+            unknown_area = resolution.unknown_area,
+            "resolved a home area to allowlisted lights",
+        );
+        Ok(resolution)
+    }
+}
+
+#[async_trait]
+impl ToolExecutor for HomeSetAreaLightsTool {
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+        _grant: Option<ExecutionGrant>, // R1: auto-authorized, never carries a grant.
+        cancel: CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        if cancel.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        let (key, label, desired) = self.target(&invocation.arguments)?;
+        let resolution = self.resolve(&key, &cancel).await?;
+        let total = resolution.matched.len();
+
+        // Both refusals happen before any mutation, and both are errors: an
+        // area that drove nothing must never be reported as a success.
+        if total > MAX_AREA_ENTITIES {
+            return Err(ToolError::Denied(format!(
+                "{total} allowlisted lights are in the {label}; a plural command may drive at most \
+                 {MAX_AREA_ENTITIES}. Name the lights individually."
+            )));
+        }
+        if total == 0 {
+            return Err(ToolError::ExecutionFailed(format!(
+                "No allowlisted lights are in the {label}.{}",
+                unknown_area_caveat(resolution.unknown_area)
+            )));
+        }
+
+        // Per-entity execution. One failure must neither abort the rest nor be
+        // swallowed, so every outcome lands in exactly one bucket and every
+        // bucket reaches the text below.
+        let mut succeeded: Vec<String> = Vec::new();
+        let mut undos: Vec<String> = Vec::new();
+        let mut failed: Vec<String> = Vec::new();
+        let mut skipped: Vec<String> = Vec::new();
+        for metadata in &resolution.matched {
+            let entity_label = metadata.label();
+            if cancel.is_cancelled() {
+                skipped.push(entity_label);
+                continue;
+            }
+            match apply_one(&self.client, &metadata.entity_id, desired, &cancel).await {
+                Ok(result) => {
+                    succeeded.push(entity_label);
+                    // Per-entity undo, derived from that entity's own pre-read.
+                    undos.extend(result.compensation);
+                }
+                Err(ToolError::Cancelled) => skipped.push(entity_label),
+                Err(error) => {
+                    // The generic error text is logged, not spoken: the caller
+                    // needs to know *which* light failed, and the adapter's
+                    // error strings carry no HA detail worth repeating.
+                    tracing::warn!(
+                        target: "jarvis.home",
+                        entity = %metadata.entity_id,
+                        error = %error,
+                        "home area command: an entity did not respond",
+                    );
+                    failed.push(entity_label);
+                }
+            }
+        }
+
+        if succeeded.is_empty() {
+            // Total failure is reported as total failure. Rounding it up to a
+            // partial success would be the same lie in the other direction.
+            if failed.is_empty() {
+                return Err(ToolError::Cancelled);
+            }
+            return Err(ToolError::ExecutionFailed(format!(
+                "None of the {total} {} in the {label} responded: {}.{}{}",
+                lights_noun(total),
+                join_labels(&failed),
+                cancelled_caveat(&skipped),
+                unknown_area_caveat(resolution.unknown_area),
+            )));
+        }
+
+        let verb = desired.as_str();
+        let mut content = if succeeded.len() == total {
+            if total == 1 {
+                format!("Turned {verb} {} in the {label}.", succeeded[0])
+            } else {
+                format!(
+                    "Turned {verb} all {total} lights in the {label}: {}.",
+                    join_labels(&succeeded)
+                )
+            }
+        } else {
+            // Never rounded up: the count leads, and the survivors are named.
+            format!(
+                "Turned {verb} {} of {total} {} in the {label}: {}.",
+                succeeded.len(),
+                lights_noun(total),
+                join_labels(&succeeded)
+            )
+        };
+        if !failed.is_empty() {
+            content.push_str(&format!(" {} did not respond.", join_labels(&failed)));
+        }
+        content.push_str(&cancelled_caveat(&skipped));
+        content.push_str(&unknown_area_caveat(resolution.unknown_area));
+
+        Ok(ToolResult {
+            content,
+            truncated: false,
+            // The undo restores each light to *its own* prior state. A blanket
+            // "turn them all off" would be wrong for any light that was already
+            // on, and only the entities actually mutated appear here.
+            compensation: (!undos.is_empty()).then(|| undos.join(" ")),
+        })
+    }
+
+    /// Shape only. Resolution needs HA I/O and this hook is synchronous, so
+    /// there is no entity to check here — and nothing is lost by that: the
+    /// arguments name no entity, and the executor can only ever enumerate the
+    /// allowlist. The bound is structural rather than validated.
     fn validate_args(&self, arguments: &CanonicalValue) -> Result<(), ToolError> {
         self.target(arguments).map(|_| ())
     }
@@ -1352,7 +1806,7 @@ impl ToolExecutor for HomeBroadTool {
         // Order matters and is security-first: shape, then allowlist, then
         // grant — all before the transport is touched at all.
         let (entity, claimed_name) = self.target(&invocation.arguments)?;
-        check_grant(grant.as_ref(), &invocation, &entity, SystemTime::now())?;
+        check_grant(grant.as_ref(), &invocation, SystemTime::now())?;
 
         let metadata = verify_label(&self.client, &entity, &claimed_name, &cancel).await?;
         if cancel.is_cancelled() {
@@ -1487,7 +1941,18 @@ mod tests {
         ])
     }
 
-    fn grant_for(id: ToolId, args: &CanonicalValue, resource: &str) -> ExecutionGrant {
+    /// The grant the orchestrator really mints: `target_resource` is derived
+    /// from the proposal's tool id (`orchestrator.rs`, the `WaitingApproval`
+    /// arm), so the fixture builds it the same way instead of hand-writing an
+    /// entity-scoped string that no minting site produces. Building it wrong is
+    /// what let the executor deny every approved R2 home action in production
+    /// while the tests stayed green.
+    fn grant_for(id: ToolId, args: &CanonicalValue) -> ExecutionGrant {
+        let resource = grant_target_resource(&id);
+        grant_with(id, args, &resource)
+    }
+
+    fn grant_with(id: ToolId, args: &CanonicalValue, resource: &str) -> ExecutionGrant {
         ExecutionGrant {
             grant_id: GrantId::from_bytes([9; 32]),
             user_id: "00000000000000000000000001".parse::<UserId>().unwrap(),
@@ -1640,7 +2105,7 @@ mod tests {
         let transport = Arc::new(FakeTransport::default());
         let tool = HomeBroadTool::script(client(transport.clone()), allowlist());
         let args = scene_args("script.open_garage", "Open garage");
-        let grant = grant_for(HomeBroadTool::script_id(), &args, "home:script.open_garage");
+        let grant = grant_for(HomeBroadTool::script_id(), &args);
         let error = tool
             .execute(
                 invocation(HomeBroadTool::script_id(), args),
@@ -1695,11 +2160,7 @@ mod tests {
         let error = tool
             .execute(
                 invocation(HomeBroadTool::scene_id(), executed),
-                Some(grant_for(
-                    HomeBroadTool::scene_id(),
-                    &approved,
-                    "home:scene.movie_night",
-                )),
+                Some(grant_for(HomeBroadTool::scene_id(), &approved)),
                 CancellationToken::new(),
             )
             .await
@@ -1720,11 +2181,12 @@ mod tests {
         let error = tool
             .execute(
                 invocation(HomeBroadTool::scene_id(), args.clone()),
-                // Right args, right tool — wrong entity in the resource binding.
-                Some(grant_for(
+                // Right args, right tool — a resource pattern that covers a
+                // different tool's grant.
+                Some(grant_with(
                     HomeBroadTool::scene_id(),
                     &args,
-                    "home:scene.away_mode",
+                    &grant_target_resource(&HomeBroadTool::script_id()),
                 )),
                 CancellationToken::new(),
             )
@@ -1743,7 +2205,7 @@ mod tests {
         ));
         let tool = HomeBroadTool::scene(client(transport.clone()), allowlist());
         let args = scene_args("scene.movie_night", "Movie night");
-        let mut grant = grant_for(HomeBroadTool::scene_id(), &args, "home:scene.movie_night");
+        let mut grant = grant_for(HomeBroadTool::scene_id(), &args);
         grant.expires_at = SystemTime::now() - Duration::from_secs(1);
         let error = tool
             .execute(
@@ -1769,11 +2231,7 @@ mod tests {
         let result = tool
             .execute(
                 invocation(HomeBroadTool::scene_id(), args.clone()),
-                Some(grant_for(
-                    HomeBroadTool::scene_id(),
-                    &args,
-                    "home:scene.movie_night",
-                )),
+                Some(grant_for(HomeBroadTool::scene_id(), &args)),
                 CancellationToken::new(),
             )
             .await
@@ -1817,11 +2275,7 @@ mod tests {
         let error = tool
             .execute(
                 invocation(HomeBroadTool::script_id(), args.clone()),
-                Some(grant_for(
-                    HomeBroadTool::script_id(),
-                    &args,
-                    "home:script.goodnight",
-                )),
+                Some(grant_for(HomeBroadTool::script_id(), &args)),
                 CancellationToken::new(),
             )
             .await
@@ -2221,14 +2675,609 @@ mod tests {
     }
 
     #[test]
-    fn the_grant_resource_helper_is_the_one_the_executor_checks() {
-        let entity: EntityId = "scene.movie_night".parse().unwrap();
-        assert_eq!(target_resource(&entity), "home:scene.movie_night");
+    fn the_grant_resource_helper_matches_what_the_orchestrator_actually_mints() {
+        // Regression: the executor used to check `home:{entity}` while the only
+        // minting site parses the *tool id*, and `ResourcePattern::matches` is
+        // exact equality without a trailing `*`. Every approved R2 home action
+        // was therefore denied after its single-use grant had been consumed.
+        for tool in [HomeBroadTool::scene_id(), HomeBroadTool::script_id()] {
+            // Exactly `orchestrator.rs`: `proposal.tool_id.as_str().parse()`.
+            let minted: ResourcePattern = tool.as_str().parse().unwrap();
+            assert_eq!(minted.as_str(), grant_target_resource(&tool));
+            assert!(minted.matches(&grant_target_resource(&tool)));
+            // The old, entity-scoped string is matched by nothing minted.
+            assert!(!minted.matches(&format!("home:{}", "scene.movie_night")));
+        }
+        // …and the two tools' resources do not cover each other.
         assert!(
-            "home:scene.movie_night"
+            !HomeBroadTool::scene_id()
+                .as_str()
                 .parse::<ResourcePattern>()
                 .unwrap()
-                .matches(&target_resource(&entity))
+                .matches(&grant_target_resource(&HomeBroadTool::script_id()))
         );
+    }
+
+    #[tokio::test]
+    async fn a_grant_minted_exactly_as_the_orchestrator_mints_it_is_accepted() {
+        // The test that was missing: build the grant the way the *validator*
+        // builds it — resource parsed from the proposal's tool id — and assert
+        // the executor honours it end to end.
+        let transport = Arc::new(FakeTransport::with_state(
+            "script.goodnight",
+            "off",
+            "Goodnight routine",
+        ));
+        let tool = HomeBroadTool::script(client(transport.clone()), allowlist());
+        let args = scene_args("script.goodnight", "Goodnight routine");
+        // Literally `proposal.tool_id.as_str().parse()`, as orchestrator.rs does.
+        let grant = grant_with(
+            HomeBroadTool::script_id(),
+            &args,
+            HomeBroadTool::script_id().as_str(),
+        );
+
+        let result = tool
+            .execute(
+                invocation(HomeBroadTool::script_id(), args),
+                Some(grant),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("an orchestrator-minted grant must be accepted");
+        assert_eq!(result.content, "Ran Goodnight routine (script.goodnight).");
+        assert!(transport.calls().iter().any(|call| matches!(
+            call,
+            HomeRequest::Service {
+                service: CuratedService::ScriptTurnOn,
+                entity,
+            } if entity.as_str() == "script.goodnight"
+        )));
+    }
+
+    #[tokio::test]
+    async fn a_grant_approved_for_another_entity_is_still_denied_by_the_fingerprint() {
+        // The entity binding survives the resource-pattern change: `entity_id`
+        // is a required argument, so it is inside `normalized_args_sha256`.
+        let transport = Arc::new(FakeTransport::with_state(
+            "scene.movie_night",
+            "unknown",
+            "Movie night",
+        ));
+        let tool = HomeBroadTool::scene(client(transport.clone()), allowlist());
+        let approved = scene_args("scene.away_mode", "Away mode");
+        let executed = scene_args("scene.movie_night", "Movie night");
+        // Same tool, same (orchestrator-shaped) resource — different entity.
+        let grant = grant_for(HomeBroadTool::scene_id(), &approved);
+        let error = tool
+            .execute(
+                invocation(HomeBroadTool::scene_id(), executed),
+                Some(grant),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ToolError::Denied(_)), "got {error:?}");
+        assert_eq!(transport.call_count(), 0);
+    }
+
+    // ---- F5.4: area resolution and partial-failure honesty -----------------
+
+    struct FakeEntity {
+        state: String,
+        name: String,
+        area: Option<String>,
+    }
+
+    /// A multi-entity fixture house. Separate from [`FakeTransport`] on purpose:
+    /// the F5.3 tests keep their fixture untouched.
+    #[derive(Default)]
+    struct FakeHome {
+        entities: Mutex<BTreeMap<String, FakeEntity>>,
+        calls: Mutex<Vec<HomeRequest>>,
+        state_failures: Mutex<BTreeSet<String>>,
+        service_failures: Mutex<BTreeSet<String>>,
+    }
+
+    impl FakeHome {
+        fn add(&self, entity: &str, state: &str, name: &str, area: Option<&str>) {
+            self.entities.lock().unwrap().insert(
+                entity.to_owned(),
+                FakeEntity {
+                    state: state.to_owned(),
+                    name: name.to_owned(),
+                    area: area.map(str::to_owned),
+                },
+            );
+        }
+
+        fn fail_service(&self, entity: &str) {
+            self.service_failures
+                .lock()
+                .unwrap()
+                .insert(entity.to_owned());
+        }
+
+        fn fail_state(&self, entity: &str) {
+            self.state_failures
+                .lock()
+                .unwrap()
+                .insert(entity.to_owned());
+        }
+
+        fn render(id: &str, entity: &FakeEntity) -> String {
+            match &entity.area {
+                Some(area) => format!(
+                    r#"{{"entity_id":"{id}","state":"{}","attributes":{{"friendly_name":"{}","area_id":"{area}"}}}}"#,
+                    entity.state, entity.name
+                ),
+                None => format!(
+                    r#"{{"entity_id":"{id}","state":"{}","attributes":{{"friendly_name":"{}"}}}}"#,
+                    entity.state, entity.name
+                ),
+            }
+        }
+
+        fn service_calls(&self) -> Vec<String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|call| match call {
+                    HomeRequest::Service { entity, .. } => Some(entity.as_str().to_owned()),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// True if the transport ever saw a request *naming* this entity. The
+        /// `/api/states` index names nobody, so this is exactly "was this entity
+        /// read or driven".
+        fn touched(&self, entity: &str) -> bool {
+            self.calls.lock().unwrap().iter().any(|call| match call {
+                HomeRequest::State(id) => id.as_str() == entity,
+                HomeRequest::Service { entity: id, .. } => id.as_str() == entity,
+                HomeRequest::AllStates => false,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl HomeAssistantTransport for FakeHome {
+        async fn send(
+            &self,
+            request: HomeRequest,
+            cancel: CancellationToken,
+        ) -> Result<String, HomeAssistantError> {
+            self.calls.lock().unwrap().push(request.clone());
+            if cancel.is_cancelled() {
+                return Err(HomeAssistantError::Cancelled);
+            }
+            let entities = self.entities.lock().unwrap();
+            match request {
+                HomeRequest::AllStates => Ok(format!(
+                    "[{}]",
+                    entities
+                        .iter()
+                        .map(|(id, entity)| Self::render(id, entity))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )),
+                HomeRequest::State(id) => {
+                    if self.state_failures.lock().unwrap().contains(id.as_str()) {
+                        return Err(HomeAssistantError::Unavailable);
+                    }
+                    entities
+                        .get(id.as_str())
+                        .map(|entity| Self::render(id.as_str(), entity))
+                        .ok_or(HomeAssistantError::UnknownEntity)
+                }
+                HomeRequest::Service { entity, .. } => {
+                    if self
+                        .service_failures
+                        .lock()
+                        .unwrap()
+                        .contains(entity.as_str())
+                    {
+                        return Err(HomeAssistantError::Rejected);
+                    }
+                    Ok("[]".to_owned())
+                }
+            }
+        }
+    }
+
+    fn area_args(area: &str, state: &str) -> CanonicalValue {
+        CanonicalValue::obj([
+            ("area", CanonicalValue::str(area)),
+            ("state", CanonicalValue::str(state)),
+        ])
+    }
+
+    fn lights_allowlist(lights: &[&str]) -> Arc<EntityAllowlist> {
+        Arc::new(
+            EntityAllowlist::new(
+                &[],
+                &lights.iter().map(|l| (*l).to_owned()).collect::<Vec<_>>(),
+                &[],
+                &[],
+            )
+            .unwrap(),
+        )
+    }
+
+    /// Three allowlisted living-room lamps plus a fourth, non-allowlisted one in
+    /// the same room and a lamp in another room.
+    fn living_room() -> (Arc<FakeHome>, Arc<EntityAllowlist>) {
+        let home = Arc::new(FakeHome::default());
+        home.add("light.sofa_lamp", "off", "Sofa lamp", Some("living_room"));
+        home.add(
+            "light.corner_lamp",
+            "off",
+            "Corner lamp",
+            Some("living_room"),
+        );
+        home.add(
+            "light.reading_lamp",
+            "off",
+            "Reading lamp",
+            Some("living_room"),
+        );
+        // In the room, never allowlisted: must remain untouchable.
+        home.add(
+            "light.tv_backlight",
+            "off",
+            "TV backlight",
+            Some("living_room"),
+        );
+        home.add("light.kitchen_lamp", "off", "Kitchen lamp", Some("kitchen"));
+        let allowlist = lights_allowlist(&[
+            "light.sofa_lamp",
+            "light.corner_lamp",
+            "light.reading_lamp",
+            "light.kitchen_lamp",
+        ]);
+        (home, allowlist)
+    }
+
+    fn area_tool(home: Arc<FakeHome>, allowlist: Arc<EntityAllowlist>) -> HomeSetAreaLightsTool {
+        HomeSetAreaLightsTool::new(
+            Arc::new(HomeAssistantClient::with_transport(home)),
+            allowlist,
+        )
+    }
+
+    async fn run_area(
+        tool: &HomeSetAreaLightsTool,
+        area: &str,
+        state: &str,
+    ) -> Result<ToolResult, ToolError> {
+        tool.execute(
+            invocation(HomeSetAreaLightsTool::id(), area_args(area, state)),
+            None,
+            CancellationToken::new(),
+        )
+        .await
+    }
+
+    #[test]
+    fn set_area_lights_policy_is_r1_reversible_local_and_needs_no_grant() {
+        // The F5.4 tier decision, pinned: plural stays R1 (see `policy` for the
+        // argument), with the fan-out bounded in-executor instead.
+        let policy = HomeSetAreaLightsTool::policy();
+        assert_eq!(policy.risk, RiskLevel::R1);
+        assert_eq!(policy.risk, HomeSetLightTool::policy().risk);
+        assert!(policy.is_reversible);
+        assert!(!policy.requires_grant());
+        assert!(!policy.requires_user_presence);
+        assert_eq!(policy.egress, DataEgress::Local);
+        assert!(
+            policy
+                .required_scopes
+                .contains(&Scope::new(CONTROL_SCOPE).unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn an_area_command_resolves_to_every_allowlisted_light_in_that_area() {
+        let (home, allowlist) = living_room();
+        let tool = area_tool(home.clone(), allowlist);
+        let result = run_area(&tool, "the living room", "on").await.unwrap();
+
+        assert_eq!(
+            result.content,
+            "Turned on all 3 lights in the living room: Corner lamp (light.corner_lamp), \
+             Reading lamp (light.reading_lamp) and Sofa lamp (light.sofa_lamp)."
+        );
+        let mut driven = home.service_calls();
+        driven.sort();
+        assert_eq!(
+            driven,
+            vec![
+                "light.corner_lamp".to_owned(),
+                "light.reading_lamp".to_owned(),
+                "light.sofa_lamp".to_owned()
+            ]
+        );
+        // The kitchen lamp is allowlisted but in another area.
+        assert!(!home.touched("light.kitchen_lamp"));
+    }
+
+    #[tokio::test]
+    async fn a_non_allowlisted_light_in_the_same_area_is_never_touched() {
+        let (home, allowlist) = living_room();
+        let tool = area_tool(home.clone(), allowlist);
+        run_area(&tool, "living room", "on").await.unwrap();
+
+        assert!(
+            !home.touched("light.tv_backlight"),
+            "sharing an area must not grant reachability"
+        );
+        assert!(
+            !home
+                .service_calls()
+                .contains(&"light.tv_backlight".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_partial_failure_reports_two_of_three_and_names_the_light_that_failed() {
+        // M5 exit evidence #8. The assertions below are deliberately exact: the
+        // point of this test is that the wording cannot drift into a blanket
+        // "done" without failing here.
+        let (home, allowlist) = living_room();
+        home.fail_service("light.reading_lamp");
+        let tool = area_tool(home.clone(), allowlist);
+        let result = run_area(&tool, "living room", "on").await.unwrap();
+
+        assert_eq!(
+            result.content,
+            "Turned on 2 of 3 lights in the living room: Corner lamp (light.corner_lamp) and \
+             Sofa lamp (light.sofa_lamp). Reading lamp (light.reading_lamp) did not respond."
+        );
+        assert!(result.content.contains("2 of 3"), "the count leads");
+        assert!(
+            result.content.contains("Reading lamp (light.reading_lamp)"),
+            "the failure is named"
+        );
+        assert!(
+            !result.content.contains("all 3"),
+            "a partial result is never rounded up to a success"
+        );
+        // The undo covers only what actually changed.
+        let compensation = result.compensation.unwrap();
+        assert!(!compensation.contains("light.reading_lamp"));
+        assert_eq!(compensation.matches("Set ").count(), 2);
+        // One failure did not abort the rest: all three were attempted.
+        assert_eq!(home.service_calls().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_light_whose_prior_state_cannot_be_read_fails_without_being_mutated() {
+        let (home, allowlist) = living_room();
+        home.fail_state("light.reading_lamp");
+        let tool = area_tool(home.clone(), allowlist);
+        let result = run_area(&tool, "living room", "on").await.unwrap();
+
+        assert!(result.content.contains("2 of 3"));
+        assert!(result.content.contains("Reading lamp (light.reading_lamp)"));
+        assert!(
+            !home
+                .service_calls()
+                .contains(&"light.reading_lamp".to_owned()),
+            "no mutation when that entity's undo cannot be described"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_total_failure_is_an_error_not_a_partial_success() {
+        let (home, allowlist) = living_room();
+        for entity in ["light.sofa_lamp", "light.corner_lamp", "light.reading_lamp"] {
+            home.fail_service(entity);
+        }
+        let tool = area_tool(home.clone(), allowlist);
+        let error = run_area(&tool, "living room", "on").await.unwrap_err();
+
+        let ToolError::ExecutionFailed(message) = &error else {
+            panic!("total failure must be an error, got {error:?}");
+        };
+        assert_eq!(
+            message,
+            "None of the 3 lights in the living room responded: Corner lamp (light.corner_lamp), \
+             Reading lamp (light.reading_lamp) and Sofa lamp (light.sofa_lamp)."
+        );
+        assert!(!message.contains("Turned on"), "no success wording");
+        assert!(!message.contains(" of 3"), "not reported as partial");
+    }
+
+    #[tokio::test]
+    async fn an_area_with_no_allowlisted_lights_says_so_rather_than_succeeding() {
+        let (home, allowlist) = living_room();
+        let tool = area_tool(home.clone(), allowlist);
+        let error = run_area(&tool, "the garage", "on").await.unwrap_err();
+
+        let ToolError::ExecutionFailed(message) = &error else {
+            panic!("got {error:?}");
+        };
+        assert_eq!(message, "No allowlisted lights are in the garage.");
+        assert!(home.service_calls().is_empty(), "nothing was driven");
+    }
+
+    #[tokio::test]
+    async fn an_area_that_home_assistant_reports_no_area_for_refuses_and_names_the_gap() {
+        // The `area_id` limitation: rather than quietly resolving to nothing,
+        // the refusal says how many lights could not be judged.
+        let home = Arc::new(FakeHome::default());
+        home.add("light.sofa_lamp", "off", "Sofa lamp", None);
+        home.add("light.corner_lamp", "off", "Corner lamp", None);
+        let allowlist = lights_allowlist(&["light.sofa_lamp", "light.corner_lamp"]);
+        let tool = area_tool(home.clone(), allowlist);
+        let error = run_area(&tool, "living room", "on").await.unwrap_err();
+
+        let ToolError::ExecutionFailed(message) = &error else {
+            panic!("got {error:?}");
+        };
+        assert_eq!(
+            message,
+            "No allowlisted lights are in the living room. 2 allowlisted lights have no known \
+             area in Home Assistant and could not be considered."
+        );
+        assert!(home.service_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn lights_with_no_known_area_are_surfaced_as_a_caveat_on_a_successful_result() {
+        let home = Arc::new(FakeHome::default());
+        home.add("light.sofa_lamp", "off", "Sofa lamp", Some("living_room"));
+        home.add("light.corner_lamp", "off", "Corner lamp", None);
+        let allowlist = lights_allowlist(&["light.sofa_lamp", "light.corner_lamp"]);
+        let tool = area_tool(home.clone(), allowlist);
+        let result = run_area(&tool, "living room", "on").await.unwrap();
+
+        assert_eq!(
+            result.content,
+            "Turned on Sofa lamp (light.sofa_lamp) in the living room. 1 allowlisted light has \
+             no known area in Home Assistant and could not be considered."
+        );
+        assert_eq!(home.service_calls(), vec!["light.sofa_lamp".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn an_allowlisted_light_home_assistant_does_not_know_counts_as_unknown_not_absent() {
+        let home = Arc::new(FakeHome::default());
+        home.add("light.sofa_lamp", "off", "Sofa lamp", Some("living_room"));
+        // `light.ghost_lamp` is allowlisted but absent from HA entirely.
+        let allowlist = lights_allowlist(&["light.sofa_lamp", "light.ghost_lamp"]);
+        let tool = area_tool(home.clone(), allowlist);
+        let result = run_area(&tool, "living room", "on").await.unwrap();
+
+        assert!(
+            result
+                .content
+                .contains("1 allowlisted light has no known area"),
+            "got {}",
+            result.content
+        );
+        assert!(!home.touched("light.ghost_lamp"));
+    }
+
+    #[tokio::test]
+    async fn the_undo_restores_each_light_to_its_own_prior_state() {
+        // A blanket "turn them all off" would be wrong for the lamp that was
+        // already on before the command.
+        let home = Arc::new(FakeHome::default());
+        home.add("light.sofa_lamp", "on", "Sofa lamp", Some("living_room"));
+        home.add(
+            "light.corner_lamp",
+            "off",
+            "Corner lamp",
+            Some("living_room"),
+        );
+        let allowlist = lights_allowlist(&["light.sofa_lamp", "light.corner_lamp"]);
+        let tool = area_tool(home.clone(), allowlist);
+        let result = run_area(&tool, "living room", "on").await.unwrap();
+
+        assert_eq!(
+            result.compensation.as_deref(),
+            Some(
+                "Set Corner lamp (light.corner_lamp) back to off. \
+                 Set Sofa lamp (light.sofa_lamp) back to on."
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn an_oversized_area_is_refused_rather_than_swept() {
+        let home = Arc::new(FakeHome::default());
+        let ids: Vec<String> = (0..=MAX_AREA_ENTITIES)
+            .map(|index| format!("light.lamp_{index}"))
+            .collect();
+        for id in &ids {
+            home.add(id, "off", "Lamp", Some("living_room"));
+        }
+        let allowlist = lights_allowlist(&ids.iter().map(String::as_str).collect::<Vec<_>>()[..]);
+        let tool = area_tool(home.clone(), allowlist);
+        let error = run_area(&tool, "living room", "on").await.unwrap_err();
+
+        let ToolError::Denied(message) = &error else {
+            panic!("got {error:?}");
+        };
+        assert!(message.contains("at most 16"), "got {message}");
+        assert!(home.service_calls().is_empty(), "refused before any effect");
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_an_area_command_performs_no_request() {
+        let (home, allowlist) = living_room();
+        let tool = area_tool(home.clone(), allowlist);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let error = tool
+            .execute(
+                invocation(HomeSetAreaLightsTool::id(), area_args("living room", "off")),
+                None,
+                cancel,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error, ToolError::Cancelled);
+        assert!(home.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn area_names_normalize_across_spoken_and_slug_forms() {
+        let slug = normalize_area("living_room").unwrap();
+        for spoken in ["Living Room", "living room", "living-room", "LIVING  ROOM"] {
+            assert_eq!(normalize_area(spoken).as_ref(), Some(&slug), "{spoken}");
+        }
+        // Normalization alone keeps the article — dropping it is the label
+        // pass's job, so the two stages stay independently checkable.
+        assert_eq!(
+            normalize_area("the living room"),
+            Some(AreaKey("the_living_room".to_owned()))
+        );
+        assert_eq!(
+            normalize_area(&area_label("The Living Room")).as_ref(),
+            Some(&slug)
+        );
+        assert_eq!(area_label("the living room"), "living room");
+        for empty in ["", "   ", "!!!"] {
+            assert!(normalize_area(empty).is_none(), "{empty}");
+        }
+    }
+
+    #[test]
+    fn a_hostile_area_argument_cannot_carry_markup_or_control_characters() {
+        let tool = area_tool(Arc::new(FakeHome::default()), lights_allowlist(&[]));
+        let label = area_label("Living\u{202E}Room\n\u{200B}<script>");
+        assert!(!label.contains('\u{202E}'));
+        assert!(!label.contains('\u{200B}'));
+        assert!(!label.contains('\n'));
+        // …and it still parses to a usable key rather than being silently empty.
+        assert!(tool.validate_args(&area_args("Living Room", "on")).is_ok());
+    }
+
+    #[test]
+    fn the_area_argument_shape_is_exact() {
+        let tool = area_tool(Arc::new(FakeHome::default()), lights_allowlist(&[]));
+        assert!(tool.validate_args(&area_args("living room", "off")).is_ok());
+        for bad in [
+            CanonicalValue::obj([("area", CanonicalValue::str("living room"))]),
+            CanonicalValue::obj([
+                ("area", CanonicalValue::str("living room")),
+                ("state", CanonicalValue::str("on")),
+                ("brightness", CanonicalValue::int(255)),
+            ]),
+            CanonicalValue::obj([
+                ("entity_id", CanonicalValue::str("light.sofa_lamp")),
+                ("state", CanonicalValue::str("on")),
+            ]),
+            CanonicalValue::str("living room"),
+            area_args("living room", "dim"),
+            // Not a usable area name.
+            area_args("!!!", "on"),
+        ] {
+            assert!(tool.validate_args(&bad).is_err(), "accepted {bad:?}");
+        }
     }
 }
