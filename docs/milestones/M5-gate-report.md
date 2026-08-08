@@ -1,12 +1,13 @@
 # M5 "Voice, home & media" — Gate Report
 
-**Status: DRAFT — awaiting owner sign-off.** Prepared 2026-08-08. Milestone loop docs/11 §2.
-All eight features are implemented, tested and merged to `main`; all gate runs are green
-(§2); the repeatable exit-evidence scenarios live in `docs/milestones/M5-acceptance.md`.
-**Two deviations need an owner decision (§5), one of them a "not met" rather than a
+**Status: COMPLETE — awaiting owner sign-off.** Prepared 2026-08-08. Milestone loop
+docs/11 §2. All eight features are implemented, tested and merged to `main`; all gate runs
+are green (§2); both security passes are complete with **no BLOCKING findings** (§4.2);
+the repeatable exit-evidence scenarios live in `docs/milestones/M5-acceptance.md`.
+**Three deviations need an owner decision (§5), one of them a "not met" rather than a
 "met differently".** Do not tag `m5-complete` until §5 is resolved.
 
-Scope since `m4-complete`: **13 commits** on `main`.
+Scope since `m4-complete`: **15 commits** on `main`.
 
 ---
 
@@ -43,7 +44,7 @@ All against live Postgres/pgvector.
 |---|---|
 | `cargo fmt --check` | ✅ clean |
 | `cargo clippy --workspace --all-targets -- -D warnings` | ✅ clean |
-| `cargo test --workspace` | ✅ **1126 passed, 0 failed** |
+| `cargo test --workspace` | ✅ **1131 passed, 0 failed** |
 | `cargo xtask arch-test` | ✅ 9 crates, dependency rules hold |
 | `cargo xtask codegen --check` | ✅ generated outputs up to date |
 | `cargo xtask golden` | ✅ **33 named scenarios** (was 17 at M4) |
