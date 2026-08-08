@@ -1,5 +1,10 @@
 # M5 Voice, home & media — feature list
 
+Status: **✅ COMPLETE — signed off 2026-08-09** (tag `m5-complete`; deviations D-M5-2/3/4
+accepted). All eight features merged to `main`; see `docs/milestones/M5-gate-report.md`.
+
+Original status line follows.
+
 Status: **PROPOSED — awaiting owner approval.** Decomposed 2026-08-06 (milestone loop,
 docs/11 §2), on the session's active model (Sonnet 5) — **CLAUDE.md's model-strategy
 section reserves milestone decomposition for the strongest available model (Fable 5, or
@@ -63,7 +68,7 @@ per docs/02 §9's own instruction ("do not block the milestone on hardware").
 
 ## Phase A — Voice pipeline foundation (exit evidence #1)
 
-- [ ] **F5.1 — Wyoming client ports + VAD/STT/TTS adapters (application + adapters)** · *strong model (ports) / adapter plumbing may be Sonnet*
+- [x] **F5.1 — Wyoming client ports + VAD/STT/TTS adapters (application + adapters)** · *strong model (ports) / adapter plumbing may be Sonnet*
   `jarvis-application::ports`: provider-neutral `VoiceCapture`/`Transcriber`/`Speaker`
   traits (or one `VoicePipeline` port, TBD in the feature spec) so the domain never knows
   it's Wyoming. `jarvis-adapters`: a Wyoming protocol client (out-of-process services per
@@ -81,7 +86,7 @@ per docs/02 §9's own instruction ("do not block the milestone on hardware").
   vs. PulseAudio vs. ALSA direct), stop and draft an ADR** — none of ADR-007/011 commit to
   the capture-side transport, only the STT/TTS/VAD service shape.
 
-- [ ] **F5.2 — Barge-in + full voice round trip wired into the orchestrator; NFR-04 latency measurement** · *strong model*
+- [x] **F5.2 — Barge-in + full voice round trip wired into the orchestrator; NFR-04 latency measurement** · *strong model*
   Wire VAD end-of-turn → STT final transcript → the existing M4 deterministic-grammar-first
   routing → (LLM run if unresolved) → TTS response, with barge-in (new audio interrupts and
   cancels in-flight TTS playback via the existing `CancellationToken` plumbing, invariant 4
@@ -95,7 +100,7 @@ per docs/02 §9's own instruction ("do not block the milestone on hardware").
 
 ## Phase B — Home Assistant integration (exit evidence #2, #8)
 
-- [ ] **F5.3 — HA adapter + curated tool layer + one allowlisted entity control (adapters + application)** · *strong model*
+- [x] **F5.3 — HA adapter + curated tool layer + one allowlisted entity control (adapters + application)** · *strong model*
   `jarvis-adapters`: HA REST/WebSocket client, dedicated least-privilege long-lived token
   (keyring-resolved), entity/area metadata caching (HA remains authoritative — cache is
   advisory, never the source of truth on a stale read). Curated tools only —
@@ -108,7 +113,7 @@ per docs/02 §9's own instruction ("do not block the milestone on hardware").
   don't assume M4's tiers transfer unchanged; skill `policy-grants`. Deps: none (parallel
   to Phase A). security-auditor mandatory (new physical-effect tool class) + rust-reviewer.
 
-- [ ] **F5.4 — HA area→entity resolution + honest partial-failure reporting (application)** · *strong model*
+- [x] **F5.4 — HA area→entity resolution + honest partial-failure reporting (application)** · *strong model*
   Area/device-class commands ("turn on the living room lamps") resolve to the concrete
   allowlisted entity **set**, not a single entity; execution is per-entity, and a partial
   failure (2 of 3 lamps succeeded) is reported honestly in the spoken/card result, never
@@ -118,7 +123,7 @@ per docs/02 §9's own instruction ("do not block the milestone on hardware").
 
 ## Phase C — Voice-routed commands, Spotify, now-playing (exit evidence #3, #4, #5, #6, #7)
 
-- [ ] **F5.5 — Voice/text transport commands through the deterministic grammar (application)** · *strong model*
+- [x] **F5.5 — Voice/text transport commands through the deterministic grammar (application)** · *strong model*
   Extend M4's deterministic grammar (`crates/jarvis-application/src/home.rs` and
   sibling modules) to recognize media-transport phrasing ("pause the music", "skip",
   "turn off the kitchen lights") and route it to the **already-existing** MPRIS
@@ -131,7 +136,7 @@ per docs/02 §9's own instruction ("do not block the milestone on hardware").
   exist to route from), F5.3 (HA tools to route to) — MPRIS routing alone could start
   once F5.2 lands, without waiting on F5.3.
 
-- [ ] **F5.6 — Spotify adapter: search/play/queue/volume-cap + artist/playlist resolution (adapters + application)** · *adapter plumbing may be Sonnet; policy/domain types strong model*
+- [x] **F5.6 — Spotify adapter: search/play/queue/volume-cap + artist/playlist resolution (adapters + application)** · *adapter plumbing may be Sonnet; policy/domain types strong model*
   `jarvis-adapters::spotify`: OAuth authorization-code + PKCE, refresh token in the
   keyring (never logged, docs/06 §5 pattern from M4's SMTP/CalDAV credentials). Tools:
   `spotify.search`, `spotify.play` (uri + Connect device), `spotify.play_playlist { name }`,
@@ -145,7 +150,7 @@ per docs/02 §9's own instruction ("do not block the milestone on hardware").
   `media-integration`. Deps: none structurally, but natural to sequence after F5.5 so
   voice-routed play commands have a grammar path to land in.
 
-- [ ] **F5.7 — "What's playing" now-playing query + card (application + contracts + jarvisd)** · *may be Sonnet (tightly spec'd by ADR-022 + docs/12)*
+- [x] **F5.7 — "What's playing" now-playing query + card (application + contracts + jarvisd)** · *may be Sonnet (tightly spec'd by ADR-022 + docs/12)*
   A first-class query (not just the passive media bar) answered from the same MPRIS
   metadata: spoken answer + now-playing card (title/artist/album, art if available).
   Multi-player ambiguity asks via the ADR-016 fluent single-question pattern (already used
@@ -157,7 +162,7 @@ per docs/02 §9's own instruction ("do not block the milestone on hardware").
 
 ## Phase D — Integration lock-in
 
-- [ ] **F5.8 — Golden 9 + acceptance scenarios + latency trace lock-in** · *may be Sonnet*
+- [x] **F5.8 — Golden 9 + acceptance scenarios + latency trace lock-in** · *may be Sonnet*
   `cargo xtask golden` scenario 9 (docs/07-testing.md §2) covering the full voice round
   trip, HA area command with partial failure, and a Spotify play command, against fixture
   adapters (per CLAUDE.md: fixture-driven tests over live-provider calls, always). Latency

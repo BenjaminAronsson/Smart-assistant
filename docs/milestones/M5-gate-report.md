@@ -1,11 +1,16 @@
 # M5 "Voice, home & media" — Gate Report
 
-**Status: COMPLETE — awaiting owner sign-off.** Prepared 2026-08-08. Milestone loop
+**Status: ✅ SIGNED OFF 2026-08-09 (owner-approved).** Prepared 2026-08-08. Milestone loop
 docs/11 §2. All eight features are implemented, tested and merged to `main`; all gate runs
 are green (§2); both security passes are complete with **no BLOCKING findings** (§4.2);
 the repeatable exit-evidence scenarios live in `docs/milestones/M5-acceptance.md`.
-**Three deviations need an owner decision (§5), one of them a "not met" rather than a
-"met differently".** Do not tag `m5-complete` until §5 is resolved.
+
+**Owner decisions, 2026-08-09 (all three as recommended):** D-M5-3 accepted as a
+carryforward — the NFR-04 figure and the STT model-size choice close on reference
+hardware, per docs/02 §9's own "do not block the milestone on hardware". D-M5-2 kept
+as-is: barge-in stops the speech, not the run — a user who interrupts wants silence, not
+to lose an answer still readable on the HUD. D-M5-4 accepted as a carryforward, to be
+scheduled **before any further physical-effect tools land**.
 
 Scope since `m4-complete`: **15 commits** on `main`.
 
@@ -247,8 +252,8 @@ dishonest report of one** was fixed rather than carried — the eight-fold re-fi
 (D-M5-1), the R2 home grants that silently denied every approved action, and the fan-out
 timeout that reported a half-lit room as a clean failure.
 
-**Recommend APPROVE WITH DEVIATIONS** (D-M5-2, D-M5-3, D-M5-4) once the owner has decided
-all three.
+**APPROVED WITH DEVIATIONS** (D-M5-2, D-M5-3, D-M5-4) — owner sign-off 2026-08-09.
 
-On approval: tag `m5-complete`, update the docs/08 §1 roadmap row, and record the
-reference-hardware NFR-04 measurement when hardware is available.
+Proceeding: tag `m5-complete`, update the docs/08 §1 roadmap row, push. The
+reference-hardware NFR-04 measurement and the D-M5-4 audit binding are carried forward;
+the latter should be scheduled before the next physical-effect tool.
