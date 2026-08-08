@@ -11,10 +11,12 @@
 //! `crate::artifacts` (see that module's doc comment). That is no longer the
 //! case: F3b.6 wired the producer, and every card below reaches the client
 //! inside [`crate::deepdive::HudCanvasDto`], the payload of the transient
-//! `hud.canvas` event. Two of them are produced today —
+//! `hud.canvas` event. Three of them are produced today —
 //! [`HudCardDto::Sources`]/[`HudCardDto::Gallery`] from a live deep-dive thread
-//! (`jarvisd::deepdive`), and [`HudCardDto::List`] from the deterministic list
-//! grammar (`jarvisd::lists`). The rest of the v1 set is still awaiting the
+//! (`jarvisd::deepdive`), [`HudCardDto::List`] from the deterministic list
+//! grammar (`jarvisd::lists`), and, since M5/F5.7, [`HudCardDto::NowPlaying`]
+//! from the deterministic "what's playing" query (`jarvisd::media`). The rest
+//! of the v1 set is still awaiting the
 //! feature that materializes it; a variant with no producer is a card type the
 //! HUD can render the day something builds one, not a contract defect.
 //! The v1 set is exactly the types F3b.2 owns per docs/milestones/M3-features.md:
@@ -246,8 +248,10 @@ pub enum HudCardDto {
     },
     /// "What's playing" as a first-class query (docs/12 §2.3, FR-32/ADR-022):
     /// **data only** — this variant answers a query, it does not add playback
-    /// controls. Live control stays on the media bar (`crate::media`); a
-    /// control surface on this card is M5 (FR-32). Album art here is the
+    /// controls, and M5/F5.7 produced it without adding any. Live control stays
+    /// on the media bar (`crate::media`) and, for the model, on the registered
+    /// `media.playback` tool behind `policy::evaluate`; a control on this card
+    /// would be an effect reachable from a text match. Album art here is the
     /// player's own content, not third-party web content, so it is a plain
     /// (already `https`-validated) URL rather than a [`SourcedImageDto`] — no
     /// source chip is owed for a player showing its own art, matching the

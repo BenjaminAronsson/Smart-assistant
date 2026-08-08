@@ -19,9 +19,16 @@
 //! page body text, so "open that" has nowhere to render a fetched page even by
 //! accident (ADR-017 §3 — the browser worker opens the real page instead).
 
+use jarvis_application::nowplaying::NowPlaying;
 use jarvis_contracts::cards::{HudCardDto, SourceItemDto, SourcedImageDto};
 use jarvis_contracts::deepdive::HudCanvasDto;
 use jarvis_domain::deepdive::{ImageRef, ResearchThread, SourceRef, display_domain};
+
+/// The now-playing card's id (F5.7). A **constant**, not a fresh handle per
+/// answer: asking twice must update the one card on the canvas rather than
+/// stack copies, the same upsert-by-id reasoning as the list card's
+/// `list-{id}`. There is only ever one "what's playing" answer on screen.
+pub const NOW_PLAYING_CARD_ID: &str = "now-playing";
 
 /// Where a produced canvas instruction goes (F3b.6). Implemented by
 /// [`crate::ws::WsHub`], which wraps it in the transient `hud.canvas` envelope;
@@ -75,6 +82,30 @@ pub fn gallery_card(
         title: title.into(),
         images,
     })
+}
+
+/// Project the answer to "what's playing" onto its card (F5.7, FR-32/ADR-022,
+/// docs/12 §2.3).
+///
+/// A straight projection with **no filling in**: a field the player did not
+/// publish is `None` on [`NowPlaying`] and stays `None` on the wire, so the
+/// renderer degrades to text-only rather than showing a stand-in album or a
+/// placeholder image — the same refusal-to-invent as [`sources_card`]'s
+/// untitled reference and [`gallery_card`]'s unattributable tile.
+///
+/// `art_url` is the player's own art, already restricted to `https` by
+/// `jarvis_domain::media::TrackMetadata::sanitized`; it needs no source chip
+/// because a player showing its own cover art is not third-party web content
+/// (the media bar treats it identically).
+pub fn now_playing_card(now_playing: &NowPlaying) -> HudCardDto {
+    HudCardDto::NowPlaying {
+        id: NOW_PLAYING_CARD_ID.to_owned(),
+        title: now_playing.title.clone(),
+        artist: now_playing.artist.clone(),
+        album: now_playing.album.clone(),
+        art_url: now_playing.art_url.clone(),
+        source_app: now_playing.source_app.clone(),
+    }
 }
 
 fn source_item(source: &SourceRef) -> Option<SourceItemDto> {
@@ -237,6 +268,88 @@ mod tests {
             panic!("expected a sources card");
         };
         assert_eq!(items[0].domain, "evil.example");
+    }
+
+    // ---- F5.7: the now-playing card ------------------------------------
+
+    fn now_playing(album: Option<&str>, art: Option<&str>) -> NowPlaying {
+        NowPlaying {
+            title: Some("Dancing Queen".to_owned()),
+            artist: Some("ABBA".to_owned()),
+            album: album.map(str::to_owned),
+            art_url: art.map(str::to_owned),
+            source_app: "Spotify".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_now_playing_card_carries_title_artist_album_art_and_the_source_app() {
+        let card = now_playing_card(&now_playing(
+            Some("Arrival"),
+            Some("https://cdn.example/art.jpg"),
+        ));
+        let HudCardDto::NowPlaying {
+            id,
+            title,
+            artist,
+            album,
+            art_url,
+            source_app,
+        } = &card
+        else {
+            panic!("expected a now-playing card");
+        };
+        assert_eq!(id, NOW_PLAYING_CARD_ID);
+        assert_eq!(title.as_deref(), Some("Dancing Queen"));
+        assert_eq!(artist.as_deref(), Some("ABBA"));
+        assert_eq!(album.as_deref(), Some("Arrival"));
+        assert_eq!(art_url.as_deref(), Some("https://cdn.example/art.jpg"));
+        assert_eq!(source_app, "Spotify");
+    }
+
+    /// A field the player did not publish is simply absent on the wire — the
+    /// renderer degrades to text-only rather than showing a fabricated album
+    /// or a placeholder image.
+    #[test]
+    fn a_missing_album_or_art_is_omitted_rather_than_invented() {
+        let value = serde_json::to_value(now_playing_card(&now_playing(None, None))).unwrap();
+        let object = value.as_object().unwrap();
+        assert!(!object.contains_key("album"), "{value}");
+        assert!(!object.contains_key("artUrl"), "{value}");
+        assert_eq!(object["sourceApp"], "Spotify");
+    }
+
+    /// The id is a constant so re-asking updates the one card on the canvas
+    /// instead of stacking copies (upsert-by-id, like the list card).
+    #[test]
+    fn asking_twice_addresses_the_same_card() {
+        let first = now_playing_card(&now_playing(Some("Arrival"), None));
+        let second = now_playing_card(&NowPlaying {
+            title: Some("Take a Chance on Me".to_owned()),
+            ..now_playing(None, None)
+        });
+        let (HudCardDto::NowPlaying { id: a, .. }, HudCardDto::NowPlaying { id: b, .. }) =
+            (&first, &second)
+        else {
+            panic!("expected now-playing cards");
+        };
+        assert_eq!(a, b);
+    }
+
+    /// The answer card is **data only** (ADR-022): no transport affordance and
+    /// nowhere to put one, so a query answer can never grow into a control
+    /// surface that bypasses `policy::evaluate`.
+    #[test]
+    fn the_now_playing_card_has_nowhere_to_put_a_control() {
+        let value = serde_json::to_value(now_playing_card(&now_playing(
+            Some("Arrival"),
+            Some("https://cdn.example/art.jpg"),
+        )))
+        .unwrap();
+        let object = value.as_object().unwrap();
+        for forbidden in ["controls", "actions", "player", "commands", "canPause"] {
+            assert!(!object.contains_key(forbidden), "carries `{forbidden}`");
+        }
     }
 
     #[test]

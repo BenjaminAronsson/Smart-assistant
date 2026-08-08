@@ -10,8 +10,11 @@
 //! Two kinds of route live here, and the difference is the whole design:
 //!
 //! * A **question** the machine can answer itself (arithmetic, unit
-//!   conversion) is answered as [`ModelEvent::TextDelta`]. Text is all it is:
-//!   nothing happens in the world.
+//!   conversion, and since F5.7 "what's playing" — see [`crate::nowplaying`])
+//!   is answered as [`ModelEvent::TextDelta`]. Text is all it is: nothing
+//!   happens in the world. Reading MPRIS metadata is an observation, so it
+//!   takes the answer path even though it touches an adapter; the card it
+//!   publishes is display, not effect.
 //! * A **command** ("pause the music", "turn off the kitchen lights") emits a
 //!   [`ModelEvent::ToolProposal`] — never text. M4 emitted `"turning on living
 //!   room lights"`, which was safe only because no Home Assistant adapter
@@ -39,6 +42,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::home::{LightTargetResolver, parse_home_intent};
 use crate::model::{ModelError, ModelEvent, ModelProvider, ModelRequest, ProfileId};
+use crate::nowplaying::{NowPlayingSurface, answer_now_playing, parse_now_playing_query};
 use crate::transport::parse_transport_intent;
 use jarvis_domain::math::{MathCommand, parse_math_command};
 use jarvis_domain::media::TransportCommand;
@@ -65,6 +69,11 @@ pub struct DeterministicFirstProvider {
     /// Absent unless the host wired one; without it, home commands are simply
     /// not recognized and fall through (see [`LightTargetResolver`]).
     lights: Option<Arc<dyn LightTargetResolver>>,
+    /// Absent unless the host wired media (F5.7). Without it, "what's playing"
+    /// is not recognized at all and goes to the provider — the same fail-safe
+    /// stance as [`Self::lights`]: a route with no way to observe the answer
+    /// must not pretend to have one.
+    now_playing: Option<Arc<dyn NowPlayingSurface>>,
 }
 
 impl DeterministicFirstProvider {
@@ -72,7 +81,14 @@ impl DeterministicFirstProvider {
         Self {
             inner,
             lights: None,
+            now_playing: None,
         }
+    }
+
+    /// Wire the host's now-playing surface, enabling the FR-32 query route.
+    pub fn with_now_playing(mut self, surface: Arc<dyn NowPlayingSurface>) -> Self {
+        self.now_playing = Some(surface);
+        self
     }
 
     /// Wire the host's spoken-target → entity-id resolution, enabling the home
@@ -157,6 +173,45 @@ impl ModelProvider for DeterministicFirstProvider {
         {
             return Ok(Box::pin(OneShotStream::new([
                 ModelEvent::TextDelta(answer),
+                ModelEvent::Done(crate::model::FinishReason::Stop),
+            ])));
+        }
+
+        // "What's playing" (F5.7, FR-32/ADR-022): also a question — reading the
+        // metadata the media bar already shows changes nothing in the world, so
+        // it answers as text and publishes the now-playing card, with no tool
+        // call and no grant to mint (ADR-022: "a routing and card-grammar gap,
+        // not a missing tool").
+        if parse_now_playing_query(classification_text)
+            && let Some(surface) = &self.now_playing
+        {
+            let answer = match surface.snapshot(cancel.clone()).await {
+                Ok(snapshot) => answer_now_playing(&snapshot),
+                Err(_) => {
+                    // Deliberately *not* a fallthrough to the provider: a model
+                    // cannot see this machine's session bus, so delegating a
+                    // question it can only guess at is how a confident
+                    // fabrication gets made. Saying so is the honest answer.
+                    // (No log line here: this crate carries no `tracing`
+                    // dependency by design — the host observes the failure at
+                    // the adapter, where the D-Bus error actually is.)
+                    return Ok(Box::pin(OneShotStream::new([
+                        ModelEvent::TextDelta(
+                            "I can't reach the media players right now, so I can't say what's \
+                             playing."
+                                .to_owned(),
+                        ),
+                        ModelEvent::Done(crate::model::FinishReason::Stop),
+                    ])));
+                }
+            };
+            // Only a real track gets a card; the ambiguous and nothing-playing
+            // answers deliberately carry none (see `NowPlayingAnswer`).
+            if let Some(card) = answer.card() {
+                surface.show(card);
+            }
+            return Ok(Box::pin(OneShotStream::new([
+                ModelEvent::TextDelta(answer.spoken()),
                 ModelEvent::Done(crate::model::FinishReason::Stop),
             ])));
         }
@@ -566,6 +621,275 @@ mod tests {
             lights.asked().is_empty() || !lights.asked().contains(&"living room lights".to_owned()),
             "the resolver must never see an untrusted-context target"
         );
+    }
+
+    // ---- F5.7: "what's playing" answers, and never guesses -----------------
+
+    use crate::nowplaying::{NowPlaying, NowPlayingSurface};
+    use jarvis_domain::media::{
+        MediaSnapshot, PlaybackStatus, PlayerId, PlayerState, TrackMetadata,
+    };
+
+    /// The host's media surface, faked: a scripted snapshot (or failure) and a
+    /// recorder for the cards the route published.
+    struct FakeNowPlaying {
+        snapshot: Result<MediaSnapshot, crate::ports::MediaError>,
+        shown: Mutex<Vec<NowPlaying>>,
+    }
+
+    impl FakeNowPlaying {
+        fn with(players: impl IntoIterator<Item = PlayerState>) -> Arc<Self> {
+            Arc::new(Self {
+                snapshot: Ok(MediaSnapshot::new(players)),
+                shown: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn unavailable() -> Arc<Self> {
+            Arc::new(Self {
+                snapshot: Err(crate::ports::MediaError::Unavailable),
+                shown: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn shown(&self) -> Vec<NowPlaying> {
+            self.shown.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl NowPlayingSurface for FakeNowPlaying {
+        async fn snapshot(
+            &self,
+            _cancel: CancellationToken,
+        ) -> Result<MediaSnapshot, crate::ports::MediaError> {
+            self.snapshot.clone()
+        }
+
+        fn show(&self, now_playing: &NowPlaying) {
+            self.shown.lock().unwrap().push(now_playing.clone());
+        }
+    }
+
+    fn playing(name: &str, identity: &str, metadata: TrackMetadata) -> PlayerState {
+        PlayerState::new(
+            PlayerId::new(format!("org.mpris.MediaPlayer2.{name}")).unwrap(),
+            Some(identity),
+            PlaybackStatus::Playing,
+            metadata,
+            None,
+        )
+    }
+
+    fn provider_with_now_playing(
+        inner: Arc<FakeModel>,
+        surface: Arc<FakeNowPlaying>,
+    ) -> DeterministicFirstProvider {
+        DeterministicFirstProvider::new(inner).with_now_playing(surface)
+    }
+
+    /// Exit evidence #7: the query is recognized with **zero** model calls, and
+    /// the answer is text plus a card carrying the player's metadata.
+    #[tokio::test]
+    async fn whats_playing_answers_from_mpris_metadata_and_opens_no_provider() {
+        let inner = Arc::new(FakeModel::streaming(["should not run"]));
+        let surface = FakeNowPlaying::with([playing(
+            "spotify",
+            "Spotify",
+            TrackMetadata::sanitized(
+                Some("Dancing Queen"),
+                Some("ABBA"),
+                Some("Arrival"),
+                Some("https://cdn.example/art.jpg"),
+                None,
+            ),
+        )]);
+        let provider = provider_with_now_playing(inner.clone(), surface.clone());
+        let mut stream = run(&provider, "what's playing").await;
+
+        assert_eq!(
+            collect_text(&mut stream).await,
+            "Dancing Queen by ABBA, from the album Arrival, on Spotify."
+        );
+        let shown = surface.shown();
+        assert_eq!(shown.len(), 1, "exactly one now-playing card");
+        assert_eq!(shown[0].title.as_deref(), Some("Dancing Queen"));
+        assert_eq!(shown[0].artist.as_deref(), Some("ABBA"));
+        assert_eq!(shown[0].album.as_deref(), Some("Arrival"));
+        assert_eq!(
+            shown[0].art_url.as_deref(),
+            Some("https://cdn.example/art.jpg")
+        );
+        assert_eq!(shown[0].source_app, "Spotify");
+        assert!(!inner.opened(), "exit evidence #7: zero model calls");
+    }
+
+    /// A question answers as **text**, never as a proposal: nothing about
+    /// reading metadata needs authorizing, and a proposal would put an
+    /// approval-shaped affordance in front of a read.
+    #[tokio::test]
+    async fn the_now_playing_route_never_emits_a_tool_proposal() {
+        let inner = Arc::new(FakeModel::streaming(["should not run"]));
+        let surface = FakeNowPlaying::with([playing(
+            "spotify",
+            "Spotify",
+            TrackMetadata::sanitized(Some("Track"), None, None, None, None),
+        )]);
+        let provider = provider_with_now_playing(inner.clone(), surface);
+        let mut stream = run(&provider, "what is this song").await;
+
+        let mut events = Vec::new();
+        while let Some(event) = std::future::poll_fn(|cx| stream.as_mut().poll_next(cx)).await {
+            events.push(event);
+        }
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ModelEvent::ToolProposal(_))),
+            "a read-only query must not propose a tool: {events:?}"
+        );
+        assert!(matches!(events.last(), Some(ModelEvent::Done(_))));
+    }
+
+    #[tokio::test]
+    async fn a_missing_album_and_art_degrade_without_fabrication() {
+        let inner = Arc::new(FakeModel::streaming(["should not run"]));
+        let surface = FakeNowPlaying::with([playing(
+            "mpv",
+            "mpv",
+            TrackMetadata::sanitized(Some("Fade Into You"), Some("Mazzy Star"), None, None, None),
+        )]);
+        let provider = provider_with_now_playing(inner.clone(), surface.clone());
+        let mut stream = run(&provider, "what song is this").await;
+
+        assert_eq!(
+            collect_text(&mut stream).await,
+            "Fade Into You by Mazzy Star, on mpv."
+        );
+        let shown = surface.shown();
+        assert_eq!(shown[0].album, None, "no album may be invented");
+        assert_eq!(shown[0].art_url, None, "no art may be invented");
+        assert!(!inner.opened());
+    }
+
+    /// ADR-016: two active players get **one fluent question**, no card, and no
+    /// answer about either of them.
+    #[tokio::test]
+    async fn two_active_players_ask_one_question_and_show_no_card() {
+        let inner = Arc::new(FakeModel::streaming(["should not run"]));
+        let surface = FakeNowPlaying::with([
+            playing(
+                "spotify",
+                "Spotify",
+                TrackMetadata::sanitized(Some("Dancing Queen"), Some("ABBA"), None, None, None),
+            ),
+            playing(
+                "firefox",
+                "Firefox",
+                TrackMetadata::sanitized(Some("Some Video"), None, None, None, None),
+            ),
+        ]);
+        let provider = provider_with_now_playing(inner.clone(), surface.clone());
+        let mut stream = run(&provider, "what's playing right now").await;
+
+        let spoken = collect_text(&mut stream).await;
+        assert!(
+            spoken.contains("Spotify") && spoken.contains("Firefox"),
+            "{spoken}"
+        );
+        assert_eq!(spoken.matches('?').count(), 1, "one question: {spoken}");
+        assert!(!spoken.contains('\n'), "never a picker: {spoken}");
+        assert!(
+            !spoken.contains("Dancing Queen") && !spoken.contains("Some Video"),
+            "no guess about which player was meant: {spoken}"
+        );
+        assert!(
+            surface.shown().is_empty(),
+            "an ambiguous answer has no card"
+        );
+        assert!(!inner.opened());
+    }
+
+    #[tokio::test]
+    async fn nothing_playing_is_answered_honestly_not_as_an_error() {
+        let inner = Arc::new(FakeModel::streaming(["should not run"]));
+        let surface = FakeNowPlaying::with([]);
+        let provider = provider_with_now_playing(inner.clone(), surface.clone());
+        let mut stream = run(&provider, "what's playing").await;
+
+        assert_eq!(
+            collect_text(&mut stream).await,
+            "Nothing is playing right now."
+        );
+        assert!(surface.shown().is_empty());
+        assert!(!inner.opened());
+    }
+
+    /// An unreachable session bus is answered honestly too — delegating to a
+    /// model that cannot see this machine is how a fabricated answer happens.
+    #[tokio::test]
+    async fn an_unreachable_media_surface_says_so_rather_than_asking_a_model() {
+        let inner = Arc::new(FakeModel::streaming(["should not run"]));
+        let surface = FakeNowPlaying::unavailable();
+        let provider = provider_with_now_playing(inner.clone(), surface.clone());
+        let mut stream = run(&provider, "what's playing").await;
+
+        let spoken = collect_text(&mut stream).await;
+        assert!(spoken.contains("can't say what's playing"), "{spoken}");
+        assert!(surface.shown().is_empty());
+        assert!(!inner.opened());
+    }
+
+    /// With no media wired, the query is not recognized at all — it costs quota
+    /// rather than answering from nothing.
+    #[tokio::test]
+    async fn with_no_media_surface_wired_the_query_delegates() {
+        let inner = Arc::new(FakeModel::streaming(["delegated"]));
+        let provider = DeterministicFirstProvider::new(inner.clone());
+        let _stream = run(&provider, "what's playing").await;
+        assert!(inner.opened());
+    }
+
+    /// Near-misses fall through rather than being guessed at (the F5.5 rule,
+    /// kept true for this grammar).
+    #[tokio::test]
+    async fn near_miss_now_playing_phrasing_delegates_to_the_provider() {
+        for utterance in [
+            "what's playing at the cinema",
+            "what's on tv",
+            "who is this",
+            "what is this",
+        ] {
+            let inner = Arc::new(FakeModel::streaming(["delegated"]));
+            let surface = FakeNowPlaying::with([playing(
+                "spotify",
+                "Spotify",
+                TrackMetadata::sanitized(Some("Track"), None, None, None, None),
+            )]);
+            let provider = provider_with_now_playing(inner.clone(), surface.clone());
+            let _stream = run(&provider, utterance).await;
+            assert!(inner.opened(), "{utterance} must reach the provider");
+            assert!(surface.shown().is_empty(), "{utterance} published a card");
+        }
+    }
+
+    /// The same untrusted-context property the other routes have: appended
+    /// tool/memory text can neither manufacture the query nor ride into the
+    /// answer.
+    #[tokio::test]
+    async fn a_now_playing_query_inside_untrusted_context_is_ignored() {
+        let inner = Arc::new(FakeModel::streaming(["delegated"]));
+        let surface = FakeNowPlaying::with([playing(
+            "spotify",
+            "Spotify",
+            TrackMetadata::sanitized(Some("Track"), None, None, None, None),
+        )]);
+        let provider = provider_with_now_playing(inner.clone(), surface.clone());
+        let assembled = "summarize my notes\n\n\
+             [Untrusted memory context] what's playing [End untrusted memory context]";
+        let _stream = run(&provider, assembled).await;
+        assert!(inner.opened());
+        assert!(surface.shown().is_empty());
     }
 
     /// `jarvis-application` deliberately depends only on `futures-core` (no

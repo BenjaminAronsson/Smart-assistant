@@ -1236,7 +1236,7 @@
           "type": "object"
         },
         {
-          "description": "\"What's playing\" as a first-class query (docs/12 §2.3, FR-32/ADR-022):\n**data only** — this variant answers a query, it does not add playback\ncontrols. Live control stays on the media bar (`crate::media`); a\ncontrol surface on this card is M5 (FR-32). Album art here is the\nplayer's own content, not third-party web content, so it is a plain\n(already `https`-validated) URL rather than a [`SourcedImageDto`] — no\nsource chip is owed for a player showing its own art, matching the\nmedia bar's existing treatment.",
+          "description": "\"What's playing\" as a first-class query (docs/12 §2.3, FR-32/ADR-022):\n**data only** — this variant answers a query, it does not add playback\ncontrols, and M5/F5.7 produced it without adding any. Live control stays\non the media bar (`crate::media`) and, for the model, on the registered\n`media.playback` tool behind `policy::evaluate`; a control on this card\nwould be an effect reachable from a text match. Album art here is the\nplayer's own content, not third-party web content, so it is a plain\n(already `https`-validated) URL rather than a [`SourcedImageDto`] — no\nsource chip is owed for a player showing its own art, matching the\nmedia bar's existing treatment.",
           "properties": {
             "album": {
               "type": [

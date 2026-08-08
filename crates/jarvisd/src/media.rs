@@ -373,6 +373,70 @@ fn repository_problem(error: RepositoryError) -> Response {
     }
 }
 
+/// The host half of the "what's playing" query (F5.7, FR-32/ADR-022): it reads
+/// the **same** MPRIS snapshot this module's REST surface and the media bar
+/// read, and puts the answer's card on the HUD canvas.
+///
+/// It exists because `jarvis-application` may not see a wire type (invariant 3)
+/// and may not depend on an adapter (NFR-08): the application recognizes the
+/// question and shapes the answer, and this type supplies the observation and
+/// performs the projection. Same division of labour as
+/// [`crate::deepdive`]/[`crate::lists`].
+///
+/// **No control path.** It implements a read-and-present port only, so a
+/// recognized *question* can never reach a transport verb; changing playback
+/// remains the registered `media.playback` tool behind `policy::evaluate`
+/// (invariant 1).
+pub struct NowPlayingHud {
+    controller: Arc<dyn MediaController>,
+    /// `None` mounts the query with no HUD projection at all — the spoken
+    /// answer still works, which is the stricter default for a host that wired
+    /// media but no canvas (the same stance as [`crate::lists::ListApi`]).
+    canvas: Option<Arc<dyn crate::cards::CanvasSink>>,
+}
+
+impl NowPlayingHud {
+    pub fn new(
+        controller: Arc<dyn MediaController>,
+        canvas: Option<Arc<dyn crate::cards::CanvasSink>>,
+    ) -> Self {
+        Self { controller, canvas }
+    }
+}
+
+#[async_trait::async_trait]
+impl jarvis_application::nowplaying::NowPlayingSurface for NowPlayingHud {
+    async fn snapshot(
+        &self,
+        cancel: CancellationToken,
+    ) -> Result<MediaSnapshot, jarvis_application::ports::MediaError> {
+        self.controller.snapshot(cancel).await
+    }
+
+    /// Publish the now-playing card.
+    ///
+    /// Always `Extend`, never `Shelve`: "what's playing" is an aside, and
+    /// shelving the canvas it interrupts would throw away work the owner did
+    /// not ask to put down (FR-24) — the same reasoning as the list card.
+    ///
+    /// `session_id` is `None` because the deterministic route has no session:
+    /// the question is answered without a model, and the card is a transient
+    /// display instruction, not timeline history (docs/05 §3).
+    fn show(&self, now_playing: &jarvis_application::nowplaying::NowPlaying) {
+        let Some(canvas) = &self.canvas else {
+            return;
+        };
+        canvas.publish(jarvis_contracts::deepdive::HudCanvasDto {
+            session_id: None,
+            action: jarvis_contracts::deepdive::CanvasActionDto::Extend,
+            label: "Now playing".to_owned(),
+            cards: vec![crate::cards::now_playing_card(now_playing)],
+            offer: None,
+            handoff: None,
+        });
+    }
+}
+
 /// Publishes media snapshots to WS clients as the transient `media.state`
 /// event. Holds the cap because the wire DTO carries it (the bar clamps its own
 /// slider); the hub itself stays media-agnostic.

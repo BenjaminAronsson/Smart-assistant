@@ -309,8 +309,22 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             },
         ),
     );
+    // "What's playing" (F5.7, FR-32/ADR-022) reads the same MPRIS snapshot the
+    // media bar shows and answers as text plus a now-playing card. Wired only
+    // when media control is actually present: without a controller the query is
+    // not recognized at all and goes to the provider, rather than answering
+    // from nothing.
+    let deterministic = {
+        let provider = DeterministicFirstProvider::new(model).with_light_targets(light_targets);
+        match &media_controller {
+            Some(controller) => provider.with_now_playing(Arc::new(
+                jarvisd::media::NowPlayingHud::new(controller.clone(), Some(hub.clone())),
+            )),
+            None => provider,
+        }
+    };
     let engine = RunEngine::new(
-        Arc::new(DeterministicFirstProvider::new(model).with_light_targets(light_targets)),
+        Arc::new(deterministic),
         Arc::new({
             let assembler = MemoryAssembler::new(memory_retrieval)
                 .with_context_store(memory_store.clone())

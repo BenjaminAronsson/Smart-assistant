@@ -64,6 +64,18 @@ describe('HudCard', () => {
     expect(el.querySelector('app-error-card')).toBeNull();
   });
 
+  it('renders the registered sub-component for a now-playing card (F5.7)', () => {
+    render({
+      type: 'card.now_playing',
+      id: 'now-playing',
+      title: 'Dancing Queen',
+      artist: 'ABBA',
+      sourceApp: 'Spotify',
+    });
+    expect(el.querySelector('app-now-playing-card')).not.toBeNull();
+    expect(el.querySelector('app-error-card')).toBeNull();
+  });
+
   it('renders the registered sub-component for a map card (F3b.5)', () => {
     render({
       type: 'card.map',

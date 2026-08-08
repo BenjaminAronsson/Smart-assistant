@@ -584,3 +584,167 @@ async fn the_media_surface_requires_authentication() {
     }
     assert!(h.controller.applied().is_empty());
 }
+
+// --- F5.7: "what's playing" as a first-class query ----------------------
+//
+// The seam this exercises is the whole feature: the deterministic route in
+// `jarvis-application` recognizes the question and shapes the answer, and
+// `jarvisd::media::NowPlayingHud` supplies the MPRIS observation and projects
+// the now-playing card onto the HUD canvas. No model is involved, and no tool
+// is proposed — reading metadata changes nothing in the world (ADR-022).
+
+/// Records what reached the canvas, standing in for the WS hub.
+#[derive(Default)]
+struct FakeCanvas {
+    published: Mutex<Vec<jarvis_contracts::deepdive::HudCanvasDto>>,
+}
+
+impl jarvisd::cards::CanvasSink for FakeCanvas {
+    fn publish(&self, canvas: jarvis_contracts::deepdive::HudCanvasDto) {
+        self.published.lock().unwrap().push(canvas);
+    }
+}
+
+impl FakeCanvas {
+    fn published(&self) -> Vec<jarvis_contracts::deepdive::HudCanvasDto> {
+        self.published.lock().unwrap().clone()
+    }
+}
+
+/// Drive `DeterministicFirstProvider` with a real `NowPlayingHud` over a fake
+/// controller, returning the spoken text and everything published to the canvas.
+async fn ask_whats_playing(
+    controller: Arc<FakeController>,
+    utterance: &str,
+) -> (String, Vec<jarvis_contracts::deepdive::HudCanvasDto>, bool) {
+    use jarvis_application::model::{ModelEvent, ModelProvider, ModelRequest};
+
+    let canvas = Arc::new(FakeCanvas::default());
+    let inner = Arc::new(jarvis_application::testing::FakeModel::streaming([
+        "should not run",
+    ]));
+    let provider =
+        jarvis_application::deterministic::DeterministicFirstProvider::new(inner.clone())
+            .with_now_playing(Arc::new(jarvisd::media::NowPlayingHud::new(
+                controller,
+                Some(canvas.clone()),
+            )));
+
+    let mut stream = provider
+        .run(
+            ModelRequest {
+                prompt: utterance.to_owned(),
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let mut spoken = String::new();
+    while let Some(event) = futures_util::StreamExt::next(&mut stream).await {
+        if let ModelEvent::TextDelta(delta) = event {
+            spoken.push_str(&delta);
+        }
+    }
+    (spoken, canvas.published(), inner.opened())
+}
+
+#[tokio::test]
+async fn whats_playing_answers_with_text_and_a_now_playing_card() {
+    let controller = Arc::new(FakeController::showing(MediaSnapshot::new([
+        PlayerState::new(
+            player("spotify"),
+            Some("Spotify"),
+            PlaybackStatus::Playing,
+            TrackMetadata::sanitized(
+                Some("Dancing Queen"),
+                Some("ABBA"),
+                Some("Arrival"),
+                Some("https://cdn.example/art.jpg"),
+                None,
+            ),
+            Some(VolumePct::new(40).unwrap()),
+        ),
+    ])));
+    let (spoken, published, model_opened) =
+        ask_whats_playing(controller.clone(), "what's playing").await;
+
+    assert_eq!(
+        spoken,
+        "Dancing Queen by ABBA, from the album Arrival, on Spotify."
+    );
+    assert!(!model_opened, "exit evidence #7: no model call");
+    assert_eq!(published.len(), 1);
+    let canvas = &published[0];
+    // An aside, not a topic change: never shelves the canvas it interrupts.
+    assert_eq!(
+        canvas.action,
+        jarvis_contracts::deepdive::CanvasActionDto::Extend
+    );
+    assert_eq!(canvas.label, "Now playing");
+    assert!(canvas.session_id.is_none());
+
+    let card = serde_json::to_value(&canvas.cards[0]).unwrap();
+    assert_eq!(card["type"], "card.now_playing");
+    assert_eq!(card["title"], "Dancing Queen");
+    assert_eq!(card["artist"], "ABBA");
+    assert_eq!(card["album"], "Arrival");
+    assert_eq!(card["artUrl"], "https://cdn.example/art.jpg");
+    assert_eq!(card["sourceApp"], "Spotify");
+    // Data only: no transport affordance rides on the answer card (ADR-022).
+    assert!(card.get("controls").is_none());
+    // The tool plane was never touched — this is a read, not an action.
+    assert!(controller.applied().is_empty());
+}
+
+#[tokio::test]
+async fn a_player_with_no_album_or_art_produces_a_text_only_card() {
+    let controller = Arc::new(FakeController::showing(MediaSnapshot::new([
+        PlayerState::new(
+            player("mpv"),
+            Some("mpv"),
+            PlaybackStatus::Playing,
+            TrackMetadata::sanitized(Some("Fade Into You"), Some("Mazzy Star"), None, None, None),
+            None,
+        ),
+    ])));
+    let (spoken, published, _) = ask_whats_playing(controller, "what song is this").await;
+
+    assert_eq!(spoken, "Fade Into You by Mazzy Star, on mpv.");
+    let card = serde_json::to_value(&published[0].cards[0]).unwrap();
+    // Absent facts are absent on the wire — never a placeholder image or a
+    // guessed album (docs/12 §2.3).
+    assert!(card.get("album").is_none(), "{card}");
+    assert!(card.get("artUrl").is_none(), "{card}");
+    assert_eq!(card["title"], "Fade Into You");
+}
+
+#[tokio::test]
+async fn two_active_players_ask_one_question_and_publish_no_card() {
+    let controller = Arc::new(FakeController::showing(two_playing()));
+    let (spoken, published, model_opened) =
+        ask_whats_playing(controller, "what's playing right now").await;
+
+    // One fluent spoken question (ADR-016) — never a picker, never a guess.
+    assert!(
+        spoken.contains("Spotify") && spoken.contains("Chromium"),
+        "{spoken}"
+    );
+    assert_eq!(spoken.matches('?').count(), 1, "{spoken}");
+    assert!(!spoken.contains("Dancing Queen"), "{spoken}");
+    assert!(
+        published.is_empty(),
+        "an ambiguous answer must not put a card up: {published:?}"
+    );
+    assert!(!model_opened);
+}
+
+#[tokio::test]
+async fn nothing_playing_answers_honestly_with_no_card() {
+    let controller = Arc::new(FakeController::showing(MediaSnapshot::none()));
+    let (spoken, published, model_opened) = ask_whats_playing(controller, "what's playing").await;
+
+    assert_eq!(spoken, "Nothing is playing right now.");
+    assert!(published.is_empty());
+    assert!(!model_opened);
+}

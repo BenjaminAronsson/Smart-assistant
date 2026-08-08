@@ -12,6 +12,7 @@ pub mod lists;
 pub mod location;
 pub mod memory;
 pub mod model;
+pub mod nowplaying;
 pub mod orchestrator;
 pub mod policy;
 pub mod ports;
