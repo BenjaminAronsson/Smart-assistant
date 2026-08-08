@@ -48,6 +48,20 @@ pub struct ModelRequest {
     /// Reasoning providers ignore it; the prompt already carries the framed,
     /// labelled copy that a model must see as untrusted data.
     pub prior_tool_result: Option<String>,
+    /// **Which** tool produced [`Self::prior_tool_result`] — set by the
+    /// orchestrator in the same step, from the invocation it actually executed,
+    /// and `Some` exactly when that field is.
+    ///
+    /// A provider that intends to *speak* a prior result must check this first
+    /// (M5 audit S4). `DeterministicFirstProvider::report` echoes the executor's
+    /// sentence verbatim, which is safe only for the two tools that module
+    /// itself proposes — adapter-authored template prose about a light or a
+    /// media player. Without the id, "the tool that ran is one this module
+    /// proposed" is an *inference* from the grammar matching the same way on
+    /// both turns; with it, it is a checked fact, so a host lookup that changes
+    /// its answer mid-run cannot end with fetched web content spoken as the
+    /// assistant's own answer.
+    pub prior_tool_id: Option<jarvis_domain::tools::ToolId>,
 }
 
 /// Why a model turn finished.

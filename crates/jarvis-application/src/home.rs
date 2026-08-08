@@ -46,11 +46,28 @@ pub struct HomeIntent {
 /// slugified guess (`light.living_room_lights`) is exactly the kind of invention
 /// this grammar refuses — it would trade a quota-costing honest answer for a
 /// fail-closed denial the owner then has to decode.
+/// # Implementor's contract
+///
+/// **The answer must be stable.** For a given `spoken_target`, an implementation
+/// must return the same answer for at least the lifetime of a run. A resolver
+/// that can change its mind — a config reload, an HA-backed lookup, a cache that
+/// warms up between turns — breaks the D-M5-1 guarantee: it can decline a
+/// command on turn 1 (so the reasoning model runs some other tool, say
+/// `web.fetch`) and then recognize the same words on the replan turn, at which
+/// point [`crate::deterministic::DeterministicFirstProvider`] is looking at the
+/// result of a tool it never proposed. That module verifies the tool id before
+/// speaking anything (M5 audit S4), so a violation degrades to "the command is
+/// delegated" rather than "untrusted tool output is spoken" — but it is still a
+/// violation, and the belt is not an excuse to cut the braces.
+///
+/// **It must not perform I/O that can outlive a user's patience.** This runs on
+/// the deterministic, quota-free path, whose whole point is to answer without
+/// waiting on anything. In practice these two requirements point at the same
+/// implementation: an immutable map built at startup.
 pub trait LightTargetResolver: Send + Sync {
     /// The entity id for `spoken_target`, or `None` if the host does not know
-    /// it. Must not perform I/O that can outlive a user's patience: this runs on
-    /// the deterministic, quota-free path, whose whole point is to answer
-    /// without waiting on anything.
+    /// it. See the trait docs: the answer must be stable for the lifetime of a
+    /// run, and the lookup must not block.
     fn resolve_light(&self, spoken_target: &str) -> Option<String>;
 }
 

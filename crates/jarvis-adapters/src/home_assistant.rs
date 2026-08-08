@@ -70,7 +70,10 @@
 //!    and names the entity that failed; a total failure is an `Err`, never a
 //!    partial success; an area that resolves to nothing is an `Err`, never a
 //!    silent success. The undo is composed from the per-entity pre-reads, so it
-//!    restores each light to *its own* prior state rather than blanket-off.
+//!    restores each light to *its own* prior state rather than blanket-off. A
+//!    fan-out that runs long stops *itself* at [`AREA_FANOUT_BUDGET`] and still
+//!    reports what it did, rather than being dropped mid-loop by the host
+//!    timeout and audited as if nothing had happened (M5 audit S1).
 //!
 //! **Known limitation, stated rather than hidden.** `EntityMetadata::area` is
 //! populated only where HA exposes `area_id` on state attributes; true registry
@@ -1261,6 +1264,50 @@ impl ToolExecutor for HomeSetLightTool {
 const MAX_AREA_ENTITIES: usize = 16;
 const MAX_AREA_NAME_CHARS: usize = 48;
 
+/// Worst case for **one** HA round trip as the transport actually bounds it: the
+/// request and the bounded body read are timed separately, each by
+/// [`REQUEST_TIMEOUT`] (see `RestTransport::send`).
+const HA_ROUND_TRIP: Duration = Duration::from_secs(REQUEST_TIMEOUT.as_secs() * 2);
+
+/// Worst case for one entity of the fan-out: the fail-closed pre-read, then the
+/// service call — two round trips through `apply_one`.
+const AREA_ENTITY_WORST_CASE: Duration = Duration::from_secs(HA_ROUND_TRIP.as_secs() * 2);
+
+/// The executor's **own** deadline for the mutating loop (M5 audit S1).
+///
+/// The fan-out is up to [`MAX_AREA_ENTITIES`] entities × two HA round trips, so
+/// on a degraded HA it can far outlast any single-request timeout. Being cut off
+/// from the outside is the dangerous ending: the lights already switched stay
+/// switched, while the carefully-worded partial report ("Turned on 2 of 3 …") is
+/// discarded, the run fails, and the audit row says the effect never happened
+/// (docs/06 §7, invariant 6). So the loop watches the clock itself and *stops*,
+/// returning the partial report with everything it never reached named as not
+/// attempted — degrading gracefully instead of relying on the host wrapper being
+/// generous enough.
+///
+/// Twenty seconds is chosen against both ends: a healthy LAN answers a round
+/// trip in tens of milliseconds (all 16 entities finish in well under a second),
+/// while 20 s still covers a badly degraded HA at ~600 ms per request across the
+/// full bound — and it is about as long as an owner who just said "turn the
+/// lights off" will wait before assuming nothing happened.
+const AREA_FANOUT_BUDGET: Duration = Duration::from_secs(20);
+
+/// The host-applied wrapper deadline for this tool ([`ToolPolicy::timeout`]),
+/// derived from the work the tool may legitimately do rather than copied from
+/// the single-request timeout.
+///
+/// `REQUEST_TIMEOUT` (10 s) was the bug: ~32 requests were run inside a 10 s
+/// wrapper. This is the sum of the three phases that can legitimately elapse —
+/// resolution (one `/api/states` round trip), the fan-out budget above, and the
+/// one entity that may have started just before the deadline and must be allowed
+/// to finish rather than be abandoned mid-service-call. The naive bound
+/// (`REQUEST_TIMEOUT × 2 × MAX_AREA_ENTITIES` ≈ 320 s) is four times longer and
+/// would make the wrapper a fiction; this stays a genuine backstop that the
+/// tool's own deadline should always beat.
+const AREA_EXECUTE_TIMEOUT: Duration = Duration::from_secs(
+    HA_ROUND_TRIP.as_secs() + AREA_FANOUT_BUDGET.as_secs() + AREA_ENTITY_WORST_CASE.as_secs(),
+);
+
 /// A normalized area name — HA's `area_id` slug shape.
 ///
 /// Both sides of the comparison are normalized so the spoken form ("Living
@@ -1341,6 +1388,21 @@ fn cancelled_caveat(skipped: &[String]) -> String {
     )
 }
 
+/// The honesty clause for the [`AREA_FANOUT_BUDGET`] deadline. Kept distinct
+/// from [`cancelled_caveat`] because the two are different facts: the owner did
+/// not cancel anything — Home Assistant ran out of time — and hearing "cancelled"
+/// for a command nobody cancelled is its own small lie.
+fn deadline_caveat(unreached: &[String]) -> String {
+    if unreached.is_empty() {
+        return String::new();
+    }
+    let verb = if unreached.len() == 1 { "was" } else { "were" };
+    format!(
+        " {} {verb} not attempted because Home Assistant was too slow to reach them all in time.",
+        join_labels(unreached)
+    )
+}
+
 /// What an area resolved to, plus what could not be judged.
 #[derive(Debug, Default)]
 struct AreaResolution {
@@ -1414,12 +1476,17 @@ impl HomeSetAreaLightsTool {
     /// `is_reversible` is claimed only because the executor proves it: every
     /// entity is pre-read, the undo is composed from those pre-reads, and an
     /// entity whose pre-read fails is not mutated at all.
+    ///
+    /// The `timeout` is [`AREA_EXECUTE_TIMEOUT`], not the single-request
+    /// `REQUEST_TIMEOUT` the singular tools use: this one is a fan-out, and a
+    /// wrapper that can fire mid-loop turns real, already-applied physical
+    /// effects into an audited "nothing happened" (M5 audit S1).
     pub fn policy() -> ToolPolicy {
         ToolPolicy {
             risk: RiskLevel::R1,
             is_reversible: true,
             requires_user_presence: false,
-            timeout: REQUEST_TIMEOUT,
+            timeout: AREA_EXECUTE_TIMEOUT,
             required_scopes: [Scope::new(CONTROL_SCOPE).expect("static scope is valid")]
                 .into_iter()
                 .collect(),
@@ -1556,10 +1623,26 @@ impl ToolExecutor for HomeSetAreaLightsTool {
         let mut undos: Vec<String> = Vec::new();
         let mut failed: Vec<String> = Vec::new();
         let mut skipped: Vec<String> = Vec::new();
+        let mut unreached: Vec<String> = Vec::new();
+        // The executor's own deadline (M5 audit S1). It starts here, after
+        // resolution, on purpose: resolution is a single bounded read that
+        // mutates nothing, while this budget exists to bound the *mutating*
+        // phase — the one whose interruption leaves the house half-changed with
+        // nobody told. `tokio::time::Instant` rather than `std::time::Instant`
+        // so the bound is exercisable under a paused test clock.
+        let deadline = tokio::time::Instant::now() + AREA_FANOUT_BUDGET;
         for metadata in &resolution.matched {
             let entity_label = metadata.label();
             if cancel.is_cancelled() {
                 skipped.push(entity_label);
+                continue;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                // Stop *ourselves* rather than be dropped mid-call by the host
+                // wrapper: the entities already driven are real and the owner is
+                // about to be told exactly which ones they were. Remaining
+                // entities are collected, not silently dropped.
+                unreached.push(entity_label);
                 continue;
             }
             match apply_one(&self.client, &metadata.entity_id, desired, &cancel).await {
@@ -1588,13 +1671,21 @@ impl ToolExecutor for HomeSetAreaLightsTool {
             // Total failure is reported as total failure. Rounding it up to a
             // partial success would be the same lie in the other direction.
             if failed.is_empty() {
+                // Nothing was even attempted. Unreachable in practice — the
+                // deadline is in the future when the loop starts, so the first
+                // entity is always tried — but if it ever happens it is a
+                // timeout, not a cancellation, and must not be mislabelled.
+                if !unreached.is_empty() {
+                    return Err(ToolError::Timeout(AREA_FANOUT_BUDGET));
+                }
                 return Err(ToolError::Cancelled);
             }
             return Err(ToolError::ExecutionFailed(format!(
-                "None of the {total} {} in the {label} responded: {}.{}{}",
+                "None of the {total} {} in the {label} responded: {}.{}{}{}",
                 lights_noun(total),
                 join_labels(&failed),
                 cancelled_caveat(&skipped),
+                deadline_caveat(&unreached),
                 unknown_area_caveat(resolution.unknown_area),
             )));
         }
@@ -1622,6 +1713,7 @@ impl ToolExecutor for HomeSetAreaLightsTool {
             content.push_str(&format!(" {} did not respond.", join_labels(&failed)));
         }
         content.push_str(&cancelled_caveat(&skipped));
+        content.push_str(&deadline_caveat(&unreached));
         content.push_str(&unknown_area_caveat(resolution.unknown_area));
 
         Ok(ToolResult {
@@ -2777,6 +2869,9 @@ mod tests {
         calls: Mutex<Vec<HomeRequest>>,
         state_failures: Mutex<BTreeSet<String>>,
         service_failures: Mutex<BTreeSet<String>>,
+        /// Per-round-trip latency, for the M5 audit S1 deadline test. Zero
+        /// everywhere else, so every other fixture keeps behaving instantly.
+        latency: Mutex<Duration>,
     }
 
     impl FakeHome {
@@ -2803,6 +2898,12 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(entity.to_owned());
+        }
+
+        /// Make every round trip take `delay` — a slow Home Assistant, not a
+        /// broken one: each request still succeeds, it just takes its time.
+        fn set_latency(&self, delay: Duration) {
+            *self.latency.lock().unwrap() = delay;
         }
 
         fn render(id: &str, entity: &FakeEntity) -> String {
@@ -2852,6 +2953,12 @@ mod tests {
             self.calls.lock().unwrap().push(request.clone());
             if cancel.is_cancelled() {
                 return Err(HomeAssistantError::Cancelled);
+            }
+            // Read-and-drop before awaiting: a `std::sync` guard held across an
+            // await would make this future non-`Send`.
+            let latency = *self.latency.lock().unwrap();
+            if !latency.is_zero() {
+                tokio::time::sleep(latency).await;
             }
             let entities = self.entities.lock().unwrap();
             match request {
@@ -3017,6 +3124,85 @@ mod tests {
             !home
                 .service_calls()
                 .contains(&"light.tv_backlight".to_owned())
+        );
+    }
+
+    /// M5 audit S1: a fan-out that runs long must still report what it actually
+    /// did.
+    ///
+    /// Before this fix the tool ran up to 32 HA round trips inside a 10 s host
+    /// wrapper. On a slow HA the wrapper dropped the whole `execute` future
+    /// mid-loop: the lights already switched stayed switched, the partial report
+    /// was discarded, and the run was audited `tool.failed` — the owner told
+    /// nothing happened while half the room was lit. Now the loop watches its own
+    /// deadline and stops, and the entities it never reached are named.
+    ///
+    /// The clock is paused, so the latency below is virtual: the test asserts a
+    /// 20 s budget without taking 20 s.
+    #[tokio::test(start_paused = true)]
+    async fn a_fan_out_that_outruns_its_budget_still_reports_what_it_did() {
+        let (home, allowlist) = living_room();
+        // 8 s per round trip. Resolution costs one (t=8 s), then each entity
+        // costs two: the first finishes at 24 s and the second at 40 s, both
+        // started inside the 20 s budget that opened at 8 s; the third is past
+        // the deadline and is never attempted.
+        home.set_latency(Duration::from_secs(8));
+        let tool = area_tool(home.clone(), allowlist);
+        let result = run_area(&tool, "living room", "on")
+            .await
+            .expect("a slow fan-out reports; it must not fail wholesale");
+
+        assert_eq!(
+            result.content,
+            "Turned on 2 of 3 lights in the living room: Corner lamp (light.corner_lamp) and \
+             Reading lamp (light.reading_lamp). Sofa lamp (light.sofa_lamp) was not attempted \
+             because Home Assistant was too slow to reach them all in time."
+        );
+        assert!(result.content.contains("2 of 3"), "the count leads");
+        assert!(
+            !result.content.contains("all 3"),
+            "a truncated fan-out is never rounded up to a success"
+        );
+        // The physical effect and the report agree: exactly the two lights the
+        // sentence names were driven, and the undo covers exactly those two.
+        assert_eq!(
+            home.service_calls(),
+            vec![
+                "light.corner_lamp".to_owned(),
+                "light.reading_lamp".to_owned()
+            ]
+        );
+        assert!(
+            !home.touched("light.sofa_lamp"),
+            "an entity reported as not attempted must really not have been touched"
+        );
+        let compensation = result.compensation.unwrap();
+        assert_eq!(compensation.matches("Set ").count(), 2);
+        assert!(!compensation.contains("light.sofa_lamp"));
+    }
+
+    /// The other half of S1: the host wrapper must not be able to fire before the
+    /// tool's own deadline, or the graceful stop above never gets to happen. The
+    /// policy timeout is therefore derived from the work this tool may do, not
+    /// copied from the single-request timeout.
+    #[test]
+    fn the_host_timeout_cannot_preempt_the_fan_out_deadline() {
+        let wrapper = HomeSetAreaLightsTool::policy().timeout;
+        assert!(
+            wrapper >= AREA_FANOUT_BUDGET + AREA_ENTITY_WORST_CASE,
+            "the wrapper must outlast the budget plus the entity in flight when it \
+             expires, or `execute` is dropped mid-service-call: {wrapper:?}"
+        );
+        assert!(
+            wrapper > HomeSetLightTool::policy().timeout,
+            "a fan-out is not one request; sharing REQUEST_TIMEOUT with the singular \
+             tool is the defect this pins"
+        );
+        // …and not absurdly long either: the naive bound (one full request
+        // timeout per round trip per entity) would leave an owner waiting.
+        assert!(
+            wrapper < REQUEST_TIMEOUT * 2 * (MAX_AREA_ENTITIES as u32),
+            "the backstop must stay far below the naive worst case: {wrapper:?}"
         );
     }
 

@@ -90,13 +90,55 @@ unconfigured. `perf --voice` was added this milestone for the daemon's share of 
 
 ### 4.2 security-auditor
 
-*(Section to be completed from the in-flight whole-milestone pass over
-`m4-complete..HEAD`.)*
+Two passes over the milestone. **Neither found a BLOCKING issue.**
 
-An earlier audit covering the first half of the milestone found **no BLOCKING** issues and
-five SHOULD-FIX items; **all five are fixed and committed**: the voice socket wedge and
-its unbounded teardown, an orphaned synthesis task, unvalidated `stream_id`/audio-format
-fields, the Spotify grant expiry/resource check, and a wrong-device volume undo.
+**Pass 1** (first half of the milestone): no BLOCKING, five SHOULD-FIX — **all five fixed
+and committed**: the voice socket wedge and its unbounded teardown, an orphaned synthesis
+task, unvalidated `stream_id`/audio-format fields, the Spotify grant expiry/resource
+check, and a wrong-device volume undo.
+
+**Pass 2** (whole milestone, `m4-complete..HEAD`): **no BLOCKING**, four SHOULD-FIX.
+Three are fixed (S1, S3, S4 below); one is carried with an owner decision (S2 → D-M5-4).
+
+- **S1 — a partial physical effect could be reported as a clean failure. FIXED.**
+  `home.set_area_lights` shared one 10 s wrapper timeout across a fan-out that makes two
+  HA round trips per entity for up to 16 entities. On a slow HA the wrapper dropped the
+  whole future mid-loop: lights already switched stayed switched, the "2 of 3" sentence
+  was discarded, and the audit recorded `tool.failed` — telling the owner nothing happened
+  while half the room was lit. Exactly what FR-28's partial reporting exists to prevent,
+  and it made the append-only audit misleading about a real physical side effect.
+- **S3 — the secret-rejection error still echoed a prefix of a pasted secret. FIXED.**
+  The earlier fix (`d882408`) closed the no-colon case; a password *containing* a colon
+  (`Summer:2026!`) still leaked `Summer` to journald.
+- **S4 — the D-M5-1 safety argument rested on an undocumented invariant. FIXED.**
+  `report()` echoing the executor's result is safe only because the grammar's verdict is
+  identical on turn 1 and on the replan. That holds today, but a *dynamic*
+  `LightTargetResolver` (config reload, HA-backed lookup, cache warm-up) returning `None`
+  then `Some` would cause fetched web content to be spoken verbatim as the assistant's own
+  answer. Now stated on the trait and pinned by a flip-flop-resolver regression test.
+- **S2 → carried as D-M5-4** (§5): tool-execution audit rows carry no argument binding.
+
+**What pass 2 verified clean**, with reasoning, since it is the substance of this gate:
+`orchestrator.rs:712` is still the *only* production call site of `ToolExecutor::execute`,
+so a grammar-produced `ToolProposal` takes the identical policy → approval → grant →
+execute → audit path — recognizing speech grants nothing. Injection can neither
+manufacture, widen, **nor suppress** a proposal: classification sees only the pre-marker
+slice (the owner's own words on every turn, since both memory and tool frames are
+appended *after* it), and "has a tool already run" is answered by `prior_tool_result`,
+which grep confirms has exactly one construction site and one write site, making it
+unforgeable by content. `ConfiguredLightTargets` resolves only *downward* into the
+allowlist — there is no code path that constructs an entity id from an utterance. The
+area fan-out filters the allowlist by HA metadata rather than enumerating HA and checking
+afterwards, so a non-allowlisted entity is structurally unreachable; the bound and the
+zero-match case are refused before any mutation; and the per-entity undo is composed from
+each entity's own pre-read, so a light already on is restored to on. Both grant fixes are
+strictly *stronger* (Spotify gained expiry + resource; HA lost nothing), and the entity
+stays bound via `normalized_args_sha256`. Secrets: neither adapter config derives `Debug`,
+error variants are fixed strings, HA refuses non-HTTPS and forbids redirects (token
+re-send to another origin). Crash recovery was checked specifically for this milestone:
+`prior_tool_result` is in-memory, so recovered runs re-drive with `device = None`, leaving
+the tool stack unwired and failing at `PolicyReview` — a deterministic command **cannot
+re-fire a physical effect across a restart**.
 
 ### 4.3 Defects found and fixed during the milestone
 
@@ -155,8 +197,23 @@ matches "stop means stop" and saves quota; not cancelling means a long answer th
 interrupted is still completed and persisted, which is what they would want if they only
 wanted the *speaking* to stop.
 
+**D-M5-4 — tool-execution audit rows carry no argument binding.** `tool_audit_event`
+(`orchestrator.rs:814-828`) records `target: "tool:{id}"` with an empty payload. This is
+deliberate M2 design — docs/06 §5 keeps arguments out of audit payloads — but F5.4
+amplifies it: `home.set_area_lights` can drive up to 16 physical devices, and the durable
+record cannot distinguish "the living room" from "the whole floor". The append-only log
+therefore cannot answer *"what was actuated"* after the fact, which is most of what
+invariant 6 exists for. The audit's suggested fix is to record the already-computed,
+non-sensitive `normalized_args_sha256` (it binds the row to the exact approved arguments
+without echoing them), plus the matched entity count for the area tool. **Not done here**
+because it changes the audit payload for *every* tool, which is a cross-cutting
+design decision touching a docs/06 rule rather than an M5 defect. Requested disposition:
+**accept as a carryforward**, ideally scheduled before any further physical-effect tools
+land.
+
 **D-M5-1 is NOT in this list — it was fixed, not accepted.** Repeatedly actuating physical
-hardware is not something to carry as paperwork.
+hardware is not something to carry as paperwork. Neither is **S1** (a partial physical
+effect reported as a clean failure), for the same reason.
 
 ---
 
@@ -180,8 +237,17 @@ hardware is not something to carry as paperwork.
 ## 7. Recommendation
 
 All eight features are complete, 8 of 9 exit-evidence items are fully met, every gate run
-is green, and the four defects found during the milestone are fixed rather than carried.
-**Recommend APPROVE WITH DEVIATIONS** (D-M5-2, D-M5-3) once the owner has decided both.
+is green, and both security passes found **no BLOCKING issues**. Of the nine SHOULD-FIX
+items raised across both passes, **eight are fixed**; the ninth (D-M5-4) is a cross-cutting
+audit-payload design decision, not an M5 defect.
+
+Every defect found during the milestone that could produce a **wrong physical effect or a
+dishonest report of one** was fixed rather than carried — the eight-fold re-firing
+(D-M5-1), the R2 home grants that silently denied every approved action, and the fan-out
+timeout that reported a half-lit room as a clean failure.
+
+**Recommend APPROVE WITH DEVIATIONS** (D-M5-2, D-M5-3, D-M5-4) once the owner has decided
+all three.
 
 On approval: tag `m5-complete`, update the docs/08 §1 roadmap row, and record the
 reference-hardware NFR-04 measurement when hardware is available.

@@ -261,6 +261,71 @@ fn m5_literal_credentials_are_rejected_without_echoing_them() {
     }
 }
 
+// M5 audit S3 residual: a *colon-containing* literal secret. The earlier fix
+// covered "no colon at all"; a pasted password like `Summer:2026!` still has a
+// first-colon prefix, and echoing it leaked a usable fragment of the secret into
+// stderr/journald. Note that shape is no defence here — `Summer` is a perfectly
+// well-formed URI scheme — so only a scheme name the code itself knows may be
+// echoed (invariant 5).
+#[test]
+fn a_colon_containing_literal_password_is_rejected_without_echoing_any_fragment() {
+    let cases = [
+        // A password that happens to contain a colon, whose prefix is
+        // indistinguishable from a scheme by shape alone.
+        ("Summer:2026!", ["Summer", "2026"]),
+        // A prefix that is not even scheme-shaped.
+        ("9Hunter2:rest-of-it", ["9Hunter2", "rest-of-it"]),
+        // A long opaque token that merely contains a colon somewhere.
+        (
+            "AQCxxxxxxxxxxxxxxxxxxxxxxxx:tail",
+            ["AQCxxxxxxxxxxxxxxxxxxxxxxxx", "tail"],
+        ),
+    ];
+    for (literal, forbidden) in cases {
+        let figment = figment_with(serde_json::json!({
+            "integrations": { "home_assistant": {
+                "enabled": true,
+                "base_url": "https://ha.example.test:8123",
+                "token_secret": literal,
+            }}
+        }));
+        let message = Config::from_figment(figment)
+            .expect_err("a literal credential must be rejected")
+            .to_string();
+        for fragment in forbidden {
+            assert!(
+                !message.contains(fragment),
+                "no fragment of the pasted secret may appear in the error; \
+                 {fragment:?} leaked from {literal:?}: {message}"
+            );
+        }
+        assert!(
+            message.contains("<withheld>"),
+            "the withheld marker must stand in for the value, got: {message}"
+        );
+        assert!(
+            message.contains("env:") && message.contains("keyring:"),
+            "error must still name the accepted schemes, got: {message}"
+        );
+    }
+}
+
+// The counterpart: a genuine mistyped *scheme* is still echoed, because that is
+// the operator-actionable half of the message and a scheme is not a secret.
+#[test]
+fn a_genuine_but_unsupported_scheme_is_still_named() {
+    let figment = figment_with(serde_json::json!({
+        "database": { "url_secret": "vault:jarvis/db-url" }
+    }));
+    let message = Config::from_figment(figment)
+        .expect_err("an unsupported scheme must be rejected")
+        .to_string();
+    assert!(
+        message.contains("vault"),
+        "a real scheme is safe to echo and tells the operator what to fix, got: {message}"
+    );
+}
+
 // The volume cap is the R1/R2 boundary for hearing protection (docs/02 §11a),
 // so a nonsensical cap is a startup failure, not a value clamped at runtime.
 #[test]

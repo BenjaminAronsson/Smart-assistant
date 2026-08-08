@@ -945,10 +945,48 @@ fn validate_secret_ref(reference: &str) -> anyhow::Result<()> {
 /// before the first `:`" would then return the whole value. That is precisely
 /// the case this function exists to protect (someone pasted a raw token or
 /// password), so it must not be echoed: an opaque marker goes out instead.
+///
+/// A `:` alone is not enough either: a pasted literal password may well contain
+/// one (`Summer:2026!`), and echoing "everything before the first colon" then
+/// leaks a usable prefix of the secret into stderr/journald — the same leak in
+/// smaller print (invariant 5).
+///
+/// Shape alone does not separate the two cases: `Summer` is a perfectly
+/// well-formed RFC 3986 scheme. What separates them is *provenance* — so the
+/// echo is drawn from a fixed, code-owned list of scheme names rather than from
+/// the rejected value. A candidate that matches one of those names carries no
+/// information the operator did not already read in this file; anything else is
+/// withheld wholesale. The message stays actionable regardless, because the two
+/// facts an operator needs — which field, and which schemes are accepted — are
+/// always spelled out and never come from the value.
+const WITHHELD_SCHEME: &str = "<withheld>";
+
+/// Scheme names safe to repeat, because they *are* these literals: the two
+/// Jarvis accepts (echoed when only the shape after the colon is wrong), plus
+/// the near-misses an operator plausibly types into a `*_secret` field. A scheme
+/// outside this list is not "unknown but harmless" — it may be the first half of
+/// a password, so it is withheld.
+const ECHOABLE_SCHEMES: &[&str] = &[
+    "env",
+    "keyring",
+    "file",
+    "vault",
+    "secret",
+    "op",
+    "http",
+    "https",
+    "postgres",
+    "postgresql",
+];
+
 fn scheme_of(reference: &str) -> &str {
     match reference.split_once(':') {
-        Some((scheme, _)) => scheme,
-        None => "<no scheme>",
+        Some((scheme, _)) => ECHOABLE_SCHEMES
+            .iter()
+            .find(|known| scheme.eq_ignore_ascii_case(known))
+            .copied()
+            .unwrap_or(WITHHELD_SCHEME),
+        None => WITHHELD_SCHEME,
     }
 }
 

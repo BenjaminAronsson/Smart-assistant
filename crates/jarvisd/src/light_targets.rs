@@ -6,7 +6,10 @@
 //! the trait forbids I/O on that path — it runs on the quota-free deterministic
 //! route, whose whole point is answering without waiting on anything. So the
 //! mapping is built once at startup from `[integrations.home_assistant]` and
-//! then answered from memory.
+//! then answered from memory. Being immutable also satisfies the trait's other
+//! requirement — the answer must be stable for the lifetime of a run, or the
+//! deterministic provider could end up looking at the result of a tool it never
+//! proposed (M5 audit S4).
 //!
 //! **The security property is that this can only ever resolve *downward*, into
 //! entities the owner explicitly allowlisted.** It never constructs an entity

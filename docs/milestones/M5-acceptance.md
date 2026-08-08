@@ -177,6 +177,9 @@ re-enters no prompt and no tool call. Text still grants no authority (invariant 
 model-proposed tool's result — arbitrary web content — is never spoken by this module,
 because its utterance does not match the grammar; that turn delegates as before
 (`deterministic::tests::a_replan_for_an_unrecognized_utterance_still_delegates`).
+(Since the gate audit's S4 finding, "the tool that ran is one this module proposed" is no
+longer an inference from the grammar matching twice — it is checked against
+`ModelRequest::prior_tool_id`. See S4 below.)
 
 **Tests.** No existing assertion was weakened. Both tests the F5.8 note called blocking —
 `untrusted_context_cannot_widen_a_transport_command` and
@@ -195,6 +198,103 @@ Scenario #3 no longer pins the repeat: it asserts `transports == [Pause]` exactl
 `Completed` run, and that the spoken answer is the executor's text. Both it and the new
 #2 scenario fail against `965ac3b` (8 transport calls; `Failed`/`budget exceeded:
 ModelTurns`) and pass after.
+
+### S1 — a partial physical effect was reported as a clean failure — **FIXED**
+
+**From the gate security audit (SHOULD-FIX). No BLOCKING findings.**
+
+`HomeSetAreaLightsTool::policy()` set `timeout: REQUEST_TIMEOUT` (10 s) while the fan-out
+loop performs **two** HA round trips per entity (the fail-closed pre-read, then the
+service call) for up to `MAX_AREA_ENTITIES` (16) entities — ~32 requests inside a 10 s
+host wrapper (`TimeoutExecutor`). On a slow HA the wrapper dropped the whole `execute`
+future mid-loop: the lights already switched **stayed** switched, the carefully worded
+partial sentence ("Turned on 2 of 3 …") was discarded, the run failed, and the audit row
+said `tool.failed` — the append-only record actively misleading about a real physical
+side effect (docs/06 §7, invariant 6), which is exactly what FR-28's partial reporting
+exists to prevent.
+
+**Fix — both halves, because either alone is insufficient.**
+
+1. *An internal deadline*: `AREA_FANOUT_BUDGET` (**20 s**) starts when the mutating loop
+   starts and is checked before each entity. Past it, the loop stops **itself** and the
+   entities it never reached are named in the result ("… was not attempted because Home
+   Assistant was too slow to reach them all in time"). This degrades gracefully instead of
+   depending on the outer wrapper being generous. 20 s is chosen against both ends: a
+   healthy LAN answers a round trip in tens of milliseconds (all 16 entities finish in
+   well under a second), 20 s still covers a badly degraded HA at ~600 ms/request across
+   the full 16-entity bound, and it is about as long as an owner who just said "turn the
+   lights off" will wait before assuming nothing happened.
+2. *A consistent wrapper budget*: `AREA_EXECUTE_TIMEOUT` (**80 s**) = one `/api/states`
+   round trip for resolution (20 s: the transport bounds the request and the bounded body
+   read separately, each by `REQUEST_TIMEOUT`) + the 20 s fan-out budget + the one entity
+   that may have started just before the deadline and must be allowed to finish rather
+   than be abandoned mid-service-call (40 s). It is a genuine backstop the tool's own
+   deadline should always beat — not the naive `REQUEST_TIMEOUT × 2 × MAX_AREA_ENTITIES`
+   (≈ 320 s), which no owner waiting on a voice command should ever sit through, and not
+   the 10 s that caused the defect.
+
+**Tests** (`jarvis-adapters::home_assistant::tests`, no existing assertion weakened):
+`a_fan_out_that_outruns_its_budget_still_reports_what_it_did` seeds the fixture with 8 s
+of latency per round trip under a paused clock, and asserts the exact sentence "Turned on
+2 of 3 lights … Sofa lamp … was not attempted …", that only the two named lights were
+actually driven, and that the undo covers exactly those two. It fails without the deadline
+(the tool reports "all 3", and in production the wrapper would then have killed the call).
+`the_host_timeout_cannot_preempt_the_fan_out_deadline` pins the wrapper ≥ budget + one
+in-flight entity, > the singular tool's timeout, and far below the naive worst case; it
+fails against `timeout: REQUEST_TIMEOUT`.
+
+### S3 — `scheme_of` echoed a prefix of a pasted secret — **FIXED**
+
+**From the gate security audit (SHOULD-FIX).**
+
+`d882408` closed the case where a rejected secret contains **no** colon (the whole value
+was echoed into an error that reaches stderr/journald). The residual: a literal password
+that *does* contain one — `Summer:2026!` — was echoed up to the first colon. Shape is no
+defence here, because `Summer` is a perfectly well-formed RFC 3986 scheme; what separates
+a scheme from half a password is **provenance**. So `scheme_of` now echoes only a name
+from a fixed, code-owned list (`env`, `keyring`, and the near-misses an operator
+plausibly types into a `*_secret` field), returning the list's own literal rather than the
+candidate; everything else becomes `<withheld>`. The message stays actionable because the
+two facts that matter — which field, and which schemes are accepted — never came from the
+value.
+
+**Tests** (`jarvisd/tests/config.rs`):
+`a_colon_containing_literal_password_is_rejected_without_echoing_any_fragment` asserts no
+fragment of three colon-containing literals appears in the error (it fails before the fix:
+"Summer" leaked), and `a_genuine_but_unsupported_scheme_is_still_named` pins that a real
+mistyped scheme (`vault:`) is still named.
+
+### S4 — the D-M5-1 safety argument rested on an untested invariant — **FIXED**
+
+**From the gate security audit (SHOULD-FIX).**
+
+`report()` echoes the executor's result verbatim on a replan. That was safe only because
+the grammar's verdict is identical on turn 1 and on the replan, so the tool that ran is
+necessarily one this module proposed. That held (frozen `base_context`, pure parsers, an
+immutable startup map of light targets) but was neither stated nor tested. A future
+`LightTargetResolver` that is dynamic — config reload, HA-backed lookup, cache warm-up —
+could return `None` on turn 1 (letting the model run `web.fetch`) and `Some` on the
+replan, at which point `report()` would speak **fetched web content verbatim as the
+assistant's own answer**.
+
+**Fix.** Both the requirement and a check that no longer depends on it:
+
+- `LightTargetResolver` now states the contract: the answer must be stable for at least
+  the lifetime of a run, and a resolver that can change its mind breaks the D-M5-1
+  guarantee. (The pre-existing "no slow I/O" requirement points at the same
+  implementation: an immutable map built at startup.)
+- `ModelRequest` gained `prior_tool_id: Option<ToolId>`, set by the orchestrator from the
+  invocation it actually executed, travelling with `prior_tool_result` (the two are now
+  carried together through `Active::observation`/`Active::prior_tool`, so no step can
+  describe one tool's output as another's). `DeterministicFirstProvider` speaks a prior
+  result only when that id equals the tool id of the proposal its grammar just produced;
+  otherwise the turn delegates, as an unrecognized utterance always did. No `RunState`
+  transition changed — this is one more fact travelling with an existing request.
+
+**Test** (`deterministic::tests::a_resolver_that_changes_its_mind_cannot_get_foreign_tool_output_spoken`):
+a flip-flop resolver (`None` first call, `Some` after) delegates turn 1, then the replan
+carries hostile `web.fetch` output; the module must delegate rather than speak it. Without
+the id check the test fails with the hostile string spoken verbatim.
 
 ### D-M5-2 — barge-in cancels synthesis but not the in-flight run
 

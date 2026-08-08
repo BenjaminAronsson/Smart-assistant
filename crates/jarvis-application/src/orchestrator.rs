@@ -35,7 +35,7 @@ use jarvis_domain::grants::{ExecutionGrant, GrantError};
 use jarvis_domain::ids::{RunId, UserId};
 use jarvis_domain::run::{Run, RunEvent, RunOutcome, RunState, TransitionError};
 use jarvis_domain::tools::{
-    MAX_RESULT_PROMPT_BYTES, ToolError, ToolInvocation, ToolProposal, ToolResult,
+    MAX_RESULT_PROMPT_BYTES, ToolError, ToolId, ToolInvocation, ToolProposal, ToolResult,
     sanitize_result_content,
 };
 
@@ -208,14 +208,18 @@ struct Active {
     /// The grant minted at approval, to validate before execution. `None` for
     /// the R0/R1 auto path (no grant); `Some` for an approved R2+ call.
     grant: Option<ExecutionGrant>,
-    /// The tool result to fold back into the next model turn (`Replanning`).
-    observation: Option<ToolResult>,
-    /// The sanitized text of the most recent tool result, retained after it has
-    /// been folded into the prompt so every subsequent [`ModelRequest`] carries
-    /// the structural fact "a tool has already run in this run"
-    /// (`ModelRequest::prior_tool_result`). Unlike [`Self::observation`] this is
-    /// not taken by the replan step — it is the run's memory of having acted.
-    prior_tool_result: Option<String>,
+    /// The tool result to fold back into the next model turn (`Replanning`),
+    /// paired with the tool it came from. The two travel together so a later
+    /// step can never describe one tool's output as another's — a provider that
+    /// speaks a prior result depends on that pairing (M5 audit S4).
+    observation: Option<(ToolId, ToolResult)>,
+    /// The tool id and the sanitized text of the most recent tool result,
+    /// retained after they have been folded into the prompt so every subsequent
+    /// [`ModelRequest`] carries the structural facts "a tool has already run in
+    /// this run" and "it was *this* tool" (`ModelRequest::prior_tool_result`,
+    /// `ModelRequest::prior_tool_id`). Unlike [`Self::observation`] this is not
+    /// taken by the replan step — it is the run's memory of having acted.
+    prior_tool: Option<(ToolId, String)>,
 }
 
 /// Outcome of a single step: keep looping, or the run was cancelled mid-step.
@@ -305,7 +309,7 @@ impl Orchestrator<'_> {
             invocation: None,
             grant: None,
             observation: None,
-            prior_tool_result: None,
+            prior_tool: None,
         };
 
         while !run.state.is_terminal() {
@@ -394,9 +398,14 @@ impl Orchestrator<'_> {
         active: &mut Active,
         cancel: &CancellationToken,
     ) -> Result<StepFlow, StepError> {
+        let (prior_tool_id, prior_tool_result) = match &active.prior_tool {
+            Some((tool_id, text)) => (Some(tool_id.clone()), Some(text.clone())),
+            None => (None, None),
+        };
         let request = ModelRequest {
             prompt: active.prompt.take().unwrap_or_default(),
-            prior_tool_result: active.prior_tool_result.clone(),
+            prior_tool_result,
+            prior_tool_id,
         };
         // One model turn is consumed at invocation; the next loop-top budget
         // check enforces `max_model_turns`.
@@ -571,11 +580,14 @@ impl Orchestrator<'_> {
                     .await;
                 // Feed the denial back so the model can replan (e.g. explain it
                 // cannot proceed) rather than the run simply failing.
-                active.observation = Some(ToolResult {
-                    content: "The user denied the requested action.".to_owned(),
-                    truncated: false,
-                    compensation: None,
-                });
+                active.observation = Some((
+                    proposal.tool_id.clone(),
+                    ToolResult {
+                        content: "The user denied the requested action.".to_owned(),
+                        truncated: false,
+                        compensation: None,
+                    },
+                ));
                 run.apply(RunEvent::ApprovalDenied)?;
                 self.after_transition(run).await;
                 Ok(StepFlow::Continue)
@@ -737,7 +749,7 @@ impl Orchestrator<'_> {
                         })
                         .await;
                 }
-                active.observation = Some(result);
+                active.observation = Some((tool_id.clone(), result));
                 run.apply(RunEvent::ToolObserved)?;
                 self.after_transition(run).await;
                 Ok(StepFlow::Continue)
@@ -754,7 +766,7 @@ impl Orchestrator<'_> {
         active: &mut Active,
         cancel: &CancellationToken,
     ) -> Result<StepFlow, StepError> {
-        let observation = active
+        let (observed_tool, observation) = active
             .observation
             .take()
             .ok_or(StepError::Internal("replan with no tool observation"))?;
@@ -777,7 +789,7 @@ impl Orchestrator<'_> {
         // a marker that untrusted content could itself contain (D-M5-1). Set
         // here and never cleared: once this run has acted, every later turn of
         // it knows so.
-        active.prior_tool_result = Some(sanitized.text);
+        active.prior_tool = Some((observed_tool, sanitized.text));
         // ModelInvoked is legal from Replanning as well as ContextReady.
         self.open_model_step(run, active, cancel).await
     }
