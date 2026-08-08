@@ -210,6 +210,12 @@ struct Active {
     grant: Option<ExecutionGrant>,
     /// The tool result to fold back into the next model turn (`Replanning`).
     observation: Option<ToolResult>,
+    /// The sanitized text of the most recent tool result, retained after it has
+    /// been folded into the prompt so every subsequent [`ModelRequest`] carries
+    /// the structural fact "a tool has already run in this run"
+    /// (`ModelRequest::prior_tool_result`). Unlike [`Self::observation`] this is
+    /// not taken by the replan step — it is the run's memory of having acted.
+    prior_tool_result: Option<String>,
 }
 
 /// Outcome of a single step: keep looping, or the run was cancelled mid-step.
@@ -299,6 +305,7 @@ impl Orchestrator<'_> {
             invocation: None,
             grant: None,
             observation: None,
+            prior_tool_result: None,
         };
 
         while !run.state.is_terminal() {
@@ -389,6 +396,7 @@ impl Orchestrator<'_> {
     ) -> Result<StepFlow, StepError> {
         let request = ModelRequest {
             prompt: active.prompt.take().unwrap_or_default(),
+            prior_tool_result: active.prior_tool_result.clone(),
         };
         // One model turn is consumed at invocation; the next loop-top budget
         // check enforces `max_model_turns`.
@@ -764,6 +772,12 @@ impl Orchestrator<'_> {
             "{base} [Untrusted tool result{note}] {} [End untrusted tool result]",
             sanitized.text
         ));
+        // The same text, carried structurally so a provider does not have to
+        // re-derive "a tool already ran this run" by scanning its own prompt for
+        // a marker that untrusted content could itself contain (D-M5-1). Set
+        // here and never cleared: once this run has acted, every later turn of
+        // it knows so.
+        active.prior_tool_result = Some(sanitized.text);
         // ModelInvoked is legal from Replanning as well as ContextReady.
         self.open_model_step(run, active, cancel).await
     }

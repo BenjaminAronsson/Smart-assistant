@@ -362,6 +362,17 @@ async fn tool_result_is_sanitized_before_it_reaches_the_next_prompt() {
         !replan_prompt.chars().any(|c| c.is_control()),
         "no control byte may survive into a prompt: {replan_prompt:?}"
     );
+
+    // D-M5-1: the same sanitized text is also handed over *structurally*, so a
+    // provider never has to recover "a tool already ran" by scanning its own
+    // prompt for a marker untrusted content can itself contain. `None` on the
+    // first turn, `Some` from the replan on.
+    assert_eq!(
+        model.prior_tool_results(),
+        vec![None, Some("ok[2Jdone".to_owned())],
+        "prior_tool_result is set only from the replan turn, and carries the \
+         sanitized result"
+    );
 }
 
 #[tokio::test]

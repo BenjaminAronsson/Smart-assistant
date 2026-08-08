@@ -954,28 +954,23 @@ async fn evidence2_a_broad_home_action_needs_approval_and_a_single_use_grant(poo
 /// second one; a regression that quietly delegated to the provider would still
 /// produce a correct-looking answer.
 ///
-/// # Deviation D-M5-1 — the effect repeats, and the run then reports failure
+/// # One command, one effect (regression: D-M5-1, fixed)
 ///
-/// This scenario also pins a **defect F5.8 found and did not fix**, because
-/// fixing it means changing `jarvis-application` semantics that two existing
-/// injection-defence tests currently pin
-/// (`deterministic::tests::untrusted_context_cannot_widen_a_transport_command`
-/// and `…a_home_command_that_only_matches_before_a_sanitized_tool_result_is_not_widened`
-/// both assert that a prompt carrying a tool-result block **re-proposes** the
-/// command). See `docs/milestones/M5-acceptance.md` §4.
+/// F5.8 found — and this scenario used to pin — a defect where the recognized
+/// command re-fired on **every** replan turn: `DeterministicFirstProvider`
+/// classifies the slice before the first `[Untrusted …]` marker, which on a
+/// replan is still the user's original utterance, so it re-proposed the same
+/// call once per model turn until `max_model_turns` (8) tripped. One spoken
+/// "pause the music" drove eight `Pause` calls and ended `Failed` on budget;
+/// the home route would have made eight real service calls at physical
+/// hardware.
 ///
-/// What happens: `DeterministicFirstProvider` classifies the slice *before* the
-/// first `[Untrusted …]` marker, which on a replan is still the user's original
-/// utterance. So after the proposed `media.playback` executes, the next turn
-/// recognizes "pause the music" again and re-proposes it — once per model turn
-/// until `max_model_turns` trips. One spoken command therefore produces eight
-/// `Pause` calls (for the home route: eight real `light.turn_on` service calls)
-/// and a run that ends **Failed** on budget although the effect happened.
-///
-/// The assertions below are deliberately split: the ones the roadmap bullet
-/// makes are asserted as requirements, and the repeat is asserted as *current
-/// behaviour* so the fix has to come back through this test rather than
-/// silently changing what the daemon does.
+/// The fix is structural: the orchestrator hands each turn a
+/// `ModelRequest::prior_tool_result`, and a command whose tool has already run
+/// reports the executor's own sentence instead of proposing again. The
+/// assertions below therefore demand **exactly one** transport call and a
+/// `Completed` run — a re-introduced loop fails this scenario, not merely a unit
+/// test. See `docs/milestones/M5-acceptance.md` §4.
 #[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
 async fn evidence3_pause_the_music_drives_the_player_with_zero_model_calls(pool: PgPool) {
     let media = RecordingMedia::with([spotify_player("Dancing Queen", "ABBA", "Arrival")]);
@@ -1014,16 +1009,20 @@ async fn evidence3_pause_the_music_drives_the_player_with_zero_model_calls(pool:
         "\"pause the music\" must cost zero LLM calls (docs/08 §1, M5 evidence #3)"
     );
     let transports = media.transports();
-    assert!(
-        !transports.is_empty(),
-        "the recognized verb must actually reach the player"
+    assert_eq!(
+        transports,
+        vec![(
+            "org.mpris.MediaPlayer2.spotify".to_owned(),
+            TransportCommand::Pause
+        )],
+        "one spoken command is exactly one effect, on the unambiguous active \
+         player — a replan must not re-propose it (D-M5-1)"
     );
-    assert!(
-        transports.iter().all(
-            |(player, command)| player == "org.mpris.MediaPlayer2.spotify"
-                && *command == TransportCommand::Pause
-        ),
-        "only the recognized verb, on the unambiguous active player: {transports:?}"
+    assert_eq!(
+        run.state,
+        RunState::Completed,
+        "the run ends cleanly, not on the model-turn budget (outcome: {:?})",
+        run.outcome
     );
     assert!(
         sink.states().contains(&RunState::PolicyReview),
@@ -1036,23 +1035,85 @@ async fn evidence3_pause_the_music_drives_the_player_with_zero_model_calls(pool:
         "a quota-free effect is still an audited effect: {types:?}"
     );
 
-    // -- deviation D-M5-1, pinned as current behaviour ----------------------
-    // Delete this block together with the fix; it exists so the defect cannot
-    // be lost between the gate report and the next milestone.
+    // -- what the owner is actually told (D-M5-1's honesty half) ------------
+    // The replan turn speaks the executor's own sentence rather than a canned
+    // acknowledgement, so a partial or failed outcome survives to the user.
+    let spoken = sink.text();
+    assert_eq!(
+        spoken, "Paused Spotify.",
+        "the answer is what the tool reported, verbatim: {spoken}"
+    );
     assert!(
-        transports.len() > 1,
-        "D-M5-1: the deterministic command still re-fires on every replan turn. \
-         If this now passes with exactly one effect, the defect is fixed — tighten \
-         the assertion above to `assert_eq!(transports.len(), 1)`, assert \
-         `run.state == RunState::Completed`, and delete this block."
+        !spoken.contains("must not be consulted"),
+        "and it is the executor's text, not the provider's: {spoken}"
+    );
+}
+
+/// The home half of D-M5-1, at the same seam. `home.set_light` is the other
+/// route that turns a recognized utterance into a proposal, and it is the one
+/// where a per-turn repeat would be eight real service calls at a physical
+/// lamp — so the "exactly once" property is pinned here too, not inferred from
+/// the media scenario sharing the code path.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn evidence2_a_spoken_light_command_drives_the_lamp_exactly_once(pool: PgPool) {
+    let home = FakeHome::new().add("light.desk_lamp", "off", "Desk lamp", Some("study"));
+    let registry = home_registry(Arc::clone(&home), allowlist(&["light.desk_lamp"], &[]));
+
+    let inner = Arc::new(FakeModel::streaming(["the provider must not be consulted"]));
+    let provider = DeterministicFirstProvider::new(Arc::clone(&inner) as Arc<dyn ModelProvider>)
+        .with_light_targets(Arc::new(DeskLampTargets));
+
+    let audit = PgAuditSink::new(pool.clone());
+    let grants = PgGrantStore::new(pool.clone());
+    let gate = JarvisApprovalGate::new(pool.clone());
+    let sink = RecordingSink::default();
+
+    let run = drive(
+        &provider,
+        &registry,
+        &audit,
+        &*gate,
+        &grants,
+        &["home:control"],
+        "turn on desk lamp",
+        &sink,
+    )
+    .await;
+
+    assert_eq!(run.state, RunState::Completed, "outcome: {:?}", run.outcome);
+    assert!(!inner.opened(), "the home grammar costs no quota either");
+    assert_eq!(
+        home.driven(),
+        vec!["light.desk_lamp".to_owned()],
+        "one spoken command is ONE service call at the lamp — the replan turn \
+         must not re-actuate it (D-M5-1)"
+    );
+    assert!(
+        sink.states().contains(&RunState::PolicyReview),
+        "recognition is not authorization: {:?}",
+        sink.states()
+    );
+    assert!(
+        audit_types(&pool)
+            .await
+            .contains(&"tool.executed".to_owned()),
+        "the physical effect is audited"
     );
     assert_eq!(
-        run.state,
-        RunState::Failed,
-        "D-M5-1: the run currently ends on the model-turn budget, not Completed \
-         (outcome: {:?})",
-        run.outcome
+        sink.text(),
+        "Desk lamp (light.desk_lamp) is now on.",
+        "the owner hears what the executor reported, verbatim"
     );
+}
+
+/// The host's spoken-target → entity resolution for the scenario above; the
+/// production wiring reads it from the HA registry.
+struct DeskLampTargets;
+
+impl jarvis_application::home::LightTargetResolver for DeskLampTargets {
+    fn resolve_light(&self, spoken_target: &str) -> Option<String> {
+        (spoken_target == "desk lamp").then(|| "light.desk_lamp".to_owned())
+    }
 }
 
 // ===========================================================================

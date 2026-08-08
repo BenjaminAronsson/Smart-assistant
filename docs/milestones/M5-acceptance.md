@@ -35,7 +35,7 @@ cargo xtask golden
 ```
 
 runs the M1/M2 traces, golden 7, the M3a and M3b acceptance sets, **golden 9**, and the
-nine M5 acceptance scenarios below. A filter that matches nothing is a failure, not a
+ten M5 acceptance scenarios below. A filter that matches nothing is a failure, not a
 pass — a renamed test cannot silently turn a gate scenario into a no-op.
 
 To run only the M5 half:
@@ -46,14 +46,15 @@ cargo test -p jarvisd --test m5_acceptance
 
 ### 2.1 Exit evidence → scenario
 
-All nine scenarios live in `crates/jarvisd/tests/m5_acceptance.rs`.
+All ten scenarios live in `crates/jarvisd/tests/m5_acceptance.rs`.
 
 | # | Exit evidence (docs/08 §1) | Scenario | What it actually proves |
 |---|---|---|---|
 | 1 | Full voice round trip **within NFR-04** | `evidence1_a_full_voice_round_trip_answers_aloud_what_it_heard` | Push-to-talk PCM over the authenticated WS → the real `jarvis_adapters::wyoming` client → a final transcript → a run started through the **same** `RunApi::start_turn` a typed message takes → the streamed answer → clause-segmented TTS back as `voice.speak.start` / binary PCM / `voice.speak.stop{reason:"completed"}`. The durable half: the transcript is committed as an ordinary **user message** on the timeline, which is what proves voice took no shortcut (invariant 1). **The NFR-04 latency figure is NOT claimed — see §3.** |
 | 2 | Safely control one allowlisted HA entity | `evidence2_an_allowlisted_light_is_driven_through_policy_and_audit` | The R1 half, through the real authorization path: `PolicyReview` → auto-authorize → execute → audit. `home.set_light` on the allowlisted lamp drives HA exactly once; `policy.auto_authorized` and `tool.executed` are both on the hash chain and the chain verifies; no grant is minted (R1 does not need one). The **"safely"** half is the second drive: a light that is *not* allowlisted is refused and the transport never even **reads** it — the allowlist bites before any HA I/O, so a proposal cannot be used to probe the house. |
 | 2 | …and the broad-effect tier | `evidence2_a_broad_home_action_needs_approval_and_a_single_use_grant` | `home.execute_scene` (R2) parks at `WaitingApproval`; the approval id is read back from the **persisted `approval.requested` card** (the same place a real client reads it) and resolved through the real `JarvisApprovalGate`; exactly one grant row is minted for `home.execute_scene` and is marked **consumed**; the scene runs once; `approval.requested`, `approval.resolved`, `policy.approval_requested`, `grant.minted` and `tool.executed` are all on the chain, and the whole chain verifies. |
-| 3 | "pause the music" with **zero LLM calls** | `evidence3_pause_the_music_drives_the_player_with_zero_model_calls` | `FakeModel::opened()` is `false` — the assertion the roadmap bullet actually makes. "The right text came back" and "it cost no quota" are different claims; a regression that quietly delegated to the provider would still look correct. The recognized verb reaches the MPRIS player as `Pause` and nothing else, still via `PolicyReview` (recognition is not authorization), and the effect is audited. **Also pins deviation D-M5-1 — see §4.** |
+| 2 | …and the spoken route, exactly once | `evidence2_a_spoken_light_command_drives_the_lamp_exactly_once` | The other half of D-M5-1 (§4), pinned at the seam where a repeat would be eight real service calls at a physical lamp: "turn on desk lamp" recognized by the deterministic grammar drives HA **once**, still through `PolicyReview` and the audit chain, on a run that ends `Completed`, with the executor's own sentence spoken back. |
+| 3 | "pause the music" with **zero LLM calls** | `evidence3_pause_the_music_drives_the_player_with_zero_model_calls` | `FakeModel::opened()` is `false` — the assertion the roadmap bullet actually makes. "The right text came back" and "it cost no quota" are different claims; a regression that quietly delegated to the provider would still look correct. The recognized verb reaches the MPRIS player as `Pause` and nothing else, still via `PolicyReview` (recognition is not authorization), and the effect is audited. One spoken command is asserted to be **exactly one** `Pause` (`transports == [Pause]`), on a run that ends `Completed`, and the answer the owner hears is the executor's own "Paused Spotify." — the regression test for D-M5-1, now fixed (§4). |
 | 4 | Play a searched track on a chosen device | `evidence4_a_searched_track_plays_on_the_chosen_device` | Two drives through the registry: R0 `spotify.search` finds the track, then R1 `spotify.play` starts **that** URI with `device_id=kitchendeviceid0001` on the request — the device the caller named, not wherever playback happened to be. No approval card: playing a track is reversible R1. |
 | 5 | "play ABBA" → shuffled top tracks, no clarification | `evidence5_play_abba_starts_shuffled_top_tracks_without_asking` | The exact call sequence is `GET /search`, `PUT /me/player/shuffle?state=true`, `PUT /me/player/play` with the **artist's** `context_uri` — ADR-022 (1). The observation folded back to the model says "shuffled" and contains **no `?`**: the common case asks nothing. |
 | 6 | "play playlist X" resolves the owner's library first | `evidence6_play_playlist_resolves_the_owners_library_before_public_search` | A saved playlist and a public one share the name. The call sequence is `GET /me/playlists`, `PUT /me/player/play` — the public catalogue is **not consulted at all** — the owner's URI is what plays, and the answer says "your playlist" (ADR-022 (2)). |
@@ -129,41 +130,71 @@ owner to accept or reject — not something to approximate.
 
 ## 4. Deviations and findings for the gate
 
-### D-M5-1 — a deterministic command re-fires its effect on every replan turn
+### D-M5-1 — a deterministic command re-fired its effect on every replan turn — **FIXED**
 
-**Found by F5.8; not fixed by F5.8.** `DeterministicFirstProvider` classifies the slice
-of the prompt *before* the first `[Untrusted …]` marker. On a **replan** — the turn after
-the tool it proposed has executed — that slice is still the user's original utterance, so
-the grammar recognizes it again and emits the same `ToolProposal` again. The loop runs
-once per model turn until `max_model_turns` (8) trips.
+**Found by F5.8, fixed after it. No longer a deviation; recorded here because scenarios
+#2 and #3 are now its regression test.**
 
-Observed for one spoken "pause the music": **eight** `Pause` calls, and a run that ends
-`Failed` on budget although the effect happened. The home route is the same code path,
-so "turn on the desk lamp" is eight real `light.turn_on` service calls.
+**The defect.** `DeterministicFirstProvider` classifies the slice of the prompt *before*
+the first `[Untrusted …]` marker. On a **replan** — the turn after the tool it proposed
+has executed — that slice is still the user's original utterance, so the grammar
+recognized it again and emitted the same `ToolProposal` again, once per model turn until
+`max_model_turns` (8) tripped. Measured on `965ac3b`: one spoken "pause the music" drove
+**eight** `Pause` calls and ended `Failed` on `budget exceeded: ModelTurns`; the home
+route, being the same code path, drove eight real `light.turn_on` service calls at
+physical hardware. The zero-LLM property was never affected (the inner provider is never
+opened) — what did not hold was "works".
 
-The zero-LLM property is **not** affected (the inner provider is never opened), so
-evidence bullet #3's literal claim holds; what does not hold is "works".
+**The fix, and why it sits where it does.** The signal "a tool has already run in this
+run" is now **structural**, not textual: `ModelRequest` carries a `prior_tool_result:
+Option<String>` that only `Orchestrator::replan_step` sets, alongside the framed copy it
+folds into the prompt. `DeterministicFirstProvider` reads that field; a command whose
+tool has already run reports instead of proposing.
 
-Why F5.8 did not fix it: the fix changes `jarvis-application` semantics, and two existing
-tests pin the current behaviour directly —
-`deterministic::tests::untrusted_context_cannot_widen_a_transport_command` and
-`deterministic::tests::a_home_command_that_only_matches_before_a_sanitized_tool_result_is_not_widened`
-both assert that a prompt carrying a tool-result block **re-proposes** the command (their
-*intent* is injection defence: appended text must not widen the verb or add arguments —
-which a fix preserves and strengthens, but their literal assertion is the loop). Changing
-application-layer semantics and rewriting injection-defence assertions is not integration
-lock-in work; per CLAUDE.md it is strong-model work with a transition-table test and a
-rust-reviewer pass.
+Sniffing the prompt for an `[Untrusted tool result]` marker — the obvious alternative,
+and what the reverted F5.8 prototype did — is **not** equivalent and not safe: retrieved
+memory is attacker-influenced text and can contain that literal string, so a forged
+marker could have suppressed a command the owner really gave, or caused attacker text to
+be spoken as the answer. A field only the orchestrator writes cannot be forged. This is
+also why no state-machine change was needed: no `RunState` transition changed, so there
+is no transition-table delta to test; the change is one extra fact travelling with an
+existing request.
 
-A guard was prototyped and reverted: skip the command routes when the prompt already
-carries a `[Untrusted tool result …]` frame. The prototype's naive form (echo the tool
-result as the answer) is **wrong** — it would emit untrusted tool text as assistant
-speech, which is exactly what those two tests exist to prevent. A correct fix must end
-the turn without echoing that block (a host-authored acknowledgement, or no text at all).
+**What it says on a replan, and why that is the honest choice.** It emits the executor's
+own sentence verbatim (`TextDelta` + `Done`) — "Paused Spotify.", "Desk lamp
+(light.desk_lamp) is now on." A canned "Done." was rejected: a tool can return `Ok` while
+describing a *partial* outcome, and F5.4's "Turned on 2 of 3 lights … Corner lamp did not
+respond." is worded that carefully precisely so the owner hears it. Emitting nothing was
+rejected too: on the voice path that is silence where a partial failure should have been
+spoken.
 
-The defect is pinned by acceptance scenario #3, which asserts the repeat as *current
-behaviour* with instructions to tighten it on fix, so it cannot be lost between this gate
-and the next milestone.
+Echoing is bounded to a path where it is safe, and is not a general licence to speak tool
+output: it is reachable only when the grammar matched the owner's own words, which means
+the tool that ran is one this module itself proposed (`media.playback`, `home.set_light`)
+whose result is adapter-authored template prose; the text has passed
+`sanitize_result_content`; and the turn ends immediately, so the text reaches a person and
+re-enters no prompt and no tool call. Text still grants no authority (invariant 1). A
+model-proposed tool's result — arbitrary web content — is never spoken by this module,
+because its utterance does not match the grammar; that turn delegates as before
+(`deterministic::tests::a_replan_for_an_unrecognized_utterance_still_delegates`).
+
+**Tests.** No existing assertion was weakened. Both tests the F5.8 note called blocking —
+`untrusted_context_cannot_widen_a_transport_command` and
+`a_home_command_that_only_matches_before_a_sanitized_tool_result_is_not_widened` — pass
+**unchanged**, because with a structural signal a tool-result-shaped string in the prompt
+is exactly what it always was: forged text that must not widen a command. The first
+gained an explicit assertion that the injected effect (`set the volume to 100`) never
+appears in the proposal's arguments, plus a doc note that its marker is a forgery. Five
+tests were added in `deterministic.rs` (replan reports for both routes; a partial failure
+reported verbatim; an unrecognized utterance still delegates; a forged frame neither
+suppresses nor is echoed), one in `policy_tests.rs` (`prior_tool_result` is `None` on the
+first turn and the sanitized result thereafter), and one acceptance scenario
+(`evidence2_a_spoken_light_command_drives_the_lamp_exactly_once`).
+
+Scenario #3 no longer pins the repeat: it asserts `transports == [Pause]` exactly, a
+`Completed` run, and that the spoken answer is the executor's text. Both it and the new
+#2 scenario fail against `965ac3b` (8 transport calls; `Failed`/`budget exceeded:
+ModelTurns`) and pass after.
 
 ### D-M5-2 — barge-in cancels synthesis but not the in-flight run
 

@@ -634,6 +634,7 @@ async fn ask_whats_playing(
         .run(
             ModelRequest {
                 prompt: utterance.to_owned(),
+                prior_tool_result: None,
             },
             CancellationToken::new(),
         )

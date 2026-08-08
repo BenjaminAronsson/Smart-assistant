@@ -270,8 +270,12 @@ fn golden() -> anyhow::Result<()> {
             "M5 acceptance #2: a broad home action via approval → grant → execute → audit",
         ),
         (
+            "evidence2_a_spoken_light_command_drives_the_lamp_exactly_once",
+            "M5 acceptance #2: a spoken light command drives the lamp exactly ONCE (D-M5-1)",
+        ),
+        (
             "evidence3_pause_the_music_drives_the_player_with_zero_model_calls",
-            "M5 acceptance #3: \"pause the music\" costs zero model calls (+ deviation D-M5-1)",
+            "M5 acceptance #3: \"pause the music\" costs zero model calls, and fires ONCE",
         ),
         (
             "evidence4_a_searched_track_plays_on_the_chosen_device",
@@ -328,8 +332,9 @@ fn golden() -> anyhow::Result<()> {
     println!(
         "        measures the daemon's own share only; see docs/milestones/M5-acceptance.md §3"
     );
-    println!("  NOTE: deviation D-M5-1 (a deterministic command re-fires its effect on every");
-    println!("        replan turn) is pinned by M5 acceptance #3 — see M5-acceptance.md §4");
+    println!("  NOTE: D-M5-1 (a deterministic command re-firing its effect on every replan");
+    println!("        turn) is FIXED; M5 acceptance #2 and #3 now assert exactly one effect");
+    println!("        per spoken command — see M5-acceptance.md §4");
     Ok(())
 }
 

@@ -31,6 +31,23 @@ impl ProfileId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelRequest {
     pub prompt: String,
+    /// The sanitized result of the tool that ran most recently **in this run**,
+    /// present only on a replan turn (`None` on the first turn, always).
+    ///
+    /// It is the same text the orchestrator folded into `prompt` inside the
+    /// `[Untrusted tool result]` frame, carried here as a *structural* fact
+    /// rather than something a provider has to recover by parsing its own
+    /// prompt. That distinction is load-bearing: only
+    /// [`crate::orchestrator::Orchestrator`] ever sets this field, so "a tool
+    /// has already run" cannot be forged by attacker-controlled text that
+    /// happens to contain a literal `[Untrusted tool result]` marker — which
+    /// retrieved memory, a web page, or a prior tool result all could.
+    /// [`crate::deterministic::DeterministicFirstProvider`] relies on exactly
+    /// that unforgeability (D-M5-1).
+    ///
+    /// Reasoning providers ignore it; the prompt already carries the framed,
+    /// labelled copy that a model must see as untrusted data.
+    pub prior_tool_result: Option<String>,
 }
 
 /// Why a model turn finished.

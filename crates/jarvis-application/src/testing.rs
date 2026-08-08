@@ -46,6 +46,10 @@ pub struct FakeModel {
     dropped: Arc<AtomicBool>,
     opened: AtomicBool,
     last_prompt: Mutex<Option<String>>,
+    /// Every `ModelRequest::prior_tool_result` this model was handed, in turn
+    /// order, so a test can assert which turns the orchestrator told "a tool
+    /// has already run in this run".
+    prior_tool_results: Mutex<Vec<Option<String>>>,
 }
 
 impl FakeModel {
@@ -64,6 +68,7 @@ impl FakeModel {
             dropped: Arc::new(AtomicBool::new(false)),
             opened: AtomicBool::new(false),
             last_prompt: Mutex::new(None),
+            prior_tool_results: Mutex::new(Vec::new()),
         }
     }
 
@@ -136,6 +141,10 @@ impl FakeModel {
     pub fn last_prompt(&self) -> Option<String> {
         self.last_prompt.lock().unwrap().clone()
     }
+    /// `ModelRequest::prior_tool_result` per turn, in order.
+    pub fn prior_tool_results(&self) -> Vec<Option<String>> {
+        self.prior_tool_results.lock().unwrap().clone()
+    }
 }
 
 #[async_trait]
@@ -150,6 +159,10 @@ impl ModelProvider for FakeModel {
         _cancel: CancellationToken,
     ) -> Result<BoxStream<'static, ModelEvent>, ModelError> {
         *self.last_prompt.lock().unwrap() = Some(request.prompt);
+        self.prior_tool_results
+            .lock()
+            .unwrap()
+            .push(request.prior_tool_result);
         self.opened.store(true, Ordering::SeqCst);
         if let Some(error) = &self.open_error {
             return Err(error.clone());
