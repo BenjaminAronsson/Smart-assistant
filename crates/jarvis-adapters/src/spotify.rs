@@ -22,7 +22,10 @@
 //! [`SpotifyVolumeTool`] (R1) has no code path that can emit an above-cap
 //! request — it refuses before any transport call — and above-cap levels live
 //! only in [`SpotifyVolumeBoostTool`] (R2), which parks for human approval and
-//! validates the grant's argument hash before acting. `spotify.play`'s optional
+//! re-validates the grant — tool, version, single use, argument hash, target
+//! resource **and expiry** ([`check_grant`]) — before acting, so a direct
+//! invocation of the executor cannot bypass the validator that already ran.
+//! `spotify.play`'s optional
 //! `volume_pct` is checked by the same one function, first thing, before a
 //! single byte reaches Spotify.
 //!
@@ -44,7 +47,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
 use jarvis_application::policy::{ToolDescriptor, ToolExecutor};
@@ -568,14 +571,23 @@ impl SpotifyClient {
         parse_devices(&response.body)
     }
 
-    /// The volume the active/target device is at right now, for an honest undo
-    /// on the R2 boost. Absent state is not an error — it just means no undo.
-    async fn current_volume(&self, cancel: &CancellationToken) -> Option<VolumePct> {
-        let response = self
-            .request(ApiRequest::new(HttpMethod::Get, "/me/player"), cancel)
+    /// The volume of **one named Connect device**, for an honest undo on the R2
+    /// boost. Deliberately not `GET /me/player`: that reports whatever is
+    /// *playing*, which need not be the device the grant targets, and an undo
+    /// derived from the wrong device would restore a level that device never
+    /// had. Absent state is not an error — it just means no undo (docs/06 §4:
+    /// a compensating action is only worth recording when it is true).
+    async fn device_volume(
+        &self,
+        device_id: &str,
+        cancel: &CancellationToken,
+    ) -> Option<VolumePct> {
+        self.devices(cancel)
             .await
-            .ok()?;
-        parse_current_volume(&response.body)
+            .ok()?
+            .into_iter()
+            .find(|d| d.id.as_deref() == Some(device_id))?
+            .volume_pct
     }
 
     /// Resolve a caller-supplied device name/alias/id to a Connect device id.
@@ -781,6 +793,10 @@ pub struct DeviceRef {
     pub id: Option<String>,
     pub name: String,
     pub is_active: bool,
+    /// This device's own volume. `None` when Spotify omits it (devices that
+    /// cannot report a level, e.g. some Connect speakers) — absent, never
+    /// guessed, because a guessed level would become a false undo.
+    pub volume_pct: Option<VolumePct>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1184,6 +1200,8 @@ struct DeviceObj {
     name: String,
     #[serde(default)]
     is_active: bool,
+    #[serde(default)]
+    volume_percent: Option<i64>,
 }
 
 fn parse_devices(body: &str) -> Result<Vec<DeviceRef>, SpotifyError> {
@@ -1197,26 +1215,11 @@ fn parse_devices(body: &str) -> Result<Vec<DeviceRef>, SpotifyError> {
             id: d.id,
             name: d.name,
             is_active: d.is_active,
+            // An out-of-range level is dropped rather than clamped: a clamped
+            // value would be a plausible-looking lie in the undo string.
+            volume_pct: d.volume_percent.and_then(|v| VolumePct::from_i64(v).ok()),
         })
         .collect())
-}
-
-#[derive(serde::Deserialize)]
-struct PlaybackStateEnvelope {
-    device: Option<PlaybackDeviceObj>,
-}
-
-#[derive(serde::Deserialize)]
-struct PlaybackDeviceObj {
-    volume_percent: Option<i64>,
-}
-
-fn parse_current_volume(body: &str) -> Option<VolumePct> {
-    serde_json::from_str::<PlaybackStateEnvelope>(body)
-        .ok()?
-        .device?
-        .volume_percent
-        .and_then(|v| VolumePct::from_i64(v).ok())
 }
 
 // ---------------------------------------------------------------------------
@@ -1988,33 +1991,23 @@ impl ToolExecutor for SpotifyVolumeBoostTool {
         if cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let Some(grant) = grant else {
-            return Err(ToolError::Denied(
-                "spotify.volume_boost requires an execution grant".to_owned(),
-            ));
-        };
         let (level, device) = self.parse(&invocation.arguments)?;
-        // The grant must bind *these* arguments: a re-hashed proposal, a reused
-        // multi-use grant, or a different tool/version is not authority here
-        // (invariant #1, the SmtpTool check).
-        if grant.tool_id != invocation.tool_id
-            || grant.tool_version != invocation.tool_version
-            || !grant.single_use
-            || grant.normalized_args_sha256 != arguments_fingerprint(&invocation.arguments)
-        {
-            return Err(ToolError::Denied(
-                "execution grant does not match spotify.volume_boost".to_owned(),
-            ));
-        }
+        check_grant(grant.as_ref(), &invocation, SystemTime::now())?;
 
         let target = self
             .client
             .resolve_device(Some(device.as_str()), &cancel)
             .await
             .map_err(SpotifyError::into_tool_error)?;
-        // Read the level we are replacing so the timeline carries a real undo,
-        // not a canned string.
-        let previous = self.client.current_volume(&cancel).await;
+        // Read the level we are replacing *on the target device* so the
+        // timeline carries a real undo, not a canned string and not the level
+        // of whatever happens to be playing elsewhere. `device` is required, so
+        // `resolve_device` always yields an id here; the `None` arm cannot
+        // record an honest undo and therefore records none.
+        let previous = match target.as_deref() {
+            Some(id) => self.client.device_volume(id, &cancel).await,
+            None => None,
+        };
         self.client
             .set_volume(level, target.as_deref(), &cancel)
             .await
@@ -2028,6 +2021,58 @@ impl ToolExecutor for SpotifyVolumeBoostTool {
     fn validate_args(&self, arguments: &CanonicalValue) -> Result<(), ToolError> {
         self.parse(arguments).map(|_| ())
     }
+}
+
+/// The resource string a grant for `spotify.volume_boost` must cover. Exported
+/// so a minting site and this executor's validation use one function rather
+/// than two string literals that can drift apart (docs/06 §4).
+///
+/// It is the tool id, not a device-scoped string, because that is what a real
+/// grant covers: the orchestrator mints `GrantBinding::target_resource` from
+/// the proposal's tool id (`jarvis-application/src/orchestrator.rs`, the
+/// `WaitingApproval` arm). Checking a device-scoped string here would deny
+/// every grant the validator actually issues — a silent break of an approved
+/// action, which is the worse failure. The **target device is still bound**:
+/// `device` is a required argument of this tool, so it is inside
+/// `normalized_args_sha256`, and a grant minted for another device fails the
+/// fingerprint check in [`check_grant`].
+pub fn boost_target_resource() -> String {
+    SpotifyVolumeBoostTool::id().as_str().to_owned()
+}
+
+/// Re-validate a grant at the executor, immediately before the effect
+/// (docs/06 §4, policy-grants skill step 5). The orchestrator's `GrantValidator`
+/// is the primary gate — it checks actor, run, resource and expiry under
+/// `FOR UPDATE` and consumes the grant — but this is the tool's own fail-closed
+/// check, so a direct invocation of the executor cannot bypass it. It therefore
+/// has to re-check *everything* that matters, expiry included: an expired grant
+/// presented directly to `execute` must not act. Kept symmetric with
+/// [`crate::home_assistant`]'s `check_grant`.
+fn check_grant(
+    grant: Option<&ExecutionGrant>,
+    invocation: &ToolInvocation,
+    now: SystemTime,
+) -> Result<(), ToolError> {
+    let Some(grant) = grant else {
+        return Err(ToolError::Denied(
+            "spotify.volume_boost requires an execution grant".to_owned(),
+        ));
+    };
+    // The grant must bind *these* arguments: a re-hashed proposal, a reused
+    // multi-use grant, an expired grant, a grant for another resource, or a
+    // different tool/version is not authority here (invariant #1).
+    if grant.tool_id != invocation.tool_id
+        || grant.tool_version != invocation.tool_version
+        || !grant.single_use
+        || grant.normalized_args_sha256 != arguments_fingerprint(&invocation.arguments)
+        || !grant.target_resource.matches(&boost_target_resource())
+        || grant.expires_at <= now
+    {
+        return Err(ToolError::Denied(
+            "execution grant does not match spotify.volume_boost".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn arguments_fingerprint(arguments: &CanonicalValue) -> jarvis_domain::grants::Sha256 {
@@ -2421,9 +2466,21 @@ mod tests {
     const NO_ACTIVE_DEVICE_BODY: &str = r#"{"error": {"status": 404,
       "message": "Player command failed: No active device found", "reason": "NO_ACTIVE_DEVICE"}}"#;
 
+    /// Devices that report no `volume_percent` at all — Spotify really does
+    /// omit it for some Connect endpoints, and that must mean "no undo", not a
+    /// fabricated one.
     const DEVICES: &str = r#"{"devices": [
       {"id": "kitchendeviceid0001", "name": "Kitchen Sonos", "is_active": false},
       {"id": "deskdeviceid0002", "name": "Desk", "is_active": true}
+    ]}"#;
+
+    /// The same devices with **different** volumes, and the active one is not
+    /// the one the boost targets — the only shape in which an undo read from
+    /// the wrong device is visible.
+    const DEVICES_WITH_VOLUMES: &str = r#"{"devices": [
+      {"id": "kitchendeviceid0001", "name": "Kitchen Sonos", "is_active": false,
+       "volume_percent": 25},
+      {"id": "deskdeviceid0002", "name": "Desk", "is_active": true, "volume_percent": 90}
     ]}"#;
 
     fn cap() -> VolumePct {
@@ -2448,7 +2505,19 @@ mod tests {
         }
     }
 
+    /// The grant the orchestrator really mints: `target_resource` is derived
+    /// from the proposal's tool id (`orchestrator.rs`, `WaitingApproval` arm),
+    /// so the fixture builds it the same way instead of hand-writing a wildcard
+    /// that no minting site produces.
     fn grant_for(args: &CanonicalValue) -> ExecutionGrant {
+        grant_with(
+            args,
+            &boost_target_resource(),
+            SystemTime::now() + Duration::from_secs(60),
+        )
+    }
+
+    fn grant_with(args: &CanonicalValue, resource: &str, expires_at: SystemTime) -> ExecutionGrant {
         ExecutionGrant {
             grant_id: GrantId::from_bytes([9; 32]),
             user_id: "00000000000000000000000001".parse::<UserId>().unwrap(),
@@ -2457,8 +2526,8 @@ mod tests {
             tool_id: SpotifyVolumeBoostTool::id(),
             tool_version: ToolVersion::new(1, 0, 0),
             normalized_args_sha256: arguments_fingerprint(args),
-            target_resource: "spotify:*".parse::<ResourcePattern>().unwrap(),
-            expires_at: std::time::SystemTime::now() + Duration::from_secs(60),
+            target_resource: resource.parse::<ResourcePattern>().unwrap(),
+            expires_at,
             single_use: true,
         }
     }
@@ -2932,8 +3001,17 @@ mod tests {
 
     #[tokio::test]
     async fn an_approved_boost_applies_the_level_and_registers_the_real_undo() {
-        let transport =
-            FakeTransport::new().json("GET /me/player", r#"{"device": {"volume_percent": 30}}"#);
+        // The undo level comes from the *target* device's own entry, so this
+        // fixture puts Kitchen at 30% while the active device sits elsewhere.
+        let transport = FakeTransport::new().json(
+            "GET /me/player/devices",
+            r#"{"devices": [
+              {"id": "kitchendeviceid0001", "name": "Kitchen Sonos", "is_active": false,
+               "volume_percent": 30},
+              {"id": "deskdeviceid0002", "name": "Desk", "is_active": true,
+               "volume_percent": 90}
+            ]}"#,
+        );
         let tool = SpotifyVolumeBoostTool::new(client(transport.clone()));
         let args = CanonicalValue::obj([
             ("volume_pct", CanonicalValue::Int(85)),
@@ -2964,6 +3042,191 @@ mod tests {
             result.compensation.as_deref(),
             Some("Set Spotify volume on Kitchen back to 30%."),
             "the undo restores the level we actually replaced"
+        );
+        assert!(
+            !transport.keys().iter().any(|k| k == "GET /me/player"),
+            "the undo must never come from the playback state: {:?}",
+            transport.keys()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_boost_undo_reads_the_target_device_not_whatever_is_playing() {
+        // Finding 5: the boost targets an explicitly named device (Kitchen, at
+        // 25%) while playback is on another one (Desk, at 90%). An undo read
+        // from `GET /me/player` would promise to restore 90% — a level Kitchen
+        // never had. A compensating action that is wrong is worse than absent
+        // (docs/06 §4), so it must name Kitchen's own level.
+        let transport = FakeTransport::new()
+            .json("GET /me/player/devices", DEVICES_WITH_VOLUMES)
+            .json("GET /me/player", r#"{"device": {"volume_percent": 90}}"#);
+        let tool = SpotifyVolumeBoostTool::new(client(transport.clone()));
+        let args = CanonicalValue::obj([
+            ("volume_pct", CanonicalValue::Int(85)),
+            ("device", CanonicalValue::str("Kitchen")),
+        ]);
+
+        let result = tool
+            .execute(
+                invocation(
+                    SpotifyVolumeBoostTool::id(),
+                    vec![
+                        ("volume_pct", CanonicalValue::Int(85)),
+                        ("device", CanonicalValue::str("Kitchen")),
+                    ],
+                ),
+                Some(grant_for(&args)),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let call = transport.call("PUT /me/player/volume").unwrap();
+        assert_eq!(call.q("device_id"), Some("kitchendeviceid0001"));
+        assert_eq!(call.q("volume_percent"), Some("85"));
+        assert_eq!(
+            result.compensation.as_deref(),
+            Some("Set Spotify volume on Kitchen back to 25%."),
+            "the undo must restore the target device's own level, not the active device's"
+        );
+        assert!(
+            !transport.keys().iter().any(|k| k == "GET /me/player"),
+            "the playback state is not the target device: {:?}",
+            transport.keys()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_boost_records_no_undo_when_the_target_reports_no_volume() {
+        // Honest omission beats a plausible-looking fabrication: a device that
+        // reports no level yields no compensation, and the effect still lands.
+        let transport = FakeTransport::new().json("GET /me/player/devices", DEVICES);
+        let tool = SpotifyVolumeBoostTool::new(client(transport.clone()));
+        let args = CanonicalValue::obj([
+            ("volume_pct", CanonicalValue::Int(85)),
+            ("device", CanonicalValue::str("Kitchen")),
+        ]);
+
+        let result = tool
+            .execute(
+                invocation(
+                    SpotifyVolumeBoostTool::id(),
+                    vec![
+                        ("volume_pct", CanonicalValue::Int(85)),
+                        ("device", CanonicalValue::str("Kitchen")),
+                    ],
+                ),
+                Some(grant_for(&args)),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            transport
+                .call("PUT /me/player/volume")
+                .unwrap()
+                .q("volume_percent"),
+            Some("85")
+        );
+        assert_eq!(result.compensation, None, "no honest undo is available");
+    }
+
+    #[tokio::test]
+    async fn an_expired_grant_cannot_boost_the_volume() {
+        // Finding 3: the validator is the primary gate, but the whole point of
+        // the in-executor re-check is that a direct invocation cannot bypass it
+        // — so expiry has to be checked here too.
+        let args = CanonicalValue::obj([
+            ("volume_pct", CanonicalValue::Int(85)),
+            ("device", CanonicalValue::str("Kitchen")),
+        ]);
+        let expired = grant_with(
+            &args,
+            &boost_target_resource(),
+            SystemTime::now() - Duration::from_secs(1),
+        );
+        let transport = FakeTransport::new().json("GET /me/player/devices", DEVICES_WITH_VOLUMES);
+        let tool = SpotifyVolumeBoostTool::new(client(transport.clone()));
+
+        let error = tool
+            .execute(
+                invocation(
+                    SpotifyVolumeBoostTool::id(),
+                    vec![
+                        ("volume_pct", CanonicalValue::Int(85)),
+                        ("device", CanonicalValue::str("Kitchen")),
+                    ],
+                ),
+                Some(expired),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ToolError::Denied(_)), "{error:?}");
+        assert!(
+            transport.calls().is_empty(),
+            "an expired grant must have no effect"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_grant_minted_for_another_resource_cannot_boost_the_volume() {
+        // A grant is authority over one resource. One minted for the home
+        // adapter (or any other pattern that does not cover this tool) is not
+        // authority here, however well its arguments happen to hash.
+        let args = CanonicalValue::obj([
+            ("volume_pct", CanonicalValue::Int(85)),
+            ("device", CanonicalValue::str("Kitchen")),
+        ]);
+        let transport = FakeTransport::new().json("GET /me/player/devices", DEVICES_WITH_VOLUMES);
+        let tool = SpotifyVolumeBoostTool::new(client(transport.clone()));
+
+        for resource in ["home:*", "spotify.play", "message:alice@example.test"] {
+            let foreign = grant_with(&args, resource, SystemTime::now() + Duration::from_secs(60));
+            let error = tool
+                .execute(
+                    invocation(
+                        SpotifyVolumeBoostTool::id(),
+                        vec![
+                            ("volume_pct", CanonicalValue::Int(85)),
+                            ("device", CanonicalValue::str("Kitchen")),
+                        ],
+                    ),
+                    Some(foreign),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, ToolError::Denied(_)),
+                "{resource}: {error:?}"
+            );
+        }
+        assert!(
+            transport.calls().is_empty(),
+            "a grant for another resource must have no effect"
+        );
+    }
+
+    #[test]
+    fn the_boost_accepts_exactly_the_resource_pattern_the_orchestrator_mints() {
+        // The executor's resource check and the minting site must not drift:
+        // `Orchestrator` parses the proposal's tool id into the pattern, so the
+        // string this executor demands is that same tool id. If minting ever
+        // moves to a device-scoped resource, this test fails first — loudly —
+        // instead of every approved boost being denied in production.
+        let minted = SpotifyVolumeBoostTool::id()
+            .as_str()
+            .parse::<ResourcePattern>()
+            .expect("the orchestrator parses the tool id as the pattern");
+        assert!(minted.matches(&boost_target_resource()));
+        assert!(
+            !"home:*"
+                .parse::<ResourcePattern>()
+                .unwrap()
+                .matches(&boost_target_resource())
         );
     }
 
