@@ -293,8 +293,24 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         "claude-cli",
         config.providers.claude_cli.to_adapter(),
     ));
+    // The deterministic grammar (F5.5) turns "turn on the desk lamp" into a
+    // `home.set_light` proposal only when the host can name the target. The
+    // map is built from the SAME allowlist the tools enforce, so a spoken
+    // phrase can never reach an entity the owner did not authorize — an
+    // unknown target simply is not recognized and goes to the provider.
+    // Absent/disabled HA ⇒ no targets ⇒ the home route stays dormant while
+    // media transport still works (fail-safe, not fail-open).
+    let light_targets = Arc::new(
+        jarvisd::light_targets::ConfiguredLightTargets::from_allowlist(
+            if config.integrations.home_assistant.enabled {
+                &config.integrations.home_assistant.lights
+            } else {
+                &[]
+            },
+        ),
+    );
     let engine = RunEngine::new(
-        Arc::new(DeterministicFirstProvider::new(model)),
+        Arc::new(DeterministicFirstProvider::new(model).with_light_targets(light_targets)),
         Arc::new({
             let assembler = MemoryAssembler::new(memory_retrieval)
                 .with_context_store(memory_store.clone())

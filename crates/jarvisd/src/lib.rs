@@ -10,6 +10,7 @@ pub mod cards;
 pub mod config;
 pub mod deepdive;
 pub mod display;
+pub mod light_targets;
 pub mod lists;
 pub mod location;
 pub mod maps;

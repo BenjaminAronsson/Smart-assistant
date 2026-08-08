@@ -18,7 +18,8 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use jarvis_adapters::home_assistant::{
-    EntityAllowlist, HomeAssistantClient, HomeBroadTool, HomeGetStateTool, HomeSetLightTool,
+    EntityAllowlist, HomeAssistantClient, HomeBroadTool, HomeGetStateTool, HomeSetAreaLightsTool,
+    HomeSetLightTool,
 };
 use jarvis_adapters::mcp_host::{HostPolicyTable, McpHost};
 use jarvis_adapters::smtp::{SmtpConfig, SmtpTool};
@@ -204,6 +205,10 @@ pub fn register_home_assistant_tools(
     for descriptor in [
         HomeGetStateTool::descriptor(client.clone(), allowlist.clone()),
         HomeSetLightTool::descriptor(client.clone(), allowlist.clone()),
+        // Plural/area form (F5.4, FR-28). Same R1 tier as the singular tool —
+        // it reaches no entity the singular one could not — but it bounds its
+        // own fan-out in-executor, since the tier cannot see arguments.
+        HomeSetAreaLightsTool::descriptor(client.clone(), allowlist.clone()),
         HomeBroadTool::scene_descriptor(client.clone(), allowlist.clone()),
         HomeBroadTool::script_descriptor(client, allowlist),
     ] {
