@@ -31,9 +31,12 @@ fn main() -> anyhow::Result<()> {
 /// worker — matching docs/07 §2 ("against the compose test env"). The M3b UX
 /// acceptance scenarios (F3b.9) need live Postgres but no browser and no model:
 /// see `docs/milestones/M3b-acceptance.md` for the browser-gated remainder of
-/// the docs/12 §9 checklist.
+/// the docs/12 §9 checklist. Trace 9 and the M5 acceptance scenarios (F5.8)
+/// need live Postgres and nothing else — every speech engine, home and media
+/// service they touch is a fixture: see `docs/milestones/M5-acceptance.md`.
+/// (Trace 8 is M6's generated-app capability trace and does not exist yet.)
 fn golden() -> anyhow::Result<()> {
-    println!("Running golden traces 1–7 + M3a/M3b acceptance scenarios...");
+    println!("Running golden traces 1–7, 9 + M3a/M3b/M5 acceptance scenarios...");
     println!("  Trace 1: simple question streams within budget");
     println!("  Trace 2: complex question (placeholder for M1)");
     println!("  Trace 3: quota-exhausted → degraded mode → recovery");
@@ -41,6 +44,9 @@ fn golden() -> anyhow::Result<()> {
     println!("  Trace 5: R2 approval → grant → execute (+ deny/edit/reject) (F2.3/F2.6)");
     println!("  Trace 6: malicious fetched page → policy denies exfiltration (F2.11)");
     println!("  Trace 7: coding task → patch artifact in a disposable worktree (F3a.6/F3a.8)");
+    println!(
+        "  Trace 9: voice response interrupted — TTS, model and tool cancellation (F5.2/F5.8)"
+    );
 
     // Each suite is executed as `cargo test`; a failure here means a trace
     // scenario regressed.
@@ -195,7 +201,108 @@ fn golden() -> anyhow::Result<()> {
         run_scenario(&args, filter, expected, label)?;
     }
 
-    println!("✓ Golden traces 1–7 + M3a/M3b acceptance scenarios passed");
+    // Golden 9 (docs/07 §2 item 9): "voice response interrupted; TTS, model and
+    // tool cancellation all correct." The three halves live at the three seams
+    // that own them — the voice socket, the orchestrator, and the adapters —
+    // rather than being re-simulated in one place.
+    //
+    // Honest scope note, also recorded in docs/milestones/M5-acceptance.md §4:
+    // barge-in cancels **synthesis**; it does not cancel an in-flight run. The
+    // model- and tool-cancellation halves below are therefore proved at their
+    // own seams, not through the voice interrupt.
+    println!("Running golden trace 9 (voice interrupt + cancellation)...");
+    for (args, filter, label) in [
+        (
+            ["test", "-p", "jarvisd", "--test", "voice_round_trip"],
+            "barge_in_cancels_synthesis_and_stops_the_audio",
+            "golden 9a: barge-in cancels TTS — no audio follows the cancelled utterance",
+        ),
+        (
+            ["test", "-p", "jarvisd", "--test", "voice_round_trip"],
+            "a_second_voice_turn_reports_the_utterance_it_supersedes",
+            "golden 9b: a superseding turn ends the previous utterance, never orphans it",
+        ),
+        (
+            [
+                "test",
+                "-p",
+                "jarvis-application",
+                "--lib",
+                "orchestrator_tests",
+            ],
+            "orchestrator_tests::cancellation_mid_model_reaches_cancelled_without_orphan",
+            "golden 9c: model cancellation mid-stream leaves no orphan",
+        ),
+        (
+            ["test", "-p", "jarvis-adapters", "--lib", "wyoming"],
+            "wyoming::tests::cancellation_ends_the_stream_promptly",
+            "golden 9d: the speech client honours cancellation promptly",
+        ),
+        (
+            ["test", "-p", "jarvis-adapters", "--lib", "home_assistant"],
+            "home_assistant::tests::cancellation_during_a_request_returns_promptly",
+            "golden 9e: an in-flight home tool cancels promptly",
+        ),
+        (
+            ["test", "-p", "jarvis-adapters", "--lib", "spotify"],
+            "spotify::tests::a_pre_cancelled_run_never_reaches_the_transport",
+            "golden 9f: a cancelled media tool never reaches the network",
+        ),
+    ] {
+        run_scenario(&args, Some(filter), 1, label)?;
+    }
+
+    // M5 acceptance scenarios (F5.8): one named scenario per docs/08 §1 M5
+    // exit-evidence bullet. Fixture Wyoming / Home Assistant / Spotify / MPRIS;
+    // real orchestrator, policy, approvals, grants and audit chain.
+    println!("Running M5 acceptance scenarios (docs/08 §1 exit evidence)...");
+    for (filter, label) in [
+        (
+            "evidence1_a_full_voice_round_trip_answers_aloud_what_it_heard",
+            "M5 acceptance #1: push-to-talk → STT → run → TTS (NFR-04 *number* NOT claimed)",
+        ),
+        (
+            "evidence2_an_allowlisted_light_is_driven_through_policy_and_audit",
+            "M5 acceptance #2: an allowlisted light via policy → execute → audit; others refused",
+        ),
+        (
+            "evidence2_a_broad_home_action_needs_approval_and_a_single_use_grant",
+            "M5 acceptance #2: a broad home action via approval → grant → execute → audit",
+        ),
+        (
+            "evidence3_pause_the_music_drives_the_player_with_zero_model_calls",
+            "M5 acceptance #3: \"pause the music\" costs zero model calls (+ deviation D-M5-1)",
+        ),
+        (
+            "evidence4_a_searched_track_plays_on_the_chosen_device",
+            "M5 acceptance #4: a searched track plays on the chosen Connect device",
+        ),
+        (
+            "evidence5_play_abba_starts_shuffled_top_tracks_without_asking",
+            "M5 acceptance #5: an artist-only request shuffles top tracks, asking nothing",
+        ),
+        (
+            "evidence6_play_playlist_resolves_the_owners_library_before_public_search",
+            "M5 acceptance #6: the owner's own library wins over public search",
+        ),
+        (
+            "evidence7_whats_playing_answers_with_a_card_and_zero_model_calls",
+            "M5 acceptance #7: \"what's playing\" answers with a card and zero model calls",
+        ),
+        (
+            "evidence8_a_plural_area_command_reports_partial_failure_honestly",
+            "M5 acceptance #8: a plural area command reports 2 of 3 and names the failure",
+        ),
+    ] {
+        run_scenario(
+            &["test", "-p", "jarvisd", "--test", "m5_acceptance"],
+            Some(filter),
+            1,
+            label,
+        )?;
+    }
+
+    println!("✓ Golden traces 1–7, 9 + M3a/M3b/M5 acceptance scenarios passed");
     println!("  - Orchestrator: simple/complex question, degraded mode recovery");
     println!("  - Policy: R0/R1 auto tool path, result sanitization, denial");
     println!("  - Approval: R2 approve/deny/edit, grant mint/validate, adversarial text");
@@ -207,9 +314,22 @@ fn golden() -> anyhow::Result<()> {
     println!("  - M3b acceptance: deep-dive canvas routing + Research Notes, timers across a");
     println!("    restart, lists add/check-off/promote, offline map tiles, and the grep half");
     println!("    of the docs/12 §9 HUD checklist");
+    println!("  - Golden 9: barge-in stops synthesis; model, speech, home and media");
+    println!("    cancellation all leave nothing running and nothing half-done");
+    println!("  - M5 acceptance: voice round trip, an allowlisted light through policy and a");
+    println!("    scene through approval+grant, quota-free transport and now-playing, Spotify");
+    println!("    search→play on a chosen device, artist shuffle, own-library playlists, and a");
+    println!("    plural area command that reports partial failure honestly");
     println!("  NOTE: the §9 screenshot set, keyboard walkthrough, reduced-motion/CPU checks");
     println!("        and panel lifecycle need a browser and are NOT covered here —");
     println!("        see docs/milestones/M3b-acceptance.md §3");
+    println!("  NOTE: M5 evidence #1's NFR-04 *latency figure* is NOT produced here — it needs");
+    println!("        real Wyoming services on reference hardware. `cargo xtask perf --voice`");
+    println!(
+        "        measures the daemon's own share only; see docs/milestones/M5-acceptance.md §3"
+    );
+    println!("  NOTE: deviation D-M5-1 (a deterministic command re-fires its effect on every");
+    println!("        replan turn) is pinned by M5 acceptance #3 — see M5-acceptance.md §4");
     Ok(())
 }
 
