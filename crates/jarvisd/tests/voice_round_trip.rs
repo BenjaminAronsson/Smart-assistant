@@ -27,6 +27,12 @@ use voice_fixture::{
 /// fixture-driven tests. Generous relative to what the fixtures actually take.
 const BUDGET: Duration = Duration::from_secs(10);
 
+/// Ceiling for the wedge regression. Generous on purpose: a socket recovering
+/// from an over-capacity handover legitimately waits out one settle grace, and
+/// the point of the bound is that a *permanent* wedge fails the test instead of
+/// hanging the suite — not to measure how quickly it recovers.
+const WEDGE_BUDGET: Duration = Duration::from_secs(20);
+
 fn stt(url: &str) -> Option<Arc<dyn SpeechTranscriber>> {
     Some(Arc::new(WyomingClient::new("stt", addr_of(url))))
 }
@@ -359,6 +365,237 @@ async fn a_transcript_with_no_session_starts_no_run(pool: PgPool) {
         events_of(&more)
     );
     assert!(!harness.model.opened());
+
+    harness.shutdown.cancel();
+}
+
+/// A pipelined burst of `voice.stream.start` frames must not be able to wedge
+/// the socket — the M5 audit's most severe finding, and the one an ordinary
+/// fast barge-in storm on a slow STT reaches by accident.
+///
+/// Each `voice.stream.start` ends the previous capture stream **inline**, and
+/// each ended stream hands one settled turn to the socket loop's bounded
+/// `finals` queue — which the loop cannot be draining, because it is inside that
+/// very teardown. Enough starts back to back and the handover has nowhere to go.
+/// Before the fix the loop then waited out its grace, cancelled a token the
+/// blocked `send` could not observe, and awaited the task **forever**: no
+/// inbound frames, no outbound events, and the `state.shutdown` branch never
+/// polled again, so graceful drain never completed for that connection.
+///
+/// Both waits below are bounded, so a regression fails here rather than hanging
+/// the suite (which is exactly how this bug presented: a test binary that never
+/// finished).
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_pipelined_burst_of_capture_streams_cannot_wedge_the_socket(pool: PgPool) {
+    let stt_url = voice_fixture::stt_returning("15% of 230").await;
+    let harness = Harness::start(
+        pool,
+        FakeModel::streaming(["unused"]),
+        VoiceWiring {
+            transcriber: stt(&stt_url),
+            synthesizer: None,
+        },
+    )
+    .await;
+
+    let mut socket = harness.connect().await;
+    // Six starts: five of them close a predecessor, i.e. one more settled turn
+    // than the handover queue can hold. They name no session deliberately —
+    // filling the queue is what this exercises, and six concurrent runs would
+    // only add load that has nothing to do with the wedge.
+    for n in 0..6 {
+        socket
+            .send_control(VoiceSocket::start_stream(&format!("burst-{n}"), None))
+            .await;
+        socket.send_pcm(vec![0u8; 640]).await;
+    }
+    socket
+        .send_control(VoiceSocket::stop_stream("burst-5"))
+        .await;
+
+    // Still serving: an ordinary turn on the same connection is transcribed and
+    // run to completion afterwards.
+    socket
+        .send_control(VoiceSocket::start_stream("after-burst", Some(SESSION)))
+        .await;
+    socket.send_pcm(vec![0u8; 640]).await;
+    socket
+        .send_control(VoiceSocket::stop_stream("after-burst"))
+        .await;
+
+    let received = socket
+        .collect_until(WEDGE_BUDGET, is("run.completed"))
+        .await;
+    assert!(
+        events_of(&received).contains(&"run.completed"),
+        "the socket must still serve a turn after a pipelined burst: {:?}",
+        events_of(&received)
+    );
+
+    // ...and graceful drain still reaches this connection.
+    harness.shutdown.cancel();
+    assert!(
+        socket.closed_within(WEDGE_BUDGET).await,
+        "a shutdown must still close this socket — a wedged loop never polls its shutdown branch"
+    );
+}
+
+/// A second voice turn supersedes the answer still being spoken, so the
+/// utterance it replaces is **cancelled and reported**, never silently dropped.
+///
+/// Barge-in does not cover this case: it fires at `voice.stream.start`, which
+/// here is strictly *before* the first turn's transcript has even settled — so
+/// nothing is being spoken yet when it runs. The overwrite happens later, when
+/// the second settled transcript is dequeued, and before the fix it replaced the
+/// `ActiveSpeech` outright: the old synthesis task was neither cancelled nor
+/// aborted (it kept pulling PCM from the speech service, holding that connection
+/// open), and the client never received the `voice.speak.stop` its playback
+/// bookkeeping waits for — it would still believe the first utterance was live.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_second_voice_turn_reports_the_utterance_it_supersedes(pool: PgPool) {
+    let stt_url = voice_fixture::stt_returning("15% of 230").await;
+    // Slow enough that the first answer is unambiguously still being spoken
+    // when the second turn lands.
+    let tts_url = voice_fixture::tts_streaming(40, 1024, Duration::from_millis(150)).await;
+    let harness = Harness::start(
+        pool,
+        FakeModel::streaming(["unused"]),
+        VoiceWiring {
+            transcriber: stt(&stt_url),
+            synthesizer: tts(&tts_url),
+        },
+    )
+    .await;
+
+    let mut socket = harness.connect().await;
+    socket
+        .send_control(VoiceSocket::start_stream("a", Some(SESSION)))
+        .await;
+    socket.send_pcm(vec![0u8; 640]).await;
+    // Opening capture B is what releases A: it ends stream A inline. Nothing is
+    // being spoken yet at this point, so this is not the barge-in path.
+    socket
+        .send_control(VoiceSocket::start_stream("b", Some(SESSION)))
+        .await;
+    socket.send_pcm(vec![0u8; 640]).await;
+
+    // A's answer is now genuinely being spoken.
+    let spoken = socket
+        .collect_until(BUDGET, |r| matches!(r, Received::Audio(_)))
+        .await;
+    let start_a = payload_of(&spoken, "voice.speak.start")
+        .expect("precondition: the first answer must be announced and speaking")
+        .clone();
+    assert!(audio_frame_count(&spoken) > 0);
+
+    // Release B. Its transcript becomes a second turn, which supersedes A.
+    socket.send_control(VoiceSocket::stop_stream("b")).await;
+
+    let after = socket.collect_until(BUDGET, is("voice.speak.stop")).await;
+    let stop = payload_of(&after, "voice.speak.stop")
+        .expect("a superseded utterance must be reported as ended, not silently replaced");
+    assert_eq!(
+        stop["utteranceId"], start_a["utteranceId"],
+        "the bracket that closes must be the superseded utterance's own"
+    );
+    assert_eq!(stop["reason"], "cancelled");
+
+    harness.shutdown.cancel();
+}
+
+/// Everything a client puts on `voice.stream.start` is checked at the boundary.
+///
+/// `streamId` is echoed into every `voice.transcript` and `voice.error` the hub
+/// **broadcasts to every connected socket**, so an id bounded only by the 64 KiB
+/// frame cap is an amplification lever; the rejection itself must not echo it
+/// back either. The PCM format is handed straight to the speech service —
+/// `[voice].audio` in the config constrains only what the *daemon* is set up
+/// for, never what a client may declare per stream.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn an_unacceptable_voice_stream_start_is_rejected_at_the_boundary(pool: PgPool) {
+    let stt_url = voice_fixture::stt_returning("15% of 230").await;
+    let harness = Harness::start(
+        pool,
+        FakeModel::streaming(["unused"]),
+        VoiceWiring {
+            transcriber: stt(&stt_url),
+            synthesizer: None,
+        },
+    )
+    .await;
+
+    let mut socket = harness.connect().await;
+    let oversized = "x".repeat(4_096);
+    socket
+        .send_control(VoiceSocket::start_stream(&oversized, Some(SESSION)))
+        .await;
+    socket.send_pcm(vec![0u8; 640]).await;
+    socket
+        .send_control(VoiceSocket::stop_stream(&oversized))
+        .await;
+
+    let received = socket.drain_for(Duration::from_millis(500)).await;
+    let events = events_of(&received);
+    assert!(
+        !events.contains(&"voice.transcript") && !events.contains(&"run.started"),
+        "a rejected capture stream starts nothing: {events:?}"
+    );
+    for item in &received {
+        if let Received::Event { payload, .. } = item {
+            assert!(
+                !payload.to_string().contains(&oversized),
+                "the rejected id must never reach a broadcast envelope"
+            );
+        }
+    }
+
+    // A control-character id is rejected on the same grounds.
+    socket
+        .send_control(VoiceSocket::start_stream("bad\nid", Some(SESSION)))
+        .await;
+    socket.send_pcm(vec![0u8; 640]).await;
+    let received = socket.drain_for(Duration::from_millis(500)).await;
+    assert!(
+        !events_of(&received).contains(&"voice.transcript"),
+        "a control-character id starts nothing: {:?}",
+        events_of(&received)
+    );
+
+    // 32-bit samples at an absurd rate on 64 channels: nothing the configured
+    // s16le pipeline can honestly claim to have captured.
+    socket
+        .send_control(serde_json::json!({
+            "type": "voice.stream.start",
+            "streamId": "wrong-format",
+            "sessionId": SESSION,
+            "sampleRateHz": 4_000_000_u32,
+            "sampleWidthBytes": 4,
+            "channels": 64,
+        }))
+        .await;
+    socket.send_pcm(vec![0u8; 640]).await;
+    socket
+        .send_control(VoiceSocket::stop_stream("wrong-format"))
+        .await;
+
+    let received = socket.drain_for(Duration::from_millis(500)).await;
+    let events = events_of(&received);
+    assert!(
+        !events.contains(&"voice.transcript") && !events.contains(&"run.started"),
+        "an unsupported capture format starts no transcription: {events:?}"
+    );
+
+    // The connection itself is unharmed.
+    socket
+        .send_control(VoiceSocket::start_stream("ok", Some(SESSION)))
+        .await;
+    socket.send_pcm(vec![0u8; 640]).await;
+    socket.send_control(VoiceSocket::stop_stream("ok")).await;
+    let received = socket.collect_until(BUDGET, is("voice.transcript")).await;
+    assert_eq!(
+        payload_of(&received, "voice.transcript").unwrap()["streamId"],
+        "ok"
+    );
 
     harness.shutdown.cancel();
 }

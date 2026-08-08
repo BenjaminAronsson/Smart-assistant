@@ -85,6 +85,43 @@ const AUDIO_QUEUE_CAPACITY: usize = 32;
 /// path by then — the receiver is dropped, so it can emit nothing further.
 const SPEECH_CANCEL_GRACE: Duration = Duration::from_millis(250);
 
+/// Bound on how long a capture stream's transcription task is awaited after end
+/// of speech (`voice.stream.stop`, barge-in, socket close, shutdown). Closing
+/// the audio channel is what makes the STT service settle the utterance, so the
+/// task is given room to produce it — but the settled turn reaches the socket
+/// loop through the `finals` queue and the hub, never through this await, so the
+/// bound is a pure liveness guard.
+const VOICE_STREAM_SETTLE_GRACE: Duration = Duration::from_secs(5);
+
+/// Bound on how long a **cancelled** transcription task is awaited before it is
+/// abandoned. Same reasoning as [`SPEECH_CANCEL_GRACE`]: cancellation is already
+/// signalled and the audio path is already severed, so the socket loop — which
+/// also carries every other event for this client — must not stall on a slow
+/// speech service winding down. Without this bound a task that cannot observe
+/// its token (one blocked on a full `finals` queue, say) wedges the socket
+/// permanently: no inbound frames, no outbound events, and no graceful drain.
+const VOICE_STREAM_CANCEL_GRACE: Duration = Duration::from_millis(250);
+
+/// Ceiling on a client-supplied `streamId`. The id is echoed into every
+/// `voice.transcript`/`voice.error` envelope, and the hub **broadcasts those to
+/// every connected socket** — so an id bounded only by the 64 KiB frame cap is
+/// an amplification lever: one `voice.stream.start` becomes one oversized copy
+/// per partial transcript per connected client. A real id is a short opaque
+/// handle.
+const MAX_STREAM_ID_CHARS: usize = 64;
+
+/// The PCM format this daemon accepts on `voice.stream.start`.
+/// `Config::validate` pins `[voice].audio` to `s16le` with a positive rate and
+/// channel count, but that constrains the *daemon's* configuration only: the
+/// per-stream format on this frame is client-controlled and is forwarded
+/// verbatim to the speech service, so it is validated here rather than trusted.
+/// A mismatch is rejected rather than coerced, so the audio the service receives
+/// stays exactly the audio the client said it was sending.
+const VOICE_SAMPLE_WIDTH_BYTES: u16 = 2; // s16le
+const VOICE_MAX_CHANNELS: u16 = 2;
+const VOICE_MIN_SAMPLE_RATE_HZ: u32 = 8_000;
+const VOICE_MAX_SAMPLE_RATE_HZ: u32 = 48_000;
+
 /// Read side of the persisted event log (docs/05 §3), abstracted so the hub and
 /// timeline endpoint can be driven by a fake in tests. Implemented by
 /// `jarvis_infra::events::PgEventLog`; returns raw outbox rows which jarvisd
@@ -500,6 +537,35 @@ fn audio_stream(rx: mpsc::Receiver<Vec<u8>>) -> BoxStream<'static, Vec<u8>> {
     Box::pin(poll_fn(move |cx| rx.poll_recv(cx)))
 }
 
+/// Whether a client-supplied `streamId` may be adopted — and therefore echoed
+/// into broadcast envelopes (see [`MAX_STREAM_ID_CHARS`]). Bounded, non-empty,
+/// and free of control characters, which have no place in an opaque handle and
+/// could corrupt a client's rendering of it. Rejected rather than truncated: a
+/// truncated id still echoes attacker-chosen bytes and silently renames the
+/// stream out from under the client that opened it.
+fn stream_id_is_acceptable(stream_id: &str) -> bool {
+    !stream_id.is_empty()
+        && stream_id.chars().count() <= MAX_STREAM_ID_CHARS
+        && !stream_id.chars().any(char::is_control)
+}
+
+/// The client's declared capture format, or `None` when it is not one this
+/// daemon will forward to a speech service (see [`VOICE_SAMPLE_WIDTH_BYTES`]).
+fn accepted_audio_format(
+    sample_rate_hz: u32,
+    sample_width_bytes: u16,
+    channels: u16,
+) -> Option<AudioFormat> {
+    let acceptable = sample_width_bytes == VOICE_SAMPLE_WIDTH_BYTES
+        && (1..=VOICE_MAX_CHANNELS).contains(&channels)
+        && (VOICE_MIN_SAMPLE_RATE_HZ..=VOICE_MAX_SAMPLE_RATE_HZ).contains(&sample_rate_hz);
+    acceptable.then_some(AudioFormat {
+        sample_rate_hz,
+        sample_width_bytes,
+        channels,
+    })
+}
+
 /// Map an adapter-side failure to the stable wire code for its leg. The
 /// adapter's own message is deliberately dropped here (it is only ever logged),
 /// so no transport text reaches the browser.
@@ -568,13 +634,37 @@ fn start_voice_stream(
                     // path that may start a run. One final per turn: a service
                     // emitting more would otherwise be able to start unbounded
                     // runs from a single button press.
-                    let _ = finals
-                        .send(VoiceTurn {
-                            stream_id: task_stream_id.clone(),
-                            session_id: task_session_id.clone(),
-                            text,
-                        })
-                        .await;
+                    //
+                    // Handed over WITHOUT waiting, deliberately. `finals` is
+                    // bounded, and the socket loop is not always draining it —
+                    // it is, for instance, inside this very stream's teardown
+                    // awaiting this task. A blocking `send` there is an
+                    // unbounded await that no `CancellationToken` can reach
+                    // (cancelling a token does not interrupt a blocked `send`),
+                    // which is exactly the "not cancellable" case invariant #4
+                    // forbids: it wedged the socket loop permanently — no
+                    // inbound frames, no outbound events, no graceful drain.
+                    //
+                    // A full queue means the loop is already four settled turns
+                    // behind, which push-to-talk cannot reach without
+                    // pipelining. The transcript itself was broadcast above, so
+                    // the user still sees what was heard; only the run is not
+                    // started, and that is reported rather than waited out.
+                    let turn = VoiceTurn {
+                        stream_id: task_stream_id.clone(),
+                        session_id: task_session_id.clone(),
+                        text,
+                    };
+                    if let Err(error) = finals.try_send(turn) {
+                        tracing::warn!(
+                            stream_id = %task_stream_id,
+                            reason = match error {
+                                mpsc::error::TrySendError::Full(_) => "queue full",
+                                mpsc::error::TrySendError::Closed(_) => "socket closed",
+                            },
+                            "settled voice transcript starts no run"
+                        );
+                    }
                     break;
                 }
                 // A mid-stream STT failure. A stream that simply ends means the
@@ -597,17 +687,38 @@ fn start_voice_stream(
     }
 }
 
+/// End one capture stream: close its audio channel (end of speech), then stop
+/// waiting for its transcription task within a bounded, cancellable staircase.
+///
+/// Every wait here is bounded. Dropping the audio sender is what lets the STT
+/// service settle the utterance, so the task gets [`VOICE_STREAM_SETTLE_GRACE`]
+/// to finish normally; past that it is cancelled, given
+/// [`VOICE_STREAM_CANCEL_GRACE`] to unwind, and finally aborted — the same
+/// escalation [`cancel_speech`] applies to synthesis. The second wait used to be
+/// an unbounded `task.await`, which meant a task that could not observe its
+/// token wedged the socket loop for good: no inbound frames, no outbound events,
+/// and the `state.shutdown` branch never reached, so graceful drain never
+/// completed for that connection.
 async fn stop_voice_stream(active: &mut Option<ActiveVoiceStream>) {
     let Some(mut stream) = active.take() else {
         return;
     };
     stream.audio_tx.take();
-    if tokio::time::timeout(Duration::from_secs(5), &mut stream.task)
+    if tokio::time::timeout(VOICE_STREAM_SETTLE_GRACE, &mut stream.task)
         .await
         .is_err()
     {
         stream.cancel.cancel();
-        let _ = stream.task.await;
+        if tokio::time::timeout(VOICE_STREAM_CANCEL_GRACE, &mut stream.task)
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                stream_id = %stream.stream_id,
+                "voice transcription task did not settle after cancellation; abandoning it"
+            );
+            stream.task.abort();
+        }
     }
 }
 
@@ -956,6 +1067,28 @@ async fn handle_socket(
                 let _ = socket.send(Message::Close(None)).await;
                 return;
             }
+            // A settled transcript. It becomes a run through `RunApi::start_turn`
+            // — the same use case `POST /sessions/{id}/messages` calls — so it
+            // gets M4's deterministic-grammar-first routing, the policy context
+            // of *this* authenticated device, and no shortcut of any kind
+            // (invariant #1). Awaited inline rather than spawned so the run is
+            // durably created before the loop resumes: the deltas it will emit
+            // are already buffered on `rx`, so binding speech to it here cannot
+            // miss the start of the answer.
+            //
+            // Polled BEFORE the inbound and fan-out arms, deliberately.
+            // `finals` is BOUNDED, and `biased` means an always-ready arm
+            // starves the ones after it: with this arm last, a client that
+            // pipelines frames — or a busy fan-out — kept the loop permanently
+            // occupied and the queue permanently full, so the transcription
+            // tasks feeding it had nowhere to put their results. Work the user
+            // has already committed to (an utterance that is *finished*) drains
+            // ahead of work that is only just arriving.
+            Some(turn) = finals_rx.recv() => {
+                if start_voice_turn(&mut socket, &state, &device, &mut speech, turn).await.is_err() {
+                    shut_down!();
+                }
+            }
             received = rx.recv() => match received {
                 Ok(envelope) => {
                     if send_envelope(&mut socket, &envelope).await.is_err() {
@@ -1007,6 +1140,44 @@ async fn handle_socket(
                             sample_width_bytes,
                             channels,
                         } => {
+                            // Validated BEFORE the frame is allowed to do
+                            // anything at all: a malformed `voice.stream.start`
+                            // is not a barge-in, so it must not cancel the
+                            // answer currently being spoken either.
+                            //
+                            // No `voice.error` is emitted for a rejected id: that
+                            // event carries the very `streamId` under suspicion,
+                            // and broadcasting it to every connected socket is
+                            // the amplification this check exists to prevent. It
+                            // is logged by length only, and the frame is dropped
+                            // like any other unparseable one above — the browser
+                            // already fails closed on the absence of a
+                            // transcript.
+                            if !stream_id_is_acceptable(&stream_id) {
+                                tracing::warn!(
+                                    stream_id_len = stream_id.len(),
+                                    "rejected voice.stream.start: unacceptable streamId"
+                                );
+                                continue;
+                            }
+                            // The per-stream format is client-controlled and is
+                            // handed straight to the speech service; the
+                            // `[voice].audio` config constrains only what the
+                            // daemon itself is set up for, so it is checked here.
+                            let Some(format) = accepted_audio_format(
+                                sample_rate_hz,
+                                sample_width_bytes,
+                                channels,
+                            ) else {
+                                tracing::warn!(
+                                    %stream_id,
+                                    sample_rate_hz,
+                                    sample_width_bytes,
+                                    channels,
+                                    "rejected voice.stream.start: unsupported capture format"
+                                );
+                                continue;
+                            };
                             // BARGE-IN (docs/02 §9: TTS "stops immediately on
                             // barge-in"). The user speaking again supersedes the
                             // answer being spoken, so synthesis is cancelled
@@ -1028,11 +1199,7 @@ async fn handle_socket(
                                     Arc::clone(&state.hub),
                                     stream_id,
                                     session_id,
-                                    AudioFormat {
-                                        sample_rate_hz,
-                                        sample_width_bytes,
-                                        channels,
-                                    },
+                                    format,
                                     cancel,
                                     finals_tx.clone(),
                                 ));
@@ -1060,17 +1227,6 @@ async fn handle_socket(
                 Some(Ok(_)) => {}
                 Some(Err(_)) => shut_down!(),
             },
-            // A settled transcript. It becomes a run through `RunApi::start_turn`
-            // — the same use case `POST /sessions/{id}/messages` calls — so it
-            // gets M4's deterministic-grammar-first routing, the policy context
-            // of *this* authenticated device, and no shortcut of any kind
-            // (invariant #1). Awaited inline rather than spawned so the run is
-            // durably created before the loop resumes: the deltas it will emit
-            // are already buffered on `rx`, so binding speech to it here cannot
-            // miss the start of the answer.
-            Some(turn) = finals_rx.recv() => {
-                start_voice_turn(&state, &device, &mut speech, turn).await;
-            }
             chunk = next_speech_chunk(&mut speech) => {
                 if forward_speech_chunk(&mut socket, &state, &mut speech, chunk).await.is_err() {
                     shut_down!();
@@ -1082,25 +1238,36 @@ async fn handle_socket(
 
 /// Turn a settled transcript into a run, then bind spoken output to it.
 async fn start_voice_turn(
+    socket: &mut WebSocket,
     state: &WsState,
     device: &crate::auth::DeviceContext,
     speech: &mut Option<ActiveSpeech>,
     turn: VoiceTurn,
-) {
+) -> Result<(), ()> {
+    // This turn supersedes whatever was still being spoken, so the previous
+    // utterance is stopped **through `cancel_speech`** before it can be
+    // replaced. Dropping an `ActiveSpeech` neither cancels its token nor aborts
+    // its task, so a bare overwrite left the old synthesis pulling PCM from the
+    // speech service — holding that connection open — and left the client
+    // without the `voice.speak.stop` its playback bookkeeping is waiting for.
+    // Barge-in does not cover this: it fires at `voice.stream.start`, which is
+    // strictly before the previous stream's final is dequeued here.
+    cancel_speech(socket, &state.hub, speech).await?;
+
     let stream_id = turn.stream_id;
     let Some(runs) = state.runs.as_ref() else {
-        return; // no run surface mounted; transcript display only
+        return Ok(()); // no run surface mounted; transcript display only
     };
     let Some(session_id) = turn.session_id else {
         tracing::debug!(%stream_id, "voice transcript has no session; not starting a run");
-        return;
+        return Ok(());
     };
 
     let ack = match runs.start_turn(&session_id, device, turn.text).await {
         Ok(ack) => ack,
         Err(error) => {
             tracing::warn!(?error, %stream_id, "voice transcript could not start a run");
-            return;
+            return Ok(());
         }
     };
 
@@ -1113,6 +1280,7 @@ async fn start_voice_turn(
             state.shutdown.child_token(),
         ));
     }
+    Ok(())
 }
 
 /// Relay one item from the synthesis task to the client.
@@ -1486,6 +1654,109 @@ mod tests {
         );
         // No transcript is invented from a failed recognition, so no run starts.
         assert!(finals_rx.recv().await.is_none());
+    }
+
+    /// The settled turn is handed over on a **bounded** queue, and the socket
+    /// loop is by construction not draining it while it is inside this very
+    /// teardown. A handover with nowhere to go must therefore not make the
+    /// teardown unbounded — it did, before this test: the loop waited 5 s,
+    /// cancelled a token a blocked `send` could not observe, and then awaited
+    /// the task forever, wedging the whole connection (no inbound frames, no
+    /// outbound events, and the `state.shutdown` branch never polled again).
+    ///
+    /// The handover must therefore not *wait* at all: the assertion is that the
+    /// teardown finishes well inside the settle grace, which fails both for the
+    /// original unbounded await (it never returns) and for a merely-bounded
+    /// blocking `send` (it would burn the whole grace on every such frame — a
+    /// stall a client can trigger at will).
+    #[tokio::test]
+    async fn a_blocked_transcript_handover_cannot_wedge_the_capture_teardown() {
+        let started = std::time::Instant::now();
+        let hub = WsHub::new();
+        // Capacity 1, already full, and nothing will ever read it: exactly the
+        // state a pipelined burst of `voice.stream.start` frames produces.
+        let (finals_tx, _finals_rx) = mpsc::channel::<VoiceTurn>(1);
+        finals_tx
+            .send(VoiceTurn {
+                stream_id: "already-queued".to_owned(),
+                session_id: None,
+                text: "already queued".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        let cancel = CancellationToken::new();
+        let mut active = Some(start_voice_stream(
+            Arc::new(FakeTranscriber),
+            Arc::clone(&hub),
+            "stream-wedge".to_owned(),
+            None,
+            AudioFormat {
+                sample_rate_hz: 16_000,
+                sample_width_bytes: 2,
+                channels: 1,
+            },
+            cancel.clone(),
+            finals_tx,
+        ));
+
+        tokio::time::timeout(
+            VOICE_STREAM_SETTLE_GRACE + VOICE_STREAM_CANCEL_GRACE + Duration::from_secs(5),
+            stop_voice_stream(&mut active),
+        )
+        .await
+        .expect("stopping a capture stream must be bounded even when its handover is blocked");
+        assert!(active.is_none());
+        assert!(
+            started.elapsed() < VOICE_STREAM_SETTLE_GRACE,
+            "a blocked handover must not cost the settle grace; took {:?}",
+            started.elapsed()
+        );
+        // The stream settled on its own, so nothing had to be cancelled.
+        assert!(!cancel.is_cancelled());
+    }
+
+    /// The id is echoed into events the hub broadcasts to **every** connected
+    /// socket, so it is bounded at the boundary rather than trusted to be sane.
+    #[test]
+    fn an_unbounded_or_control_laden_stream_id_is_not_acceptable() {
+        assert!(stream_id_is_acceptable("s1"));
+        assert!(stream_id_is_acceptable(&"x".repeat(MAX_STREAM_ID_CHARS)));
+        assert!(!stream_id_is_acceptable(""));
+        assert!(!stream_id_is_acceptable(
+            &"x".repeat(MAX_STREAM_ID_CHARS + 1)
+        ));
+        // Bounded in CHARACTERS, not bytes: a multi-byte id of acceptable
+        // length is fine, and a long one is still rejected.
+        assert!(stream_id_is_acceptable("é"));
+        assert!(!stream_id_is_acceptable(
+            &"é".repeat(MAX_STREAM_ID_CHARS + 1)
+        ));
+        assert!(!stream_id_is_acceptable("has\nnewline"));
+        assert!(!stream_id_is_acceptable("has\u{7}bell"));
+    }
+
+    /// The per-stream format is client-controlled and is handed straight to the
+    /// speech service; only the format the daemon is configured for is accepted.
+    #[test]
+    fn only_the_configured_capture_format_is_accepted() {
+        assert_eq!(
+            accepted_audio_format(16_000, 2, 1),
+            Some(AudioFormat {
+                sample_rate_hz: 16_000,
+                sample_width_bytes: 2,
+                channels: 1,
+            })
+        );
+        assert!(accepted_audio_format(48_000, 2, 2).is_some());
+        // Not s16le.
+        assert!(accepted_audio_format(16_000, 4, 1).is_none());
+        assert!(accepted_audio_format(16_000, 0, 1).is_none());
+        // Nonsense channel counts and rates never reach the speech service.
+        assert!(accepted_audio_format(16_000, 2, 0).is_none());
+        assert!(accepted_audio_format(16_000, 2, 64).is_none());
+        assert!(accepted_audio_format(0, 2, 1).is_none());
+        assert!(accepted_audio_format(u32::MAX, 2, 1).is_none());
     }
 
     #[test]

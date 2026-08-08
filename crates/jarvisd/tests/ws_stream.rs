@@ -93,12 +93,25 @@ async fn start(pool: PgPool, model: FakeModel) -> Harness {
     };
 
     // Start the outbox dispatcher so committed domain events reach the hub.
-    let dispatch_pool = pool.clone();
+    //
+    // On its own pool, NOT a child of the `#[sqlx::test]` one: the dispatcher's
+    // `PgListener` holds a connection for the whole test, and test pools share a
+    // master pool capped at 20 connections — sixteen tests in parallel each
+    // parking a permanent LISTEN permit there starved every other acquire until
+    // sqlx's 30 s timeout, which is what made this suite's wall time swing by
+    // ~30 s and fail intermittently with an unrelated `503`.
+    let dispatch_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(pool.connect_options().as_ref().clone())
+        .await
+        .expect("dispatcher pool");
     let dispatch_hub = ws.hub.clone();
     let dispatch_cancel = shutdown.clone();
     tokio::spawn(async move {
-        let dispatcher = jarvis_infra::dispatcher::OutboxDispatcher::new(dispatch_pool);
+        let dispatcher = jarvis_infra::dispatcher::OutboxDispatcher::new(dispatch_pool.clone());
         let _ = dispatcher.run(&*dispatch_hub, dispatch_cancel).await;
+        // Release the database so `#[sqlx::test]` can drop it afterwards.
+        dispatch_pool.close().await;
     });
 
     let app = router_with(

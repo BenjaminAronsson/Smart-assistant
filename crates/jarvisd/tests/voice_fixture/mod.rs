@@ -289,12 +289,16 @@ impl Harness {
             runs: Some(run_api.clone()),
         };
 
-        let dispatch_pool = pool.clone();
+        let dispatch_pool = dispatcher_pool(&pool).await;
         let dispatch_hub = ws.hub.clone();
         let dispatch_cancel = shutdown.clone();
         tokio::spawn(async move {
-            let dispatcher = jarvis_infra::dispatcher::OutboxDispatcher::new(dispatch_pool);
+            let dispatcher = jarvis_infra::dispatcher::OutboxDispatcher::new(dispatch_pool.clone());
             let _ = dispatcher.run(&*dispatch_hub, dispatch_cancel).await;
+            // Release the database as soon as the test cancels: `#[sqlx::test]`
+            // drops the throwaway DB afterwards and cannot while a session is
+            // still connected.
+            dispatch_pool.close().await;
         });
 
         let app = router_with(
@@ -380,6 +384,25 @@ impl Harness {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         serde_json::from_slice(&bytes).unwrap()
     }
+}
+
+/// A pool for the outbox dispatcher that is **not** a child of the `#[sqlx::test]`
+/// pool.
+///
+/// The dispatcher's `PgListener` holds one connection open for the whole test.
+/// Test pools are children of a single shared master pool capped at 20
+/// connections, so on a 16-core machine sixteen tests running in parallel each
+/// parked a permanent LISTEN permit there and left almost nothing for actual
+/// queries — every other acquire then waited out sqlx's 30 s timeout and surfaced
+/// as a `503 identity store unavailable` from an unrelated request. That is the
+/// whole of the ~30 s run-to-run spread and the lone intermittent failure this
+/// suite showed; it is a harness artefact, not daemon behaviour.
+async fn dispatcher_pool(pool: &PgPool) -> PgPool {
+    sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(pool.connect_options().as_ref().clone())
+        .await
+        .expect("dispatcher pool")
 }
 
 async fn seed_session(pool: &PgPool) {
@@ -505,6 +528,24 @@ impl VoiceSocket {
     /// assert an *absence* (no audio after barge-in) rather than a presence.
     pub async fn drain_for(&mut self, window: Duration) -> Vec<Received> {
         self.collect_until(window, |_| false).await
+    }
+
+    /// Whether the daemon closes this socket within `budget`. A socket loop
+    /// that is wedged can never poll its shutdown branch, so this is how a
+    /// graceful-drain regression fails within a bound instead of hanging.
+    pub async fn closed_within(&mut self, budget: Duration) -> bool {
+        use futures_util::StreamExt;
+        let deadline = tokio::time::sleep(budget);
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                _ = &mut deadline => return false,
+                frame = self.socket.next() => match frame {
+                    Some(Ok(WsMessage::Close(_))) | Some(Err(_)) | None => return true,
+                    Some(Ok(_)) => {}
+                }
+            }
+        }
     }
 }
 
