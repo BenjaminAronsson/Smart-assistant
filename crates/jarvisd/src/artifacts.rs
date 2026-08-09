@@ -208,11 +208,7 @@ fn to_manifest_dto(m: &ArtifactManifest) -> ArtifactManifestDto {
             lockfile_hash: build.lockfile_hash.as_ref().map(Sha256::to_string),
             network: network_dto(build.network),
         },
-        capabilities: m
-            .capabilities()
-            .iter()
-            .map(|c| c.as_str().to_owned())
-            .collect(),
+        capabilities: m.capabilities().iter().copied().map(Into::into).collect(),
     }
 }
 

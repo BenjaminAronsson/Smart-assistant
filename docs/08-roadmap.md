@@ -69,7 +69,7 @@ and a default:
 | Angular state management (signals vs NgRx) | M1, after first streaming UI | Angular signals + services |
 | Exact STT model size (base vs small int8) | M5 on reference hardware | faster-whisper `base` int8 |
 | Wake-word engine + model licensing | post-M5 | openWakeWord, pending asset-license review |
-| Generated-app template format details | M6 | JSON spec + locked Vite template |
+| ~~Generated-app template format details~~ **DECIDED (ADR-029, F6.1)** | ~~M6~~ | JSON spec + locked Vite template, over a **closed** capability vocabulary |
 | NATS JetStream vs alternatives | M7, if second machine materializes | in-process outbox only |
 | Anthropic API vs local model as second provider | when billing/hardware changes | claude-cli only (ADR-011) |
 | WebRTC/LiveKit for remote media | M7 | WS binary PCM frames |

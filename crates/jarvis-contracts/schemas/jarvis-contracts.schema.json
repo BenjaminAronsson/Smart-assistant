@@ -63,6 +63,71 @@
       ],
       "type": "object"
     },
+    "AppLimitsDto": {
+      "description": "Build limits the spec requests (docs/06 §6 \"size/time limits\"). Omitted\nfields mean the host ceiling; a value **above** the ceiling is rejected, not\nclamped.",
+      "properties": {
+        "maxBuildSeconds": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "maxBundleBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AppSpecDto": {
+      "description": "The app spec as it arrives from a model (FR-18 \"validated templates\").\nUntrusted in full: nothing here is authority, and everything here is\nvalidated by the domain before a build starts.",
+      "properties": {
+        "bindings": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/DataBindingDto"
+          },
+          "type": "array"
+        },
+        "capabilities": {
+          "default": [],
+          "description": "Capabilities the app declares it needs. May be empty — an app that needs\nno authority is the best kind. Unknown names are rejected.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limits": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppLimitsDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "template": {
+          "description": "Host template id, e.g. `dashboard/v1`. Unknown ids are rejected.",
+          "type": "string"
+        },
+        "title": {
+          "description": "Single-line title shown in the app's window chrome.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "template",
+        "title"
+      ],
+      "type": "object"
+    },
     "ApprovalCardDto": {
       "description": "What a human is asked to approve (docs/06 §3). Carries the exact effect and\nthe real proposed arguments so the approval binds precisely what is shown.",
       "properties": {
@@ -152,8 +217,9 @@
           "$ref": "#/definitions/BuildProvenanceDto"
         },
         "capabilities": {
+          "description": "Declared capabilities, from the host's closed vocabulary (F6.1). A\nmanifest only ever holds validated capabilities, so the wire type is the\nexhaustive union rather than a string the client must interpret.",
           "items": {
-            "type": "string"
+            "$ref": "#/definitions/CapabilityDto"
           },
           "type": "array"
         },
@@ -308,6 +374,26 @@
         }
       ]
     },
+    "CapabilityDto": {
+      "description": "A capability a validated artifact manifest declares (docs/04 §4\n`capabilities`). Exhaustive — the host vocabulary, mirrored on the wire.",
+      "oneOf": [
+        {
+          "const": "home_read_state",
+          "description": "`home.read_state` — read Home Assistant entity state (R0).",
+          "type": "string"
+        },
+        {
+          "const": "home_set_light",
+          "description": "`home.set_light` — set a single allowlisted light (R1).",
+          "type": "string"
+        },
+        {
+          "const": "home_execute_scene",
+          "description": "`home.execute_scene` — activate an allowlisted scene (R2).",
+          "type": "string"
+        }
+      ]
+    },
     "Channel": {
       "description": "One WebSocket replaces v1's three hubs; `channel` discriminates (docs/05 §1).",
       "enum": [
@@ -423,6 +509,29 @@
       },
       "required": [
         "kind"
+      ],
+      "type": "object"
+    },
+    "DataBindingDto": {
+      "description": "One data binding the app declares (see [`AppSpecDto`]).",
+      "properties": {
+        "capability": {
+          "description": "The declared capability that supplies it — validated host-side against\nthe closed vocabulary.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Identifier the template binds this data under (`[a-z][a-z0-9_]*`).",
+          "type": "string"
+        },
+        "target": {
+          "description": "The resource it addresses (e.g. an entity id). Opaque to the host; the\nbacking tool's own allowlist resolves it at call time.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "capability",
+        "target"
       ],
       "type": "object"
     },

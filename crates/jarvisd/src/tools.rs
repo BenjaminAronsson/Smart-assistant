@@ -270,6 +270,45 @@ fn wrap_with_timeout(descriptor: ToolDescriptor) -> ToolDescriptor {
 mod tests {
     use super::*;
 
+    /// F6.1: every [`Capability`] in the host's closed vocabulary must name a
+    /// tool that is **actually registrable here**, and its declared risk tier
+    /// must equal that tool's host-owned `ToolPolicy.risk`.
+    ///
+    /// The domain's `Capability::risk()` is only a preview — the authoritative
+    /// decision is `policy::evaluate` against the live registry — but a preview
+    /// that disagrees with the real tier is worse than none: the approval card
+    /// for a generated app would understate what the app can do. This is the
+    /// fixture-vs-caller check (the M5 lesson) applied at the vocabulary
+    /// boundary: it compares the domain's claim against the descriptors the
+    /// **real** registration site builds, not against a hand-written table.
+    #[test]
+    fn every_capability_maps_to_a_registered_tool_at_the_risk_it_declares() {
+        use jarvis_adapters::home_assistant::{HomeBroadTool, HomeGetStateTool, HomeSetLightTool};
+        use jarvis_domain::artifact::Capability;
+
+        for capability in Capability::ALL {
+            // Exhaustive: a new capability with no descriptor here fails to
+            // compile rather than shipping unbacked.
+            let (id, policy) = match capability {
+                Capability::HomeReadState => (HomeGetStateTool::id(), HomeGetStateTool::policy()),
+                Capability::HomeSetLight => (HomeSetLightTool::id(), HomeSetLightTool::policy()),
+                Capability::HomeExecuteScene => {
+                    (HomeBroadTool::scene_id(), HomeBroadTool::policy())
+                }
+            };
+            assert_eq!(
+                capability.tool_id(),
+                id,
+                "{capability} must name the tool that actually backs it"
+            );
+            assert_eq!(
+                capability.risk(),
+                policy.risk,
+                "{capability}'s declared tier must match the registered tool's host policy"
+            );
+        }
+    }
+
     #[test]
     fn registers_the_two_config_free_tools_without_a_root() {
         let registry = build_registry(None).expect("builds");

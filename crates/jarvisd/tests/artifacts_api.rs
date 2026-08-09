@@ -15,7 +15,7 @@ use http_body_util::BodyExt;
 use jarvis_application::ports::{ArtifactStore, BlobStore, IdentityStore, RepositoryError};
 use jarvis_domain::artifact::{
     ArtifactContent, ArtifactKind, ArtifactManifest, ArtifactSource, ArtifactVersion,
-    BuildProvenance, MediaType,
+    BuildProvenance, Capability, MediaType,
 };
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::identity::Device;
@@ -180,7 +180,8 @@ async fn seed(store: &FakeArtifactStore, blobs: &FileBlobStore) -> Vec<u8> {
         sources: vec![ArtifactSource::Run(RUN.parse::<RunId>().unwrap())],
         sensitivity: Sensitivity::Sensitive,
         build: BuildProvenance::none(),
-        capabilities: vec!["artifact.read-own-data".parse().unwrap()],
+        // F6.1: the capability vocabulary is closed (ADR-029).
+        capabilities: vec![Capability::HomeReadState],
     };
     let manifest =
         ArtifactManifest::initial(ARTIFACT.parse().unwrap(), RUN.parse().unwrap(), content);
@@ -269,7 +270,8 @@ async fn list_versions_returns_provenance() {
     assert_eq!(versions[0]["sensitivity"], "sensitive");
     assert_eq!(versions[0]["mediaType"], "text/markdown");
     assert_eq!(versions[0]["sources"][0]["kind"], "run");
-    assert_eq!(versions[0]["capabilities"][0], "artifact.read-own-data");
+    // The wire form is the closed vocabulary's snake_case name (F6.1).
+    assert_eq!(versions[0]["capabilities"][0], "home_read_state");
 }
 
 #[tokio::test]

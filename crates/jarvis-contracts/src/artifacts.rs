@@ -12,6 +12,8 @@ use jarvis_domain::ids::{ArtifactId, RunId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::appspec::CapabilityDto;
+
 /// The logical kind of an artifact, selecting its renderer (docs/02 §6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -91,7 +93,10 @@ pub struct ArtifactManifestDto {
     pub sources: Vec<ArtifactSourceDto>,
     pub sensitivity: ArtifactSensitivityDto,
     pub build: BuildProvenanceDto,
-    pub capabilities: Vec<String>,
+    /// Declared capabilities, from the host's closed vocabulary (F6.1). A
+    /// manifest only ever holds validated capabilities, so the wire type is the
+    /// exhaustive union rather than a string the client must interpret.
+    pub capabilities: Vec<CapabilityDto>,
 }
 
 /// `GET /api/v1/artifacts/{id}/versions` — every version of one artifact,

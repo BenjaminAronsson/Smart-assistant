@@ -1,11 +1,30 @@
 //! F3a.3 artifact DTO wire-shape tests (docs/05 §1, FR-08): exact wire strings
 //! for every enum variant, and `BuildProvenanceDto`'s omit-when-None behaviour.
 
+use jarvis_contracts::appspec::CapabilityDto;
 use jarvis_contracts::artifacts::{
     ArtifactKindDto, ArtifactManifestDto, ArtifactSensitivityDto, ArtifactSourceDto,
     ArtifactSourceKindDto, BuildNetworkDto, BuildProvenanceDto,
 };
 use serde_json::json;
+
+/// F6.1: the manifest's capability list is the host's closed vocabulary on the
+/// wire, not free text — an unknown name must fail to deserialize here rather
+/// than reach a client that would have to guess what it meant.
+#[test]
+fn capability_wire_strings_are_snake_case_and_closed() {
+    assert_eq!(wire(CapabilityDto::HomeReadState), json!("home_read_state"));
+    assert_eq!(wire(CapabilityDto::HomeSetLight), json!("home_set_light"));
+    assert_eq!(
+        wire(CapabilityDto::HomeExecuteScene),
+        json!("home_execute_scene")
+    );
+    assert!(
+        serde_json::from_value::<CapabilityDto>(json!("artifact.read-own-data")).is_err(),
+        "the pre-F6.1 free-form capability name must no longer deserialize"
+    );
+    assert!(serde_json::from_value::<CapabilityDto>(json!("shell_exec")).is_err());
+}
 
 fn wire(value: impl serde::Serialize) -> serde_json::Value {
     serde_json::to_value(value).unwrap()
@@ -84,7 +103,7 @@ fn manifest_dto_round_trips_and_is_camel_case() {
             lockfile_hash: None,
             network: BuildNetworkDto::Disabled,
         },
-        capabilities: vec!["artifact.read-own-data".to_owned()],
+        capabilities: vec![CapabilityDto::HomeReadState],
     };
     let v = wire(&dto);
     assert_eq!(v["createdByRun"], json!("01ARZ3NDEKTSV4RRFFQ69G5FB1"));

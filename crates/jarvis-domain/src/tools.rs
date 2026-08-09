@@ -145,6 +145,26 @@ impl ToolId {
         ToolId("browser.navigate".to_owned())
     }
 
+    /// `home.get_state` — the R0 Home Assistant state read (F5.x). Named here
+    /// because [`crate::artifact::Capability`] maps a generated app's declared
+    /// capability onto the tool that backs it (F6.1) and the domain may not
+    /// depend on `jarvis-adapters` to learn the id.
+    ///
+    /// Same "naming is not authorizing" caveat as [`ToolId::browser_navigate`].
+    pub fn home_get_state() -> ToolId {
+        ToolId("home.get_state".to_owned())
+    }
+
+    /// `home.set_light` — the R1 single-light control (F5.x).
+    pub fn home_set_light() -> ToolId {
+        ToolId("home.set_light".to_owned())
+    }
+
+    /// `home.execute_scene` — the R2 broad-effect scene activation (F5.x).
+    pub fn home_execute_scene() -> ToolId {
+        ToolId("home.execute_scene".to_owned())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }

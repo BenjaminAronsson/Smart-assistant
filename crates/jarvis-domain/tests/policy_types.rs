@@ -156,6 +156,25 @@ fn the_browser_navigate_constant_is_exactly_what_parsing_the_literal_yields() {
     assert_eq!(ToolId::browser_navigate().as_str(), "browser.navigate");
 }
 
+// F6.1: `Capability::tool_id()` (jarvis-domain::artifact) resolves a
+// generated app's declared capability onto exactly these constants, never a
+// string a spec supplies — same "naming is not authorizing" convention as
+// `browser_navigate` above.
+#[test]
+fn the_home_tool_id_constants_are_exactly_what_parsing_their_literals_yields() {
+    assert_eq!(ToolId::home_get_state(), "home.get_state".parse().unwrap());
+    assert_eq!(ToolId::home_get_state().as_str(), "home.get_state");
+
+    assert_eq!(ToolId::home_set_light(), "home.set_light".parse().unwrap());
+    assert_eq!(ToolId::home_set_light().as_str(), "home.set_light");
+
+    assert_eq!(
+        ToolId::home_execute_scene(),
+        "home.execute_scene".parse().unwrap()
+    );
+    assert_eq!(ToolId::home_execute_scene().as_str(), "home.execute_scene");
+}
+
 #[test]
 fn tool_version_parses_and_displays() {
     let v: ToolVersion = "1.4.2".parse().unwrap();

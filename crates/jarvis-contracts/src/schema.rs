@@ -58,6 +58,12 @@ pub fn export() -> Value {
     // web shell can import for a single-version render (F3b.3).
     generator.subschema_for::<crate::artifacts::ArtifactManifestDto>();
     generator.subschema_for::<crate::artifacts::ArtifactVersionsResponse>();
+    // Generated-app spec surface (F6.1, FR-18, ADR-029). `CapabilityDto` comes
+    // along by reference from the manifest, but the inbound spec DTOs are
+    // referenced by no event or response — each must be its own root or it
+    // ships absent from the wire schema.
+    generator.subschema_for::<crate::appspec::AppSpecDto>();
+    generator.subschema_for::<crate::appspec::CapabilityDto>();
     // Display surface (F3a.4, FR-09/10). The directive is the display-channel
     // command to the agent; the open request/response is the REST entry point
     // that places an artifact's canvas on a selected monitor.

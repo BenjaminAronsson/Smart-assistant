@@ -63,6 +63,14 @@ export type ArtifactKindDto = "markdown_html" | "code_text" | "image" | "chart" 
  */
 export type BuildNetworkDto = "disabled" | "enabled";
 /**
+ * A capability a validated artifact manifest declares (docs/04 §4
+ * `capabilities`). Exhaustive — the host vocabulary, mirrored on the wire.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "CapabilityDto".
+ */
+export type CapabilityDto = "home_read_state" | "home_set_light" | "home_execute_scene";
+/**
  * Sensitivity class of the artifact (NFR-02).
  *
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
@@ -684,6 +692,68 @@ export interface AgendaEventDto {
   [k: string]: unknown;
 }
 /**
+ * Build limits the spec requests (docs/06 §6 "size/time limits"). Omitted
+ * fields mean the host ceiling; a value **above** the ceiling is rejected, not
+ * clamped.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "AppLimitsDto".
+ */
+export interface AppLimitsDto {
+  maxBuildSeconds?: number | null;
+  maxBundleBytes?: number | null;
+  [k: string]: unknown;
+}
+/**
+ * The app spec as it arrives from a model (FR-18 "validated templates").
+ * Untrusted in full: nothing here is authority, and everything here is
+ * validated by the domain before a build starts.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "AppSpecDto".
+ */
+export interface AppSpecDto {
+  bindings?: DataBindingDto[];
+  /**
+   * Capabilities the app declares it needs. May be empty — an app that needs
+   * no authority is the best kind. Unknown names are rejected.
+   */
+  capabilities?: string[];
+  limits?: AppLimitsDto | null;
+  /**
+   * Host template id, e.g. `dashboard/v1`. Unknown ids are rejected.
+   */
+  template: string;
+  /**
+   * Single-line title shown in the app's window chrome.
+   */
+  title: string;
+  [k: string]: unknown;
+}
+/**
+ * One data binding the app declares (see [`AppSpecDto`]).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "DataBindingDto".
+ */
+export interface DataBindingDto {
+  /**
+   * The declared capability that supplies it — validated host-side against
+   * the closed vocabulary.
+   */
+  capability: string;
+  /**
+   * Identifier the template binds this data under (`[a-z][a-z0-9_]*`).
+   */
+  name: string;
+  /**
+   * The resource it addresses (e.g. an entity id). Opaque to the host; the
+   * backing tool's own allowlist resolves it at call time.
+   */
+  target: string;
+  [k: string]: unknown;
+}
+/**
  * What a human is asked to approve (docs/06 §3). Carries the exact effect and
  * the real proposed arguments so the approval binds precisely what is shown.
  *
@@ -736,7 +806,12 @@ export interface ApprovalDecisionDto {
  */
 export interface ArtifactManifestDto {
   build: BuildProvenanceDto;
-  capabilities: string[];
+  /**
+   * Declared capabilities, from the host's closed vocabulary (F6.1). A
+   * manifest only ever holds validated capabilities, so the wire type is the
+   * exhaustive union rather than a string the client must interpret.
+   */
+  capabilities: CapabilityDto[];
   createdByRun: UlidString;
   id: UlidString;
   kind: ArtifactKindDto;

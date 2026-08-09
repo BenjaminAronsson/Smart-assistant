@@ -680,3 +680,77 @@ already uses, no new trait required.
   recovery; persist important domain events for gap recovery; confirmation-by-default
   execution UX; agent-editable HTML is always untrusted and never shares an origin with
   privileged surfaces.
+
+## ADR-029 — Generated-app format: a JSON spec against a locked Vite template, over a closed capability vocabulary {#adr-029}
+
+**Status.** **Proposed** — written at F6.1 (M6). Confirms the default the owner settled on
+2026-08-09 (`docs/milestones/M6-features.md` §"Scope decisions" #3); needs owner acceptance
+at the M6 gate (human-only decision, `docs/11` §3).
+
+**Context.** FR-18 says "generate small local web applications **from validated
+templates**; open them sandboxed." docs/08 §6 recorded the format as a decision deferred to
+M6, with the default "JSON spec + locked Vite template". The question this ADR settles is
+what the *model* produces and what the *host* validates, because that determines what
+"validated" can possibly mean: if a model emits arbitrary source, "validated template" is
+marketing; if it emits a constrained document that the host renders against a template it
+owns, the phrase has teeth.
+
+The second, sharper half is what a generated app is allowed to **ask for**. docs/06 §6
+requires "optional interaction only via a `postMessage` bridge exchanging short-lived
+capability tokens for operations named in the artifact manifest; **undeclared capability ⇒
+reject**". Through M3–M5 `Capability` was a free-form `String` newtype, which was harmless
+while it was pure provenance metadata carried in a manifest nobody enforced. It stops being
+harmless the moment a bridge enforces it: *a bridge that enforces free-form strings enforces
+nothing*, because "is this capability declared?" is only decidable against a set the host —
+not the model — defines.
+
+**Decision.**
+1. **The app spec is a small JSON document, not source code.** It names a host template id,
+   a title, the capabilities the app declares, its data bindings, and its build limits.
+   `jarvis-domain::appspec` owns validation; `jarvis-contracts::appspec` owns the wire
+   shape. A spec is validated **before any build starts**, so an invalid spec fails in a
+   pure function with a typed reason, not inside a Node worker as a timeout.
+2. **Templates are a closed, host-owned, versioned set** (`TemplateId`, `dashboard/v1`).
+   A template id selects the exact locked source tree and lockfile the builder uses, so an
+   id a model could invent is an id the builder could not pin. The build is a **Vite**
+   build against a committed lockfile with the network disabled (F6.2) — which is what the
+   `build.lockfileHash` field already in the docs/04 §4 manifest was shaped for.
+3. **The capability vocabulary is closed** (`Capability` becomes an exhaustive enum).
+   Each variant names an **already-registered** tool and carries a declared risk tier.
+   Unknown capability ⇒ the **spec** is rejected at validation time, not at bridge time.
+   Adding a capability is a deliberate host change (a variant, a backing tool, a tier),
+   never a string a model can invent.
+4. **Naming is not authorizing** (invariant 1). A declared capability is at most an
+   authorization to *ask* at bridge time. The host still runs `policy::evaluate` against
+   the live registry and still mints an `ExecutionGrant` for R2+. `Capability::risk()` is a
+   **preview** used for approval text only; a test in `jarvisd` asserts it never diverges
+   from the registered tool's host-owned `ToolPolicy.risk`.
+5. **Rejections echo untrusted text safely.** Template/capability/title/binding names come
+   from model output and travel into problem bodies, spans and audit reasons, so every
+   error variant that quotes one clamps its length and strips control and bidi/zero-width
+   characters (CF-13, docs/06 §5).
+6. **Limits are host-owned ceilings, and are rejected rather than clamped.** A spec may
+   request *less* than the host maximum for bundle size and build time; requesting more is
+   an error, so a caller never silently receives a build under a limit it did not choose.
+
+**Consequences.**
+- (+) "Validated template" becomes a decidable property, and "undeclared capability ⇒
+  reject" becomes a decidable question — which is what makes golden 8 assertable at all.
+- (+) The spec-validation table is a pure-domain test table with no I/O, so the whole
+  rejection surface is covered without a builder, a browser, or a database.
+- (+) The manifest's `capabilities` becomes an exhaustive union on the wire, so the web
+  shell can `switch` on it instead of guessing at a string.
+- (−) **Every capability needs host code.** A generated app can never reach a tool nobody
+  wrote a variant for. That is the intended cost, not a limitation to engineer around.
+- (−) The vocabulary starts small (three Home Assistant operations: read state, set a
+  light, execute a scene — chosen to span R0/R1/R2 so the bridge exercises the
+  auto-authorized, live-shown and approval+grant paths). Later milestones widen it
+  deliberately.
+- (−) **A stored capability string outside the vocabulary now fails the manifest load**
+  rather than being dropped. Fail-closed is the only reading that keeps the bridge honest —
+  a silently shortened capability list would describe a *less* capable app than the bundle
+  in the CAS. No such row can exist today (every M3–M5 producer wrote an empty array), so
+  this is asserted by a test rather than handled by a migration.
+- Revisit trigger: if a template ever needs to carry model-authored *source* rather than a
+  spec, this ADR is void and the sandbox story has to be re-derived from scratch — that is
+  a different security posture, not an increment on this one.

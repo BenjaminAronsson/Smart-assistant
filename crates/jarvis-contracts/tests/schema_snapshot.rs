@@ -31,6 +31,11 @@ const REQUIRED_DEFINITIONS: &[&str] = &[
     "ApprovalDecisionDto",
     "ArtifactManifestDto",
     "ArtifactVersionsResponse",
+    // Generated-app spec surface (F6.1, FR-18, ADR-029).
+    "AppSpecDto",
+    "DataBindingDto",
+    "AppLimitsDto",
+    "CapabilityDto",
     "DisplayDirective",
     "OpenArtifactRequest",
     "OpenArtifactResponse",
