@@ -271,7 +271,7 @@ async fn list_versions_returns_provenance() {
     assert_eq!(versions[0]["mediaType"], "text/markdown");
     assert_eq!(versions[0]["sources"][0]["kind"], "run");
     // The wire form is the closed vocabulary's snake_case name (F6.1).
-    assert_eq!(versions[0]["capabilities"][0], "home_read_state");
+    assert_eq!(versions[0]["capabilities"][0], "home.read_state");
 }
 
 #[tokio::test]

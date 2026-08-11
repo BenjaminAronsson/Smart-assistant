@@ -14,3 +14,5 @@ jarvis-domain.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
+# F6.1: `AppSpecParseError` for the blessed spec entry point.
+thiserror.workspace = true

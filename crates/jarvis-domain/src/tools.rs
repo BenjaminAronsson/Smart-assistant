@@ -326,7 +326,28 @@ pub(crate) fn is_bidi_or_zero_width(ch: char) -> bool {
         | '\u{202A}'..='\u{202E}'          // LRE, RLE, PDF, LRO, RLO
         | '\u{2066}'..='\u{2069}'          // LRI, RLI, FSI, PDI
         // Zero-width space / non-joiner / joiner, word joiner, BOM.
-        | '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' | '\u{FEFF}')
+        | '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' | '\u{FEFF}'
+        // Other invisible category-`Cf` carriers (F6.1 security review). The
+        // tag block is the one that matters most: U+E0020–U+E007E is a full
+        // hidden ASCII alphabet — the standard "ASCII smuggling" channel for
+        // hiding instructions inside text a human reads as innocuous.
+        | '\u{00AD}'                       // SOFT HYPHEN
+        | '\u{FFF9}'..='\u{FFFB}'          // interlinear annotation anchors
+        | '\u{E0000}'..='\u{E007F}') // Unicode tag block
+}
+
+/// Text that may never appear in a **single-line**, human-visible or
+/// interpolated untrusted field: everything [`is_bidi_or_zero_width`] covers,
+/// plus C0/C1 controls (`\n` and `\t` included — a title is not prose), plus
+/// `U+2028`/`U+2029`, which are line structure by another name.
+///
+/// The single predicate three sanitizers share ([`crate::markdown::escape`],
+/// [`crate::artifact::echo_untrusted`], and app-spec field validation), because
+/// the F6.1 review found them drifted into differently-safe: the markdown
+/// escaper folded `U+2028` and the others did not. Drift between sanitizers
+/// facing the same hostile source is itself the bug.
+pub(crate) fn is_unsafe_in_single_line(ch: char) -> bool {
+    ch.is_control() || is_bidi_or_zero_width(ch) || matches!(ch, '\u{2028}' | '\u{2029}')
 }
 
 /// Neutralize untrusted tool-result content before it is folded into a model

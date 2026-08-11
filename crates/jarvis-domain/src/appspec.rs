@@ -34,9 +34,12 @@ use crate::policy::RiskLevel;
 /// §5).
 pub const MAX_APP_SPEC_BYTES: usize = 16 * 1024;
 
-/// The most capabilities one app may declare. Small on purpose: an app that
-/// wants eight distinct authorities is not a dashboard.
-pub const MAX_CAPABILITIES: usize = 8;
+/// The most capabilities one app may declare — the size of the whole host
+/// vocabulary, since duplicates are rejected. Derived rather than written down,
+/// so it cannot drift below the vocabulary and make a legitimate all-capability
+/// spec unrepresentable, nor above it and pretend to bound something it does
+/// not (F6.1 review).
+pub const MAX_CAPABILITIES: usize = Capability::ALL.len();
 
 /// The most data bindings one app may declare.
 pub const MAX_BINDINGS: usize = 32;
@@ -223,6 +226,34 @@ pub struct AppLimitsDraft {
 /// Why a spec was rejected. Every variant that echoes untrusted text passes it
 /// through [`echo_untrusted`] first (clamped, control- and bidi-stripped), so a
 /// rejection reason is safe to log, audit and render.
+/// Why a free-text field was rejected. Carried alongside the offending value so
+/// a caller — a replanning model, an error body, a test — learns *which rule*
+/// fired rather than only that something was wrong. Without it, five distinct
+/// title rules collapse into one indistinguishable variant and a test cannot
+/// tell a swapped check from a correct one (F6.1 review).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextReason {
+    /// Empty, or nothing but whitespace.
+    Empty,
+    /// Over the field's length limit.
+    TooLong,
+    /// Contains a control, bidi, zero-width or line-separator character.
+    UnsafeText,
+    /// Contains a character outside the field's permitted set.
+    BadCharacter,
+}
+
+impl fmt::Display for TextReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            TextReason::Empty => "empty",
+            TextReason::TooLong => "too long",
+            TextReason::UnsafeText => "contains invisible or control characters",
+            TextReason::BadCharacter => "contains a disallowed character",
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum AppSpecError {
     #[error("app spec is {bytes} bytes, over the {max}-byte limit")]
@@ -234,26 +265,32 @@ pub enum AppSpecError {
     #[error("unknown capability {0:?}")]
     UnknownCapability(String),
 
+    /// A *binding* named a capability outside the vocabulary. Distinct from
+    /// [`AppSpecError::UnknownCapability`] so the offending binding is named —
+    /// the top-level variant has no binding to report.
+    #[error("binding {binding:?} names unknown capability {capability:?}")]
+    UnknownBindingCapability { binding: String, capability: String },
+
     #[error("capability {0} is declared more than once")]
     DuplicateCapability(Capability),
 
     #[error("{count} capabilities declared, over the limit of {max}")]
     TooManyCapabilities { count: usize, max: usize },
 
-    #[error("invalid app title {0:?}")]
-    InvalidTitle(String),
+    #[error("invalid app title ({reason}): {value:?}")]
+    InvalidTitle { reason: TextReason, value: String },
 
     #[error("{count} bindings declared, over the limit of {max}")]
     TooManyBindings { count: usize, max: usize },
 
-    #[error("invalid binding name {0:?}")]
-    InvalidBindingName(String),
+    #[error("invalid binding name ({reason}): {value:?}")]
+    InvalidBindingName { reason: TextReason, value: String },
 
     #[error("binding name {0:?} is used more than once")]
     DuplicateBindingName(String),
 
-    #[error("invalid binding target {0:?}")]
-    InvalidBindingTarget(String),
+    #[error("invalid binding target ({reason}): {value:?}")]
+    InvalidBindingTarget { reason: TextReason, value: String },
 
     /// The load-bearing cross-check: a binding may only draw on a capability the
     /// spec **declared**. Without it, `capabilities` would describe one thing
@@ -353,9 +390,43 @@ impl AppSpec {
 
     /// The highest **declared** risk tier across the spec's capabilities, or
     /// `None` for a capability-free app. Drives the approval preview for
-    /// `app.generate` (F6.6); it is not, and never becomes, a policy decision.
-    pub fn max_declared_risk(&self) -> Option<RiskLevel> {
-        self.capabilities.iter().map(|c| c.risk()).max()
+    /// `app.generate` (F6.6).
+    ///
+    /// Returns a [`DeclaredRisk`], not a bare [`RiskLevel`], so that
+    /// substituting this preview for a policy decision does not typecheck —
+    /// `if spec.max_declared_risk() <= Some(RiskLevel::R1) { skip_approval() }`
+    /// would have compiled, and a doc comment saying "never a policy decision"
+    /// is not a mechanism (F6.1 review).
+    ///
+    /// `None` does **not** mean "no approval needed": generating an app spawns
+    /// a build worker, and that action's tier comes from `app.generate`'s own
+    /// registered `ToolPolicy`, never from this.
+    pub fn max_declared_risk(&self) -> Option<DeclaredRisk> {
+        self.capabilities
+            .iter()
+            .map(|c| c.risk())
+            .max()
+            .map(DeclaredRisk)
+    }
+}
+
+/// A risk tier a *spec declared*, as opposed to one `policy::evaluate` decided.
+/// Deliberately not comparable with [`RiskLevel`]: reading the tier for an
+/// approval preview is fine, and it is the only thing this type makes easy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeclaredRisk(RiskLevel);
+
+impl DeclaredRisk {
+    /// The tier, for display in approval text. Naming the method after what it
+    /// is for makes a call site that uses it as a decision read wrong.
+    pub fn for_display(self) -> RiskLevel {
+        self.0
+    }
+}
+
+impl fmt::Display for DeclaredRisk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.0)
     }
 }
 
@@ -368,20 +439,42 @@ impl AppSpec {
 /// through a renderer, so they are rejected rather than stripped: silently
 /// altering a spec would mean building an app the caller did not describe.
 fn has_unsafe_text(s: &str) -> bool {
-    s.chars()
-        .any(|c| c.is_control() || crate::tools::is_bidi_or_zero_width(c))
+    s.chars().any(crate::tools::is_unsafe_in_single_line)
 }
+
+/// ASCII characters a title may not contain because they are *syntax* in the
+/// contexts a title is carried into: an HTML text node and attribute, and a JS
+/// string/template literal in the generated bundle (F6.2).
+///
+/// The builder must escape regardless — this is defence in depth, not a licence
+/// to skip escaping. But `BindingName` is already locked to an identifier
+/// charset *because* it is interpolated, and a title that reaches the same
+/// generated source with no equivalent guarantee is the asymmetry the F6.1
+/// review flagged. Ordinary titles ("Kitchen Dashboard", "Lights & Heating")
+/// are unaffected.
+const TITLE_FORBIDDEN: [char; 9] = ['<', '>', '"', '\'', '`', '\\', '{', '}', '$'];
 
 fn validate_title(raw: &str) -> Result<String, AppSpecError> {
     let title = raw.trim();
-    let invalid = || AppSpecError::InvalidTitle(echo_untrusted(raw));
-    if title.is_empty() || has_unsafe_text(title) {
-        return Err(invalid());
+    let invalid = |reason| AppSpecError::InvalidTitle {
+        reason,
+        value: echo_untrusted(raw),
+    };
+    if title.is_empty() {
+        return Err(invalid(TextReason::Empty));
     }
-    // Characters, not bytes: the cap exists so the title fits a window chrome,
-    // and "é" occupies one column whatever its UTF-8 length.
+    // Length before content (the module's own cheapest-check-first discipline):
+    // a huge title is rejected without scanning all of it. Characters, not
+    // bytes — the cap exists so the title fits a window chrome, and "é"
+    // occupies one column whatever its UTF-8 length.
     if title.chars().count() > MAX_TITLE_CHARS {
-        return Err(invalid());
+        return Err(invalid(TextReason::TooLong));
+    }
+    if has_unsafe_text(title) {
+        return Err(invalid(TextReason::UnsafeText));
+    }
+    if title.chars().any(|c| TITLE_FORBIDDEN.contains(&c)) {
+        return Err(invalid(TextReason::BadCharacter));
     }
     Ok(title.to_owned())
 }
@@ -431,10 +524,12 @@ fn validate_bindings(
         if bindings.iter().any(|b| b.name == name) {
             return Err(AppSpecError::DuplicateBindingName(name.0));
         }
-        let capability = binding
-            .capability
-            .parse::<Capability>()
-            .map_err(|_| AppSpecError::UnknownCapability(echo_untrusted(&binding.capability)))?;
+        let capability = binding.capability.parse::<Capability>().map_err(|_| {
+            AppSpecError::UnknownBindingCapability {
+                binding: name.0.clone(),
+                capability: echo_untrusted(&binding.capability),
+            }
+        })?;
         // docs/06 §6's "undeclared capability ⇒ reject", enforced at spec time:
         // the capability list is what the manifest records and what the bridge
         // will honour, so a binding drawing on anything outside it would be a
@@ -456,9 +551,15 @@ fn validate_bindings(
 }
 
 fn validate_binding_name(raw: &str) -> Result<BindingName, AppSpecError> {
-    let invalid = || AppSpecError::InvalidBindingName(echo_untrusted(raw));
-    if raw.is_empty() || raw.len() > BindingName::MAX_BYTES {
-        return Err(invalid());
+    let invalid = |reason| AppSpecError::InvalidBindingName {
+        reason,
+        value: echo_untrusted(raw),
+    };
+    if raw.is_empty() {
+        return Err(invalid(TextReason::Empty));
+    }
+    if raw.len() > BindingName::MAX_BYTES {
+        return Err(invalid(TextReason::TooLong));
     }
     let mut chars = raw.chars();
     let first_ok = matches!(chars.next(), Some(c) if c.is_ascii_lowercase());
@@ -466,15 +567,36 @@ fn validate_binding_name(raw: &str) -> Result<BindingName, AppSpecError> {
     if first_ok && rest_ok {
         Ok(BindingName(raw.to_owned()))
     } else {
-        Err(invalid())
+        Err(invalid(TextReason::BadCharacter))
     }
 }
 
 fn validate_binding_target(raw: &str) -> Result<BindingTarget, AppSpecError> {
     let target = raw.trim();
-    let invalid = || AppSpecError::InvalidBindingTarget(echo_untrusted(raw));
-    if target.is_empty() || target.len() > BindingTarget::MAX_BYTES || has_unsafe_text(target) {
-        return Err(invalid());
+    let invalid = |reason| AppSpecError::InvalidBindingTarget {
+        reason,
+        value: echo_untrusted(raw),
+    };
+    if target.is_empty() {
+        return Err(invalid(TextReason::Empty));
+    }
+    if target.len() > BindingTarget::MAX_BYTES {
+        return Err(invalid(TextReason::TooLong));
+    }
+    if has_unsafe_text(target) {
+        return Err(invalid(TextReason::UnsafeText));
+    }
+    // A **positive** charset, wide enough for every address the vocabulary can
+    // reach (Home Assistant entity/scene ids, ULIDs) and narrow enough that a
+    // target cannot carry markup, quotes or path traversal into the generated
+    // bundle. The bridge still re-resolves the target through the backing tool's
+    // own allowlist at call time (F6.5) — that is what decides *authority*; this
+    // is about what can be interpolated into source (F6.1 review).
+    if !target
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':'))
+    {
+        return Err(invalid(TextReason::BadCharacter));
     }
     Ok(BindingTarget(target.to_owned()))
 }
@@ -494,15 +616,12 @@ fn validate_limits(raw: Option<AppLimitsDraft>) -> Result<AppLimits, AppSpecErro
     };
     let max_build_seconds = match draft.max_build_seconds {
         None => host.max_build_seconds,
-        Some(requested) => {
-            let checked = check_limit(
-                "maxBuildSeconds",
-                u64::from(requested),
-                u64::from(MAX_BUILD_SECONDS),
-            )?;
-            // Lossless: `checked` is bounded above by `MAX_BUILD_SECONDS`, a u32.
-            u32::try_from(checked).unwrap_or(MAX_BUILD_SECONDS)
-        }
+        // Checked in `u32` throughout: converting to `u64` and back would need a
+        // fallback, and the only natural-looking fallback (`unwrap_or(host
+        // ceiling)`) *raises* an out-of-range request to the maximum — exactly
+        // the clamp-instead-of-reject behaviour this function exists to prevent
+        // (F6.1 review). No conversion, no fallback, no way to get it wrong.
+        Some(requested) => check_limit_u32("maxBuildSeconds", requested, MAX_BUILD_SECONDS)?,
     };
     Ok(AppLimits {
         max_bundle_bytes,
@@ -524,11 +643,18 @@ fn check_limit(field: &'static str, requested: u64, max: u64) -> Result<u64, App
     Ok(requested)
 }
 
+/// [`check_limit`] for a `u32`-valued limit. The error still reports `u64`, so
+/// both limits read the same in a message.
+fn check_limit_u32(field: &'static str, requested: u32, max: u32) -> Result<u32, AppSpecError> {
+    check_limit(field, u64::from(requested), u64::from(max))?;
+    Ok(requested)
+}
+
 // =============================================================================
-// F6.1 tests — AppSpec::validate is still `todo!()`; every test that exercises
-// it is EXPECTED TO PANIC at the `todo!()` until it is implemented (docs/06 §6,
-// the M6 feature list's "spec-validation table", invariant #1). Assertions are
-// on specific `AppSpecError` variants, never bare `is_err()`, per docs/07 §3.
+// F6.1 spec-validation table (docs/06 §6, the M6 feature list, invariant #1).
+// Assertions are on specific `AppSpecError` variants and their `reason`, never
+// bare `is_err()`, per docs/07 §3 — so swapping two checks fails a test rather
+// than passing one.
 // =============================================================================
 
 #[cfg(test)]
@@ -706,20 +832,12 @@ mod tests {
 
     // --- 7. TooManyCapabilities / TooManyBindings boundaries ---------------
 
-    // AMBIGUITY FLAGGED FOR THE HUMAN (not assumed away): `MAX_CAPABILITIES`
-    // is 8, but `Capability::ALL` currently has only 3 members. That means
-    // there is no way to construct a draft with MORE than 8 declared
-    // capabilities that is simultaneously free of duplicates/unknowns — any
-    // input big enough to trip `TooManyCapabilities` is, today, necessarily
-    // also duplicate-laden. This test assumes raw cardinality is checked
-    // before each entry is parsed/deduplicated (mirroring `SpecTooLarge`'s
-    // fail-fast-on-size-before-content shape). If the real implementation
-    // instead validates/dedupes each entry before checking the count, this
-    // test's expected variant is wrong and must be revisited with a human —
-    // it is not decidable from the spec text alone. Relatedly, there is no
-    // way today to write an "exactly at the limit of 8, valid" case at all
-    // (see `all_known_capabilities_declared_at_once_is_within_the_limit`
-    // below for the closest achievable version of that case).
+    // Decided (F6.1 review): raw cardinality is checked BEFORE per-entry
+    // parsing and duplicate detection, so an over-long list is refused without
+    // parsing all of it — the same fail-fast-on-size shape as `SpecTooLarge`.
+    // This test therefore expects `TooManyCapabilities`, not `Duplicate…`,
+    // even though the over-long input is necessarily duplicate-laden (the
+    // vocabulary has exactly `MAX_CAPABILITIES` members).
     #[test]
     fn too_many_capabilities_over_the_limit_is_rejected() {
         let mut draft = valid_draft();
@@ -777,7 +895,16 @@ mod tests {
         let mut draft = valid_draft();
         draft.title = "".to_owned();
         let err = AppSpec::validate(draft, 100).unwrap_err();
-        assert!(matches!(err, AppSpecError::InvalidTitle(_)));
+        assert!(
+            matches!(
+                err,
+                AppSpecError::InvalidTitle {
+                    reason: TextReason::Empty,
+                    ..
+                }
+            ),
+            "expected InvalidTitle/Empty, got {err:?}"
+        );
     }
 
     #[test]
@@ -785,7 +912,16 @@ mod tests {
         let mut draft = valid_draft();
         draft.title = "   \t  ".to_owned();
         let err = AppSpec::validate(draft, 100).unwrap_err();
-        assert!(matches!(err, AppSpecError::InvalidTitle(_)));
+        assert!(
+            matches!(
+                err,
+                AppSpecError::InvalidTitle {
+                    reason: TextReason::Empty,
+                    ..
+                }
+            ),
+            "expected InvalidTitle/Empty, got {err:?}"
+        );
     }
 
     #[test]
@@ -793,7 +929,16 @@ mod tests {
         let mut draft = valid_draft();
         draft.title = "a".repeat(MAX_TITLE_CHARS + 1);
         let err = AppSpec::validate(draft, 200).unwrap_err();
-        assert!(matches!(err, AppSpecError::InvalidTitle(_)));
+        assert!(
+            matches!(
+                err,
+                AppSpecError::InvalidTitle {
+                    reason: TextReason::TooLong,
+                    ..
+                }
+            ),
+            "expected InvalidTitle/TooLong, got {err:?}"
+        );
     }
 
     // MAX_TITLE_CHARS is documented as characters, not bytes — prove it with a
@@ -817,7 +962,16 @@ mod tests {
         let mut draft = valid_draft();
         draft.title = "é".repeat(MAX_TITLE_CHARS + 1);
         let err = AppSpec::validate(draft, 1000).unwrap_err();
-        assert!(matches!(err, AppSpecError::InvalidTitle(_)));
+        assert!(
+            matches!(
+                err,
+                AppSpecError::InvalidTitle {
+                    reason: TextReason::TooLong,
+                    ..
+                }
+            ),
+            "expected InvalidTitle/TooLong, got {err:?}"
+        );
     }
 
     #[test]
@@ -825,7 +979,16 @@ mod tests {
         let mut draft = valid_draft();
         draft.title = "Kitchen\u{0007}Dashboard".to_owned();
         let err = AppSpec::validate(draft, 200).unwrap_err();
-        assert!(matches!(err, AppSpecError::InvalidTitle(_)));
+        assert!(
+            matches!(
+                err,
+                AppSpecError::InvalidTitle {
+                    reason: TextReason::UnsafeText,
+                    ..
+                }
+            ),
+            "expected InvalidTitle/UnsafeText, got {err:?}"
+        );
     }
 
     #[test]
@@ -833,7 +996,16 @@ mod tests {
         let mut draft = valid_draft();
         draft.title = "Kitchen\u{202E}Dashboard".to_owned();
         let err = AppSpec::validate(draft, 200).unwrap_err();
-        assert!(matches!(err, AppSpecError::InvalidTitle(_)));
+        assert!(
+            matches!(
+                err,
+                AppSpecError::InvalidTitle {
+                    reason: TextReason::UnsafeText,
+                    ..
+                }
+            ),
+            "expected InvalidTitle/UnsafeText, got {err:?}"
+        );
     }
 
     #[test]
@@ -848,38 +1020,92 @@ mod tests {
     #[test]
     fn binding_name_rejects_uppercase() {
         let err = AppSpec::validate(draft_with_binding_name("Kitchen"), 100).unwrap_err();
-        assert!(matches!(err, AppSpecError::InvalidBindingName(_)));
+        assert!(
+            matches!(
+                err,
+                AppSpecError::InvalidBindingName {
+                    reason: TextReason::BadCharacter,
+                    ..
+                }
+            ),
+            "expected InvalidBindingName/BadCharacter, got {err:?}"
+        );
     }
 
     #[test]
     fn binding_name_rejects_leading_digit() {
         let err = AppSpec::validate(draft_with_binding_name("1kitchen"), 100).unwrap_err();
-        assert!(matches!(err, AppSpecError::InvalidBindingName(_)));
+        assert!(
+            matches!(
+                err,
+                AppSpecError::InvalidBindingName {
+                    reason: TextReason::BadCharacter,
+                    ..
+                }
+            ),
+            "expected InvalidBindingName/BadCharacter, got {err:?}"
+        );
     }
 
     #[test]
     fn binding_name_rejects_empty() {
         let err = AppSpec::validate(draft_with_binding_name(""), 100).unwrap_err();
-        assert!(matches!(err, AppSpecError::InvalidBindingName(_)));
+        assert!(
+            matches!(
+                err,
+                AppSpecError::InvalidBindingName {
+                    reason: TextReason::Empty,
+                    ..
+                }
+            ),
+            "expected InvalidBindingName/Empty, got {err:?}"
+        );
     }
 
     #[test]
     fn binding_name_rejects_hyphen() {
         let err = AppSpec::validate(draft_with_binding_name("kitchen-temp"), 100).unwrap_err();
-        assert!(matches!(err, AppSpecError::InvalidBindingName(_)));
+        assert!(
+            matches!(
+                err,
+                AppSpecError::InvalidBindingName {
+                    reason: TextReason::BadCharacter,
+                    ..
+                }
+            ),
+            "expected InvalidBindingName/BadCharacter, got {err:?}"
+        );
     }
 
     #[test]
     fn binding_name_rejects_dot() {
         let err = AppSpec::validate(draft_with_binding_name("kitchen.temp"), 100).unwrap_err();
-        assert!(matches!(err, AppSpecError::InvalidBindingName(_)));
+        assert!(
+            matches!(
+                err,
+                AppSpecError::InvalidBindingName {
+                    reason: TextReason::BadCharacter,
+                    ..
+                }
+            ),
+            "expected InvalidBindingName/BadCharacter, got {err:?}"
+        );
     }
 
     #[test]
     fn binding_name_rejects_over_max_bytes() {
         let name = "a".repeat(BindingName::MAX_BYTES + 1);
         let err = AppSpec::validate(draft_with_binding_name(&name), 200).unwrap_err();
-        assert!(matches!(err, AppSpecError::InvalidBindingName(_)));
+        assert!(
+            matches!(
+                err,
+                AppSpecError::InvalidBindingName {
+                    reason: TextReason::TooLong,
+                    ..
+                }
+            ),
+            "expected InvalidBindingName/TooLong, got {err:?}"
+        );
     }
 
     #[test]
@@ -908,14 +1134,32 @@ mod tests {
     #[test]
     fn binding_target_rejects_empty() {
         let err = AppSpec::validate(draft_with_binding_target(""), 100).unwrap_err();
-        assert!(matches!(err, AppSpecError::InvalidBindingTarget(_)));
+        assert!(
+            matches!(
+                err,
+                AppSpecError::InvalidBindingTarget {
+                    reason: TextReason::Empty,
+                    ..
+                }
+            ),
+            "expected InvalidBindingTarget/Empty, got {err:?}"
+        );
     }
 
     #[test]
     fn binding_target_rejects_over_max_bytes() {
         let target = "a".repeat(BindingTarget::MAX_BYTES + 1);
         let err = AppSpec::validate(draft_with_binding_target(&target), 300).unwrap_err();
-        assert!(matches!(err, AppSpecError::InvalidBindingTarget(_)));
+        assert!(
+            matches!(
+                err,
+                AppSpecError::InvalidBindingTarget {
+                    reason: TextReason::TooLong,
+                    ..
+                }
+            ),
+            "expected InvalidBindingTarget/TooLong, got {err:?}"
+        );
     }
 
     #[test]
@@ -930,7 +1174,16 @@ mod tests {
     fn binding_target_rejects_control_characters() {
         let err = AppSpec::validate(draft_with_binding_target("sensor.kit\u{0007}chen"), 100)
             .unwrap_err();
-        assert!(matches!(err, AppSpecError::InvalidBindingTarget(_)));
+        assert!(
+            matches!(
+                err,
+                AppSpecError::InvalidBindingTarget {
+                    reason: TextReason::UnsafeText,
+                    ..
+                }
+            ),
+            "expected InvalidBindingTarget/UnsafeText, got {err:?}"
+        );
     }
 
     #[test]
@@ -1065,7 +1318,189 @@ mod tests {
         ];
         draft.bindings = vec![];
         let spec = AppSpec::validate(draft, 200).expect("valid");
-        assert_eq!(spec.max_declared_risk(), Some(RiskLevel::R2));
+        assert_eq!(
+            spec.max_declared_risk().map(DeclaredRisk::for_display),
+            Some(RiskLevel::R2)
+        );
+    }
+
+    // --- 15. F6.1 review additions -------------------------------------
+
+    #[test]
+    fn template_all_covers_every_variant() {
+        // The `match` below is the enforcement: a new variant fails to compile
+        // until it is visited, and the assertion then fails until it is also
+        // listed in `ALL`. `TemplateId::ALL` previously claimed a test it did
+        // not have (F6.1 review S1).
+        for template in TemplateId::ALL {
+            match template {
+                TemplateId::Dashboard => {
+                    assert!(TemplateId::ALL.contains(&TemplateId::Dashboard));
+                }
+            }
+        }
+        assert_eq!(TemplateId::ALL.len(), 1);
+        // Every listed template resolves through the same lookup `validate` uses.
+        for template in TemplateId::ALL {
+            let mut draft = valid_draft();
+            draft.template = template.as_str().to_owned();
+            assert_eq!(
+                AppSpec::validate(draft, 200)
+                    .expect("listed template validates")
+                    .template(),
+                template
+            );
+        }
+    }
+
+    /// U+2028 was accepted before the F6.1 review: `has_unsafe_text` covered a
+    /// subset of category `Cf` while the markdown escaper — facing the same
+    /// hostile source — folded these too. Both now share one predicate.
+    #[test]
+    fn title_rejects_line_separators_and_invisible_cf_carriers() {
+        for evil in [
+            "Kitchen\u{2028}Dashboard",
+            "Kitchen\u{2029}Dashboard",
+            // Unicode tag block: a full hidden ASCII alphabet (ASCII smuggling).
+            "Kitchen\u{E0041}\u{E0042}",
+            "Kit\u{00AD}chen",
+            "Kit\u{FFF9}chen",
+        ] {
+            let mut draft = valid_draft();
+            draft.title = evil.to_owned();
+            assert!(
+                matches!(
+                    AppSpec::validate(draft, 200),
+                    Err(AppSpecError::InvalidTitle {
+                        reason: TextReason::UnsafeText,
+                        ..
+                    })
+                ),
+                "invisible character must not survive into a title: {evil:?}"
+            );
+        }
+    }
+
+    /// A title reaches generated HTML/JS (F6.2). The builder escapes, but the
+    /// type refuses syntax outright — `BindingName` already does, and a title
+    /// with no equivalent guarantee was the asymmetry the review flagged.
+    #[test]
+    fn title_rejects_html_and_js_syntax_characters() {
+        for evil in [
+            "<img src=x onerror=alert(1)>",
+            "`${process.env.SECRET}`",
+            "a\\\";alert(1);//",
+            "{{constructor}}",
+        ] {
+            let mut draft = valid_draft();
+            draft.title = evil.to_owned();
+            assert!(
+                matches!(
+                    AppSpec::validate(draft, 200),
+                    Err(AppSpecError::InvalidTitle {
+                        reason: TextReason::BadCharacter,
+                        ..
+                    })
+                ),
+                "syntax character must not survive into a title: {evil:?}"
+            );
+        }
+        // Ordinary titles are untouched.
+        for ok in ["Kitchen Dashboard", "Lights & Heating", "Café (2nd floor)"] {
+            let mut draft = valid_draft();
+            draft.title = ok.to_owned();
+            assert_eq!(
+                AppSpec::validate(draft, 200)
+                    .expect("ordinary title")
+                    .title(),
+                ok
+            );
+        }
+    }
+
+    /// A binding target is interpolated into generated source too, so it has a
+    /// positive charset wide enough for every address the vocabulary can reach
+    /// and narrow enough to carry no markup, quotes or traversal.
+    #[test]
+    fn binding_target_rejects_markup_quotes_and_traversal() {
+        for evil in [
+            "</script><script>alert(1)</script>",
+            "\" onload=\"x",
+            "../../etc/passwd",
+            "a b c",
+        ] {
+            assert!(
+                matches!(
+                    AppSpec::validate(draft_with_binding_target(evil), 300),
+                    Err(AppSpecError::InvalidBindingTarget {
+                        reason: TextReason::BadCharacter,
+                        ..
+                    })
+                ),
+                "target must not carry syntax: {evil:?}"
+            );
+        }
+        // Everything the vocabulary actually addresses still passes.
+        for ok in [
+            "sensor.kitchen_temperature",
+            "light.kitchen_lamp",
+            "scene.movie_night",
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "media_player.living-room",
+        ] {
+            assert_eq!(
+                AppSpec::validate(draft_with_binding_target(ok), 300)
+                    .expect("addressable target")
+                    .bindings()[0]
+                    .target()
+                    .as_str(),
+                ok
+            );
+        }
+    }
+
+    /// Previously untested arm: a binding naming a capability outside the
+    /// vocabulary. It gets its own variant so the offending binding is named —
+    /// the top-level `UnknownCapability` has no binding to report.
+    #[test]
+    fn binding_naming_a_capability_outside_the_vocabulary_names_the_binding() {
+        let mut draft = valid_draft();
+        draft.bindings[0].capability = "shell.exec".to_owned();
+        match AppSpec::validate(draft, 200).unwrap_err() {
+            AppSpecError::UnknownBindingCapability {
+                binding,
+                capability,
+            } => {
+                assert_eq!(binding, "kitchen_temp");
+                assert_eq!(capability, "shell.exec");
+            }
+            other => panic!("expected UnknownBindingCapability, got {other:?}"),
+        }
+    }
+
+    /// The echoed value is exposed **raw** (it is the payload of these
+    /// variants), so a preserved newline would let a rejected name forge a
+    /// second log or audit line. Asserting on `to_string()` alone could not see
+    /// this: `{0:?}` escapes newlines on the way out.
+    #[test]
+    fn echoed_untrusted_text_carries_no_newline_or_tab_in_the_raw_field() {
+        let mut draft = valid_draft();
+        draft.title = "Kitchen\nFORGED: policy=allow\tx".to_owned();
+        match AppSpec::validate(draft, 200).unwrap_err() {
+            AppSpecError::InvalidTitle { value, .. } => {
+                assert!(!value.contains('\n'), "raw newline leaked: {value:?}");
+                assert!(!value.contains('\t'), "raw tab leaked: {value:?}");
+            }
+            other => panic!("expected InvalidTitle, got {other:?}"),
+        }
+
+        let err = "home.read_state\nFORGED"
+            .parse::<Capability>()
+            .expect_err("a name with a newline is not a capability");
+        assert!(
+            !err.rejected().contains('\n'),
+            "raw newline leaked from CapabilityError"
+        );
     }
 
     // --- 14. untrusted echo hygiene (invariant #5 / docs/06 §5) ---------

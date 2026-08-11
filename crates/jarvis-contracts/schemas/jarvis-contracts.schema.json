@@ -375,21 +375,21 @@
       ]
     },
     "CapabilityDto": {
-      "description": "A capability a validated artifact manifest declares (docs/04 §4\n`capabilities`). Exhaustive — the host vocabulary, mirrored on the wire.",
+      "description": "A capability a validated artifact manifest declares (docs/04 §4\n`capabilities`). Exhaustive — the host vocabulary, mirrored on the wire.\nOne capability has **one** name on every surface: the dotted form the domain\nuses, the DB column stores, and an inbound `AppSpecDto.capabilities` string\nmust contain. `rename_all = \"snake_case\"` would have produced\n`home_read_state` here and `home.read_state` everywhere else, so a client\nreading a manifest could not put that string back into a spec (F6.1 review).",
       "oneOf": [
         {
-          "const": "home_read_state",
-          "description": "`home.read_state` — read Home Assistant entity state (R0).",
+          "const": "home.read_state",
+          "description": "Read Home Assistant entity state (R0).",
           "type": "string"
         },
         {
-          "const": "home_set_light",
-          "description": "`home.set_light` — set a single allowlisted light (R1).",
+          "const": "home.set_light",
+          "description": "Set a single allowlisted light (R1).",
           "type": "string"
         },
         {
-          "const": "home_execute_scene",
-          "description": "`home.execute_scene` — activate an allowlisted scene (R2).",
+          "const": "home.execute_scene",
+          "description": "Activate an allowlisted scene (R2).",
           "type": "string"
         }
       ]

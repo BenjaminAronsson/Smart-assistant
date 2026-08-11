@@ -16,21 +16,30 @@
 //!   reading a manifest should get an exhaustive union it can `switch` on
 //!   rather than a `string` it has to guess about.
 
-use jarvis_domain::appspec::{AppLimitsDraft, AppSpecDraft, DataBindingDraft};
+use jarvis_domain::appspec::{
+    AppLimitsDraft, AppSpec, AppSpecDraft, AppSpecError, DataBindingDraft, MAX_APP_SPEC_BYTES,
+};
 use jarvis_domain::artifact::Capability;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// A capability a validated artifact manifest declares (docs/04 §4
 /// `capabilities`). Exhaustive — the host vocabulary, mirrored on the wire.
+/// One capability has **one** name on every surface: the dotted form the domain
+/// uses, the DB column stores, and an inbound `AppSpecDto.capabilities` string
+/// must contain. `rename_all = "snake_case"` would have produced
+/// `home_read_state` here and `home.read_state` everywhere else, so a client
+/// reading a manifest could not put that string back into a spec (F6.1 review).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
 pub enum CapabilityDto {
-    /// `home.read_state` — read Home Assistant entity state (R0).
+    /// Read Home Assistant entity state (R0).
+    #[serde(rename = "home.read_state")]
     HomeReadState,
-    /// `home.set_light` — set a single allowlisted light (R1).
+    /// Set a single allowlisted light (R1).
+    #[serde(rename = "home.set_light")]
     HomeSetLight,
-    /// `home.execute_scene` — activate an allowlisted scene (R2).
+    /// Activate an allowlisted scene (R2).
+    #[serde(rename = "home.execute_scene")]
     HomeExecuteScene,
 }
 
@@ -123,10 +132,69 @@ impl From<AppSpecDto> for AppSpecDraft {
     }
 }
 
+/// Why a spec document was rejected: it was not JSON of the right shape, or it
+/// was well-formed but invalid.
+#[derive(Debug, thiserror::Error)]
+pub enum AppSpecParseError {
+    #[error("app spec is not a valid spec document: {0}")]
+    Malformed(String),
+    #[error(transparent)]
+    Invalid(#[from] AppSpecError),
+}
+
+/// **The** way to turn a spec document into an [`AppSpec`] — parse, then
+/// validate against the document's own length.
+///
+/// [`AppSpec::validate`] takes `source_bytes` as a separate argument, which
+/// makes the size gate impossible to *omit* but easy to get *wrong*: passing
+/// `0`, or a stale length, silently disables `MAX_APP_SPEC_BYTES` with no
+/// compile or test signal (F6.1 review). This function is the single place that
+/// pairing is made, so callers never have to get it right themselves.
+///
+/// The byte cap is checked **before** deserialization, so a hostile document is
+/// refused without building a `serde_json` value tree for it.
+pub fn parse_and_validate(document: &str) -> Result<AppSpec, AppSpecParseError> {
+    if document.len() > MAX_APP_SPEC_BYTES {
+        return Err(AppSpecError::SpecTooLarge {
+            bytes: document.len(),
+            max: MAX_APP_SPEC_BYTES,
+        }
+        .into());
+    }
+    let dto: AppSpecDto = serde_json::from_str(document).map_err(|e| {
+        // serde's message quotes the offending input, which is model-authored;
+        // report position and expectation only.
+        AppSpecParseError::Malformed(format!(
+            "line {}, column {}: {}",
+            e.line(),
+            e.column(),
+            e.classify_str()
+        ))
+    })?;
+    Ok(AppSpec::validate(AppSpecDraft::from(dto), document.len())?)
+}
+
+/// A category name for a `serde_json` failure that quotes none of the input.
+trait ClassifyStr {
+    fn classify_str(&self) -> &'static str;
+}
+
+impl ClassifyStr for serde_json::Error {
+    fn classify_str(&self) -> &'static str {
+        use serde_json::error::Category;
+        match self.classify() {
+            Category::Io => "read error",
+            Category::Syntax => "not well-formed JSON",
+            Category::Data => "does not match the app-spec shape",
+            Category::Eof => "ended unexpectedly",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jarvis_domain::appspec::{AppSpec, TemplateId};
+    use jarvis_domain::appspec::TemplateId;
 
     #[test]
     fn capability_dto_round_trips_through_the_domain_for_every_variant() {
@@ -139,13 +207,40 @@ mod tests {
         }
     }
 
+    /// One name everywhere: the DTO's wire form is **exactly** the domain's
+    /// `as_str()`, not a transformation of it. Asserting equality (rather than
+    /// equality-after-a-`replace`) is what makes this test able to fail.
     #[test]
-    fn capability_dto_serializes_to_the_domain_wire_name() {
+    fn capability_dto_serializes_to_exactly_the_domain_wire_name() {
         for capability in Capability::ALL {
             let dto = CapabilityDto::from(capability);
             let json = serde_json::to_string(&dto).expect("serializes");
-            let expected = format!("\"{}\"", capability.as_str().replace('.', "_"));
-            assert_eq!(json, expected, "wire name drift for {capability}");
+            assert_eq!(
+                json,
+                format!("\"{}\"", capability.as_str()),
+                "wire name drift for {capability}"
+            );
+            // And it round-trips from that same name.
+            let back: CapabilityDto =
+                serde_json::from_str(&json).expect("the emitted name deserializes");
+            assert_eq!(back, dto);
+        }
+    }
+
+    /// The surfaces are joined: a capability read off a manifest can be put
+    /// straight back into a spec. Before the F6.1 review this was false.
+    #[test]
+    fn a_capability_from_a_manifest_is_accepted_in_a_spec() {
+        for capability in Capability::ALL {
+            let from_manifest = serde_json::to_value(CapabilityDto::from(capability))
+                .expect("serializes")
+                .as_str()
+                .expect("a string")
+                .to_owned();
+            assert_eq!(
+                from_manifest.parse::<Capability>().expect("round-trips"),
+                capability
+            );
         }
     }
 
@@ -166,9 +261,7 @@ mod tests {
                   "target": "sensor.kitchen_temperature" }
             ]
         }"#;
-        let dto: AppSpecDto = serde_json::from_str(document).expect("model-shaped JSON parses");
-        let spec = AppSpec::validate(AppSpecDraft::from(dto), document.len())
-            .expect("a well-formed model spec must validate");
+        let spec = parse_and_validate(document).expect("a well-formed model spec must validate");
 
         assert_eq!(spec.template(), TemplateId::Dashboard);
         assert_eq!(spec.capabilities(), &[Capability::HomeReadState]);
@@ -186,8 +279,7 @@ mod tests {
         assert!(dto.bindings.is_empty());
         assert_eq!(dto.limits, None);
 
-        let spec = AppSpec::validate(AppSpecDraft::from(dto), document.len())
-            .expect("a capability-free app is valid");
+        let spec = parse_and_validate(document).expect("a capability-free app is valid");
         assert_eq!(spec.max_declared_risk(), None);
     }
 
@@ -198,15 +290,93 @@ mod tests {
             "title": "Sneaky",
             "capabilities": ["shell.exec"]
         }"#;
-        let dto: AppSpecDto = serde_json::from_str(document).expect("parses — strings are strings");
-        let err = AppSpec::validate(AppSpecDraft::from(dto), document.len())
-            .expect_err("an invented capability must not validate");
+        // It parses — strings are strings — and the DOMAIN rejects it, typed.
+        let dto: AppSpecDto = serde_json::from_str(document).expect("parses");
+        assert_eq!(dto.capabilities, vec!["shell.exec".to_owned()]);
+        let err =
+            parse_and_validate(document).expect_err("an invented capability must not validate");
         assert!(
             matches!(
                 err,
-                jarvis_domain::appspec::AppSpecError::UnknownCapability(_)
+                AppSpecParseError::Invalid(AppSpecError::UnknownCapability(_))
             ),
             "expected a typed domain rejection, got {err:?}"
+        );
+    }
+
+    /// `AppLimitsDto` is the one DTO here whose field names differ between Rust
+    /// and the wire, so camelCase is asserted directly rather than left to the
+    /// schema snapshot (contract-keeper, F6.1).
+    #[test]
+    fn app_spec_dto_serializes_camel_case_including_limits() {
+        let dto = AppSpecDto {
+            template: "dashboard/v1".to_owned(),
+            title: "Kitchen Dashboard".to_owned(),
+            capabilities: vec!["home.read_state".to_owned()],
+            bindings: vec![DataBindingDto {
+                name: "kitchen_temp".to_owned(),
+                capability: "home.read_state".to_owned(),
+                target: "sensor.kitchen_temperature".to_owned(),
+            }],
+            limits: Some(AppLimitsDto {
+                max_bundle_bytes: Some(1024),
+                max_build_seconds: Some(30),
+            }),
+        };
+        let v = serde_json::to_value(&dto).expect("serializes");
+        assert_eq!(v["limits"]["maxBundleBytes"], serde_json::json!(1024));
+        assert_eq!(v["limits"]["maxBuildSeconds"], serde_json::json!(30));
+        assert_eq!(v["capabilities"][0], serde_json::json!("home.read_state"));
+        assert_eq!(
+            v["bindings"][0]["target"],
+            serde_json::json!("sensor.kitchen_temperature")
+        );
+
+        let back: AppSpecDto = serde_json::from_value(v).expect("round-trips");
+        assert_eq!(back, dto);
+    }
+
+    #[test]
+    fn requested_limits_reach_the_validated_spec() {
+        let document = r#"{
+            "template": "dashboard/v1",
+            "title": "Small",
+            "limits": { "maxBundleBytes": 1024, "maxBuildSeconds": 30 }
+        }"#;
+        let spec = parse_and_validate(document).expect("below the ceiling is valid");
+        assert_eq!(spec.limits().max_bundle_bytes(), 1024);
+        assert_eq!(spec.limits().max_build_seconds(), 30);
+    }
+
+    /// The whole reason `parse_and_validate` exists: the size gate is paired
+    /// with the document here, so no caller can pass a length that disagrees
+    /// with what it parsed.
+    #[test]
+    fn an_oversized_document_is_refused_before_it_is_deserialized() {
+        let padding = "x".repeat(MAX_APP_SPEC_BYTES);
+        let document =
+            format!(r#"{{ "template": "dashboard/v1", "title": "Short", "_pad": "{padding}" }}"#);
+        assert!(document.len() > MAX_APP_SPEC_BYTES);
+        match parse_and_validate(&document) {
+            Err(AppSpecParseError::Invalid(AppSpecError::SpecTooLarge { bytes, max })) => {
+                assert_eq!(bytes, document.len());
+                assert_eq!(max, MAX_APP_SPEC_BYTES);
+            }
+            other => panic!("expected SpecTooLarge, got {other:?}"),
+        }
+    }
+
+    /// A malformed document reports position and category only — never the
+    /// model-authored text serde would otherwise quote (invariant 5).
+    #[test]
+    fn a_malformed_document_reports_no_untrusted_content() {
+        let err = parse_and_validate(r#"{ "template": "dashboard/v1", "title": SECRETVALUE }"#)
+            .expect_err("not JSON");
+        let rendered = err.to_string();
+        assert!(matches!(err, AppSpecParseError::Malformed(_)));
+        assert!(
+            !rendered.contains("SECRETVALUE"),
+            "serde's quoted input leaked: {rendered}"
         );
     }
 }

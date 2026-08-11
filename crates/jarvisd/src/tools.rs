@@ -309,6 +309,64 @@ mod tests {
         }
     }
 
+    /// The stronger half of the same check: every capability's tool must be in
+    /// a registry built by the **real** registration function, at the tier the
+    /// capability declares.
+    ///
+    /// The test above compares against `Tool::policy()`; this one compares
+    /// against what `register_home_assistant_tools` actually put in the
+    /// registry, so dropping a descriptor from that array — which the previous
+    /// test would not have noticed — fails here (F6.1 review). This is the
+    /// fixture-vs-caller rule taken to its end: the input is built the way the
+    /// real producer builds it.
+    #[test]
+    fn every_capability_resolves_in_a_registry_built_by_the_real_registration_path() {
+        use jarvis_adapters::home_assistant::{
+            EntityAllowlist, HomeAssistantClient, HomeAssistantTransport,
+        };
+        use jarvis_domain::artifact::Capability;
+
+        // A transport that is never driven — registration performs no I/O, and
+        // this test asserts about the registry, not about talking to HA.
+        struct UnusedTransport;
+        #[async_trait::async_trait]
+        impl HomeAssistantTransport for UnusedTransport {
+            async fn send(
+                &self,
+                _request: jarvis_adapters::home_assistant::HomeRequest,
+                _cancel: tokio_util::sync::CancellationToken,
+            ) -> Result<String, jarvis_adapters::home_assistant::HomeAssistantError> {
+                unreachable!("registration performs no I/O")
+            }
+        }
+
+        let mut registry = build_registry(None).expect("builds");
+        register_home_assistant_tools(
+            &mut registry,
+            Arc::new(HomeAssistantClient::with_transport(Arc::new(
+                UnusedTransport,
+            ))),
+            Arc::new(EntityAllowlist::default()),
+        )
+        .expect("the real registration path registers the home tools");
+
+        for capability in Capability::ALL {
+            let policy = registry
+                .policy_of(&capability.tool_id())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{capability} names {}, which the real registration path does not register",
+                        capability.tool_id()
+                    )
+                });
+            assert_eq!(
+                capability.risk(),
+                policy.risk,
+                "{capability}'s declared tier must match its registered tier"
+            );
+        }
+    }
+
     #[test]
     fn registers_the_two_config_free_tools_without_a_root() {
         let registry = build_registry(None).expect("builds");

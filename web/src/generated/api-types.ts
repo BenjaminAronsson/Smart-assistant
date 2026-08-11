@@ -65,11 +65,16 @@ export type BuildNetworkDto = "disabled" | "enabled";
 /**
  * A capability a validated artifact manifest declares (docs/04 §4
  * `capabilities`). Exhaustive — the host vocabulary, mirrored on the wire.
+ * One capability has **one** name on every surface: the dotted form the domain
+ * uses, the DB column stores, and an inbound `AppSpecDto.capabilities` string
+ * must contain. `rename_all = "snake_case"` would have produced
+ * `home_read_state` here and `home.read_state` everywhere else, so a client
+ * reading a manifest could not put that string back into a spec (F6.1 review).
  *
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "CapabilityDto".
  */
-export type CapabilityDto = "home_read_state" | "home_set_light" | "home_execute_scene";
+export type CapabilityDto = "home.read_state" | "home.set_light" | "home.execute_scene";
 /**
  * Sensitivity class of the artifact (NFR-02).
  *

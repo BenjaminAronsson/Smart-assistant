@@ -27,8 +27,6 @@
 //! [`crate::deepdive::display_domain`] and the thread recorders go through it
 //! too, so a URL that cannot be linked also cannot be badged or navigated to.
 
-use crate::tools::is_bidi_or_zero_width;
-
 /// Characters that open a markdown construct and are therefore never allowed
 /// through unescaped.
 ///
@@ -58,7 +56,11 @@ const OPENERS: &[char] = &[
 ///   structure by another name. (The tool-result validator keeps `\n`, so it
 ///   has no reason to fold these; a single markdown line does.)
 fn is_folded(ch: char) -> bool {
-    ch.is_control() || is_bidi_or_zero_width(ch) || matches!(ch, '\u{2028}' | '\u{2029}')
+    // Exactly the shared single-line predicate (F6.1 review): these three
+    // families are the same three enumerated above, and keeping them in one
+    // place is what stops this escaper and the app-spec validator from drifting
+    // into differently-safe again.
+    crate::tools::is_unsafe_in_single_line(ch)
 }
 
 /// Neutralise untrusted text for inclusion in a markdown document.

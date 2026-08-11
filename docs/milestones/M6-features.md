@@ -147,7 +147,7 @@ F6.5 and F6.6 — this milestone's diff is the sandbox.
 
 ## Phase A — Format and contracts
 
-- [ ] **F6.1 — App spec format, closed capability vocabulary, bundle manifest contracts + ADR (domain + contracts)** · *strong model*
+- [x] **F6.1 — App spec format, closed capability vocabulary, bundle manifest contracts + ADR (domain + contracts)** · *strong model* — landed 2026-08-11 (ADR-029)
   The validated-template half of FR-18. Define the **app spec**: a JSON document naming a
   template id, the app's declared capabilities, its data bindings, and its size limits —
   validated before a build is ever started, so an invalid spec fails in the domain, not in

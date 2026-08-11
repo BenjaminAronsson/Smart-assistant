@@ -10,20 +10,24 @@ use serde_json::json;
 
 /// F6.1: the manifest's capability list is the host's closed vocabulary on the
 /// wire, not free text — an unknown name must fail to deserialize here rather
-/// than reach a client that would have to guess what it meant.
+/// than reach a client that would have to guess what it meant. The names are
+/// the **dotted** domain names, identical on every surface, so a capability read
+/// off a manifest can be put straight back into an app spec.
 #[test]
-fn capability_wire_strings_are_snake_case_and_closed() {
-    assert_eq!(wire(CapabilityDto::HomeReadState), json!("home_read_state"));
-    assert_eq!(wire(CapabilityDto::HomeSetLight), json!("home_set_light"));
+fn capability_wire_strings_are_the_dotted_domain_names_and_closed() {
+    assert_eq!(wire(CapabilityDto::HomeReadState), json!("home.read_state"));
+    assert_eq!(wire(CapabilityDto::HomeSetLight), json!("home.set_light"));
     assert_eq!(
         wire(CapabilityDto::HomeExecuteScene),
-        json!("home_execute_scene")
+        json!("home.execute_scene")
     );
     assert!(
         serde_json::from_value::<CapabilityDto>(json!("artifact.read-own-data")).is_err(),
         "the pre-F6.1 free-form capability name must no longer deserialize"
     );
-    assert!(serde_json::from_value::<CapabilityDto>(json!("shell_exec")).is_err());
+    assert!(serde_json::from_value::<CapabilityDto>(json!("shell.exec")).is_err());
+    // The snake_case spelling an earlier draft emitted is not a valid name.
+    assert!(serde_json::from_value::<CapabilityDto>(json!("home_read_state")).is_err());
 }
 
 fn wire(value: impl serde::Serialize) -> serde_json::Value {

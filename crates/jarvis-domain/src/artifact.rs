@@ -267,10 +267,17 @@ impl CapabilityError {
 }
 
 impl Capability {
-    /// Every capability the host defines. Exhaustive by construction: a test
-    /// asserts the array covers the enum, so a new variant that is not listed
-    /// here fails the build's test run rather than shipping invisible to the
-    /// spec validator and the bridge.
+    /// Every capability the host defines.
+    ///
+    /// What actually keeps this honest is the `match` in [`Capability::as_str`]
+    /// and its siblings: adding a variant is a compile error until every one of
+    /// them is visited, and this list sits directly beside them. That is
+    /// weaker than a proof — a new variant could be given an `as_str` and left
+    /// out of `ALL`, and it would then be silently unnameable in a spec (fail
+    /// closed, but silent). The F6.1 review named this precisely; the real fix
+    /// is generating enum + list + tables from one source, which is a bigger
+    /// change than this milestone should make. Until then: **add the variant
+    /// here in the same edit.**
     pub const ALL: [Capability; 3] = [
         Capability::HomeReadState,
         Capability::HomeSetLight,
@@ -307,15 +314,36 @@ impl Capability {
     }
 }
 
-/// The longest rejected-capability name echoed back in a [`CapabilityError`].
+/// The longest rejected-name echoed back in an error.
 const MAX_ECHOED_NAME_BYTES: usize = 64;
 
-/// Clamp and strip an untrusted name before it is echoed in an error. Model- or
-/// app-authored text reaches logs, problem bodies and audit reasons; control and
-/// bidi/zero-width characters are removed (CF-13) and the length is capped so a
-/// rejection cannot be used to smuggle or flood.
+/// Clamp and strip an untrusted **name** before it is echoed in an error.
+/// Model- or app-authored text reaches logs, problem bodies and audit reasons,
+/// so every character [`is_unsafe_in_single_line`](crate::tools) covers is
+/// removed and the length is capped: a rejection can be used neither to smuggle
+/// nor to flood.
+///
+/// Deliberately **not** [`crate::tools::sanitize_result_content`], which keeps
+/// `\n` and `\t` because it was written for tool-result *prose*. A capability or
+/// template name has no legitimate newline, and this value is exposed raw
+/// (`CapabilityError::rejected`, the payload of several `AppSpecError`
+/// variants), so a preserved newline would let a rejected name forge a second
+/// log or audit line. The F6.1 security review found exactly that gap.
+///
+/// Stripping happens before the byte count, so the result is `≤
+/// MAX_ECHOED_NAME_BYTES` however much invisible padding the input carried.
 pub(crate) fn echo_untrusted(s: &str) -> String {
-    crate::tools::sanitize_result_content(s, MAX_ECHOED_NAME_BYTES).text
+    let mut out = String::new();
+    for ch in s.chars() {
+        if crate::tools::is_unsafe_in_single_line(ch) {
+            continue;
+        }
+        if out.len() + ch.len_utf8() > MAX_ECHOED_NAME_BYTES {
+            break;
+        }
+        out.push(ch);
+    }
+    out
 }
 
 impl FromStr for Capability {

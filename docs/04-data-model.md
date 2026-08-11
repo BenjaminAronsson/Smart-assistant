@@ -66,7 +66,7 @@ stream; every migration reversible or explicitly marked destructive with a backu
     "lockfileHash": "…",
     "network": "disabled"
   },
-  "capabilities": ["home_read_state"]
+  "capabilities": ["home.read_state"]
 }
 ```
 
