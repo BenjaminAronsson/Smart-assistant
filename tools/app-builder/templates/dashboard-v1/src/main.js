@@ -12,6 +12,7 @@
 // so this file must render correctly when every request is refused — which is
 // exactly what it does today, before the bridge exists.
 import spec from "./spec.json";
+import { request } from "./bridge.js";
 import "./style.css";
 
 /** A labelled card, empty until (and unless) the bridge fills it. */
@@ -60,3 +61,20 @@ function render(root) {
 }
 
 render(document.getElementById("app"));
+
+// Ask for each binding's value. Every request may be refused — an undeclared
+// capability, an expired token, a denied approval, a target outside the tool's
+// own allowlist — so a card that gets no answer says so and the app keeps
+// working. Nothing here retries: an app that hammers the bridge on refusal is
+// an app arguing with the policy engine.
+for (const binding of spec.bindings) {
+  request(binding.capability, binding.target).then((reply) => {
+    const card = document.querySelector(`[data-binding="${CSS.escape(binding.name)}"]`);
+    if (!card) return;
+    const value = card.querySelector(".value");
+    // textContent, never innerHTML: the answer came from a tool, and a tool
+    // result is untrusted content like any other.
+    value.textContent = reply.ok ? reply.content : "unavailable";
+    if (!reply.ok) card.dataset.error = reply.code ?? "unknown";
+  });
+}

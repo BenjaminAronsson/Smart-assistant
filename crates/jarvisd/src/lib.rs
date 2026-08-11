@@ -3,6 +3,7 @@
 //! (docs/02 §3). Library so the binary stays thin and everything is testable.
 
 pub mod api;
+pub mod appbridge;
 pub mod approvals;
 pub mod artifacts;
 pub mod auth;

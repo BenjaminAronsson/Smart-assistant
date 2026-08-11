@@ -281,12 +281,27 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         jarvisd::tools::register_spotify_tools(&mut registry, client)?;
     }
 
+    let bridge_registry = Arc::new(registry);
+    let bridge_audit: Arc<dyn jarvis_application::policy::AuditSink> =
+        Arc::new(jarvis_infra::audit_sink::PgAuditSink::new(pool.clone()));
+    let bridge_digest: Arc<dyn jarvis_application::ports::ArgumentDigest> =
+        Arc::new(jarvis_infra::appbridge::Sha256ArgumentDigest);
+    // F6.5: the capability bridge shares the tool plane's registry, audit sink,
+    // approval gate and grant store — an app-originated call takes the identical
+    // path a model-originated one takes (invariant 1). Tokens are in-memory by
+    // design: one outliving a restart would outlive the app instance it was
+    // minted for.
+    let capability_tokens = Arc::new(jarvis_infra::appbridge::InMemoryCapabilityTokens::new());
+
     let tool_plane = jarvisd::runs::ToolPlane {
-        registry: Arc::new(registry),
-        audit: Arc::new(jarvis_infra::audit_sink::PgAuditSink::new(pool.clone())),
+        registry: bridge_registry.clone(),
+        audit: bridge_audit.clone(),
         approval_gate: approval_gate.clone(),
         grant_minter: grant_store.clone(),
-        grant_validator: grant_store,
+        grant_validator: grant_store.clone(),
+        // D-M5-4: the same sha256(canonical_form(args)) the grant table binds,
+        // so an executed effect is answerable from the audit trail alone.
+        arg_digest: bridge_digest.clone(),
     };
 
     let model = Arc::new(ClaudeCliModel::with_config(
@@ -377,7 +392,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         run_store.clone(),
         event_log.clone(),
         engine.clone(),
-        approval_gate,
+        approval_gate.clone(),
         Some(deepdive.clone()),
     );
     let ws_state = WsState {
@@ -504,7 +519,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             Arc::new(jarvis_application::lists::ListsService::new(
                 Arc::new(jarvis_infra::lists::PgListStore::new(pool.clone())),
                 blob_store,
-                artifact_store,
+                artifact_store.clone(),
                 Arc::new(SystemClock),
             )),
             // The list card rides the same canvas event as the deep-dive cards
@@ -531,6 +546,17 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
                 ws: ws_state,
             }),
             artifacts: Some(artifacts),
+            appbridge: Some(jarvisd::appbridge::AppBridgeApi {
+                artifacts: artifact_store,
+                tokens: capability_tokens,
+                registry: bridge_registry,
+                audit: bridge_audit,
+                clock: Arc::new(SystemClock),
+                approval_gate: approval_gate.clone(),
+                grant_minter: grant_store.clone(),
+                grant_validator: grant_store,
+                arg_digest: bridge_digest,
+            }),
             display: Some(display),
             media: media_api,
             maps,

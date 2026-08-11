@@ -15,6 +15,20 @@ use jarvis_domain::run::Run;
 use jarvis_domain::timers::{Timer, TimerState};
 use std::time::SystemTime;
 
+/// `sha256(canonical_form(arguments))` — the same normalization and hash the
+/// grant minter binds (docs/06 §4).
+///
+/// A port rather than a function because the application layer computes no
+/// crypto (invariant 3; `sha2` lives in infra). It exists to close **D-M5-4**:
+/// through M5 a `tool.executed` audit row named only the tool, so the
+/// append-only trail could say *that* `home.set_light` ran and never *which
+/// light*. Binding the argument hash makes an executed effect answerable after
+/// the fact without storing the arguments themselves, which may be sensitive
+/// (invariant 5) — the same trade the grant table already makes.
+pub trait ArgumentDigest: Send + Sync {
+    fn digest(&self, arguments: &jarvis_domain::tools::CanonicalValue) -> Sha256;
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RepositoryError {
     #[error("conflict: {0}")]

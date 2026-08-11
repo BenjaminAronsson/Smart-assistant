@@ -151,6 +151,7 @@ async fn golden6_malicious_fetched_page_cannot_exfiltrate_via_message_send() {
             approval_gate: &gate,
             grant_minter: &minter,
             grant_validator: &validator,
+            arg_digest: &crate::testing::FoldingArgumentDigest,
         }),
     };
 
@@ -246,6 +247,7 @@ async fn golden6_unknown_tool_named_by_a_page_is_rejected_not_executed() {
             approval_gate: &gate,
             grant_minter: &minter,
             grant_validator: &validator,
+            arg_digest: &crate::testing::FoldingArgumentDigest,
         }),
     };
 

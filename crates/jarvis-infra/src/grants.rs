@@ -50,6 +50,14 @@ impl PgGrantStore {
 /// minting and validation, so identical arguments in any key order bind and
 /// re-validate to the same value (skill `policy-grants`, property-tested in the
 /// domain `canonical_form` suite).
+/// Test-only alias so `crate::appbridge` can assert that the audit digest and
+/// the grant binding are the *same* function rather than two implementations
+/// that happen to agree today (D-M5-4).
+#[cfg(test)]
+pub(crate) fn args_hash_for_tests(arguments: &jarvis_domain::tools::CanonicalValue) -> ArgsHash {
+    args_hash(arguments)
+}
+
 fn args_hash(arguments: &jarvis_domain::tools::CanonicalValue) -> ArgsHash {
     let mut hasher = Sha256::new();
     hasher.update(canonical_form(arguments));

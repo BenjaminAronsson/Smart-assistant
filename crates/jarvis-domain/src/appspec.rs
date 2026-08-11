@@ -127,6 +127,14 @@ impl BindingTarget {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Validate an untrusted target string (F6.5). The **same** function spec
+    /// validation uses, exposed because the capability bridge must apply the
+    /// identical rule to a target a running app names at call time — a second,
+    /// looser check at the bridge would be a hole in the first one.
+    pub fn parse(raw: &str) -> Result<BindingTarget, AppSpecError> {
+        validate_binding_target(raw)
+    }
 }
 
 impl fmt::Display for BindingTarget {

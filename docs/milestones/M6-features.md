@@ -227,7 +227,7 @@ F6.5 and F6.6 — this milestone's diff is the sandbox.
 
 ## Phase D — The bridge
 
-- [ ] **F6.5 — Capability bridge: postMessage protocol, short-lived tokens, policy-gated execution (application + contracts + jarvisd + web)** · *strong model — the highest-risk feature in the milestone*
+- [x] **F6.5 — Capability bridge: postMessage protocol, short-lived tokens, policy-gated execution (application + contracts + jarvisd + web)** · *strong model — the highest-risk feature in the milestone* — landed 2026-08-11; **D-M5-4 closed** (argument hash bound into tool-execution audit rows, orchestrator and bridge alike)
   docs/06 §6 clause 2, and the sharpest test invariant 1 has faced: *"optional interaction
   only via a `postMessage` bridge exchanging short-lived capability tokens for operations
   named in the artifact manifest; undeclared capability ⇒ reject."*

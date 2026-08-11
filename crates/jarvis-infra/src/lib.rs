@@ -2,6 +2,7 @@
 //! sqlx repositories, migrations, outbox, artifact CAS, keyring secret store,
 //! OTel wiring (docs/02 §3).
 
+pub mod appbridge;
 pub mod approvals;
 pub mod artifact_cas;
 pub mod artifacts;

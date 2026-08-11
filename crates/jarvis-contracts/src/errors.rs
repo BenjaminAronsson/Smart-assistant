@@ -108,6 +108,21 @@ pub enum ErrorCode {
     MemorySecretRejected,
     #[serde(rename = "memory.invalid")]
     MemoryInvalid,
+    /// A generated app asked for a capability its own manifest does not declare
+    /// (F6.5, docs/06 §6). 403 — the request was authenticated and well-formed;
+    /// the app simply has no such authority to ask for. The audit row
+    /// `app.capability_denied` is the durable half of this rejection.
+    #[serde(rename = "app.undeclared_capability")]
+    AppUndeclaredCapability,
+    /// A capability token was unknown, spent, expired, or bound to a different
+    /// app, version, capability or device (F6.5). 403, one code for all of them:
+    /// telling a caller *which* would let it probe the token space.
+    #[serde(rename = "app.token_rejected")]
+    AppTokenRejected,
+    /// The bridge request named a target the domain refuses to carry (F6.5).
+    /// 400.
+    #[serde(rename = "app.invalid_request")]
+    AppInvalidRequest,
 }
 
 /// RFC 9457 problem details body plus the stable machine `code` (docs/05 §2).

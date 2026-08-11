@@ -2,6 +2,7 @@
 //! Use cases, orchestrator state machine, context assembler, router, policy
 //! engine, and the ports (traits) adapters implement (docs/02 §3).
 
+pub mod appbridge;
 pub mod calendar;
 pub mod deepdive;
 pub mod deterministic;
@@ -27,6 +28,9 @@ pub mod testing;
 
 #[cfg(test)]
 mod adversarial_tests;
+
+#[cfg(test)]
+mod appbridge_tests;
 
 #[cfg(test)]
 mod approval_tests;

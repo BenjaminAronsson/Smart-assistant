@@ -255,6 +255,7 @@ async fn r0_tool_proposal_auto_executes_and_replans_to_completed() {
             approval_gate: &gate,
             grant_minter: &minter,
             grant_validator: &validator,
+            arg_digest: &crate::testing::FoldingArgumentDigest,
         }),
     };
 
@@ -337,6 +338,7 @@ async fn tool_result_is_sanitized_before_it_reaches_the_next_prompt() {
             approval_gate: &gate,
             grant_minter: &minter,
             grant_validator: &validator,
+            arg_digest: &crate::testing::FoldingArgumentDigest,
         }),
     };
 
@@ -411,6 +413,7 @@ async fn prohibited_tool_is_denied_and_never_executes() {
             approval_gate: &gate,
             grant_minter: &minter,
             grant_validator: &validator,
+            arg_digest: &crate::testing::FoldingArgumentDigest,
         }),
     };
 

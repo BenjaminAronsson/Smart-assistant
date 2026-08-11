@@ -335,6 +335,70 @@ impl Capability {
             Capability::HomeExecuteScene => crate::policy::RiskLevel::R2,
         }
     }
+
+    /// Whether this capability's operation takes a **value** in addition to its
+    /// target, and what that value means. `None` for a pure read.
+    pub fn value_argument(self) -> Option<&'static str> {
+        match self {
+            Capability::HomeReadState => None,
+            Capability::HomeSetLight => Some("state"),
+            Capability::HomeExecuteScene => Some("friendly_name"),
+        }
+    }
+
+    /// Build the **canonical argument tree** the backing tool expects, from a
+    /// validated target and, where the operation takes one, a value (F6.5).
+    ///
+    /// This is the reason a bridge message cannot name arbitrary tool arguments:
+    /// the *host* assembles the tree from a closed capability and two checked
+    /// strings, so an app can influence the target and the value and nothing
+    /// else — not the argument names, not their count, not a second entity, not
+    /// a nested structure. Both strings remain **non-authorizing**: the tool
+    /// re-resolves the target through its own allowlist and (for a scene)
+    /// verifies the label against Home Assistant.
+    pub fn arguments_for(
+        self,
+        target: &str,
+        value: Option<&str>,
+    ) -> Result<crate::tools::CanonicalValue, CapabilityArgumentError> {
+        use crate::tools::CanonicalValue as V;
+
+        let value = match (self.value_argument(), value) {
+            (None, _) => None,
+            (Some(name), Some(v)) => Some((name, check_value(v)?)),
+            (Some(name), None) => return Err(CapabilityArgumentError::MissingValue(name)),
+        };
+        Ok(match value {
+            None => V::obj([("entity_id", V::str(target))]),
+            Some((name, v)) => V::obj([("entity_id", V::str(target)), (name, V::str(&v))]),
+        })
+    }
+}
+
+/// Why a capability's arguments could not be assembled (F6.5). A rejection here
+/// means no tool was called at all.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CapabilityArgumentError {
+    #[error("this operation requires a `{0}` value")]
+    MissingValue(&'static str),
+    #[error("the supplied value is empty, too long, or contains unsafe characters")]
+    InvalidValue,
+}
+
+/// The longest value an app may supply alongside a target. Generous for a light
+/// state, tight for a friendly name — both are short by nature, and a value is
+/// untrusted text that reaches an approval card a human reads.
+const MAX_CAPABILITY_VALUE_BYTES: usize = 64;
+
+fn check_value(raw: &str) -> Result<String, CapabilityArgumentError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > MAX_CAPABILITY_VALUE_BYTES
+        || trimmed.chars().any(crate::tools::is_unsafe_in_single_line)
+    {
+        return Err(CapabilityArgumentError::InvalidValue);
+    }
+    Ok(trimmed.to_owned())
 }
 
 /// The longest rejected-name echoed back in an error.

@@ -1,10 +1,19 @@
-import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  ElementRef,
+  computed,
+  inject,
+  input,
+  viewChild,
+} from '@angular/core';
 import { DomSanitizer, type SafeHtml } from '@angular/platform-browser';
-import { inject } from '@angular/core';
+import { AppBridgeService, CAPABILITY_RESULT } from '../app-bridge.service';
 
 /**
  * Generated-app renderer (`ArtifactKindDto.bundle`, renderer
- * `sandboxed-webapp/v1`) — F6.4, FR-18, docs/06 §6, **ADR-030**.
+ * `sandboxed-webapp/v1`) — F6.4/F6.5, FR-18, docs/06 §6, **ADR-030**.
  *
  * A bundle is model-influenced code. It runs in a frame with
  * `sandbox="allow-scripts"` and **no `allow-same-origin`**, which gives the
@@ -26,6 +35,22 @@ import { inject } from '@angular/core';
  * script. Angular's sanitizer is not the boundary — the opaque origin and the
  * CSP are. What matters is that these bytes reach **only** `[srcdoc]` on this
  * sandboxed frame and never `innerHTML` anywhere in the control origin.
+ *
+ * ## The bridge (F6.5)
+ *
+ * The frame may `postMessage` one thing: a request naming a capability its own
+ * manifest declares. This component forwards it to
+ * [`AppBridgeService`] — which mints a single-use token and lets **jarvisd**
+ * decide — and posts the reply back. It authorizes nothing itself.
+ *
+ * Two rules follow from the opaque origin and are load-bearing:
+ * * inbound, `event.origin` is the literal string `"null"` and proves nothing;
+ *   the message is accepted only if `event.source` **is** this frame's
+ *   `contentWindow`. Any other window is ignored silently — a page cannot learn
+ *   whether an app is open by probing.
+ * * outbound, `targetOrigin` must be `'*'` because an opaque origin cannot be
+ *   named. Safe only because the target is this one sandboxed frame and the
+ *   payload is a reply to a request it just made.
  */
 @Component({
   selector: 'app-sandboxed-app-renderer',
@@ -39,10 +64,38 @@ export class SandboxedAppRenderer {
   readonly document = input.required<string>();
   /** Accessible name for the frame. */
   readonly label = input<string>('Generated app');
+  /** Which app this is, so the bridge can scope its tokens. */
+  readonly artifactId = input.required<string>();
+  readonly version = input.required<number>();
 
   private readonly sanitizer = inject(DomSanitizer);
+  private readonly bridge = inject(AppBridgeService);
+  private readonly frame = viewChild.required<ElementRef<HTMLIFrameElement>>('frame');
 
   protected readonly srcdoc = computed<SafeHtml>(() =>
     this.sanitizer.bypassSecurityTrustHtml(this.document()),
   );
+
+  constructor() {
+    const listener = (event: MessageEvent): void => void this.onMessage(event);
+    window.addEventListener('message', listener);
+    inject(DestroyRef).onDestroy(() => window.removeEventListener('message', listener));
+  }
+
+  private async onMessage(event: MessageEvent): Promise<void> {
+    // Identity, not origin: an opaque-origin frame posts with `origin: "null"`,
+    // which every sandboxed frame on the page shares. `contentWindow` identity
+    // is the only thing that distinguishes *this* app from any other.
+    const frame = this.frame().nativeElement;
+    if (event.source === null || event.source !== frame.contentWindow) return;
+    if (!this.bridge.isCapabilityRequest(event.data)) return;
+
+    const reply = await this.bridge.fulfil(this.artifactId(), this.version(), event.data);
+    // `'*'` is required — an opaque origin has no name to target. Bounded by
+    // posting only to this frame, and only a `CAPABILITY_RESULT` envelope.
+    frame.contentWindow?.postMessage(reply, '*');
+  }
+
+  /** Exposed for the spec: the reply envelope type is part of the contract. */
+  protected readonly resultType = CAPABILITY_RESULT;
 }

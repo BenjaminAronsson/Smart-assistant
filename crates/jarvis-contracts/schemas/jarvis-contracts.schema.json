@@ -394,6 +394,45 @@
         }
       ]
     },
+    "CapabilityResultDto": {
+      "description": "What the operation produced. Deliberately narrow: a content string and\nwhether it was truncated. No grant, no policy decision, no audit id — an app\nlearns the answer to its question and nothing about the machinery that\ndecided to answer it.",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "content",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "CapabilityTokenDto": {
+      "description": "The minted token. The value is a secret in the same sense a device token is:\nit is returned once, to one authenticated caller, and is spent by use.",
+      "properties": {
+        "capability": {
+          "$ref": "#/definitions/CapabilityDto",
+          "description": "Echoed so a client cannot mix up which token is for which capability."
+        },
+        "expiresAt": {
+          "description": "RFC 3339 instant after which the token is dead.",
+          "type": "string"
+        },
+        "token": {
+          "description": "Opaque 32-byte hex.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "token",
+        "expiresAt",
+        "capability"
+      ],
+      "type": "object"
+    },
     "Channel": {
       "description": "One WebSocket replaces v1's three hubs; `channel` discriminates (docs/05 §1).",
       "enum": [
@@ -933,6 +972,21 @@
         {
           "const": "deepdive.nothing_to_promote",
           "description": "The deep-dive thread has accumulated nothing worth keeping, so there is\nno Research Notes document to write (F3b.6, FR-27/ADR-017). 409: the\nrequest was well-formed and retrying it unchanged will not help — the\nthread has to consult something first. Promoting a bare heading would\nmint a versioned artifact that says nothing.",
+          "type": "string"
+        },
+        {
+          "const": "app.undeclared_capability",
+          "description": "A generated app asked for a capability its own manifest does not declare\n(F6.5, docs/06 §6). 403 — the request was authenticated and well-formed;\nthe app simply has no such authority to ask for. The audit row\n`app.capability_denied` is the durable half of this rejection.",
+          "type": "string"
+        },
+        {
+          "const": "app.token_rejected",
+          "description": "A capability token was unknown, spent, expired, or bound to a different\napp, version, capability or device (F6.5). 403, one code for all of them:\ntelling a caller *which* would let it probe the token space.",
+          "type": "string"
+        },
+        {
+          "const": "app.invalid_request",
+          "description": "The bridge request named a target the domain refuses to carry (F6.5).\n400.",
           "type": "string"
         }
       ]
@@ -1617,6 +1671,35 @@
       ],
       "type": "object"
     },
+    "InvokeCapabilityRequest": {
+      "additionalProperties": false,
+      "description": "`POST /api/v1/apps/{id}/versions/{version}/invoke` — exchange a token for one\noperation.",
+      "properties": {
+        "capability": {
+          "$ref": "#/definitions/CapabilityDto"
+        },
+        "target": {
+          "description": "The resource the operation applies to. Validated by the domain and then\nre-resolved by the backing tool's own allowlist — naming it confers\nnothing (ADR-029).",
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        },
+        "value": {
+          "description": "The value the operation takes, where it takes one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "capability",
+        "target",
+        "token"
+      ],
+      "type": "object"
+    },
     "ListCommandRequest": {
       "description": "`POST /api/v1/lists/command` — run the **deterministic grammar** over one\nutterance (ADR-024). Zero model calls: an utterance the grammar does not\nunambiguously recognize is a `list.unrecognized_command` 422, never a guess.\n422 rather than 400 because the body was perfectly valid — it is the\n*content* that did not resolve here, and the caller's answer is to fall back\nto the normal run path rather than to fix its request.",
       "properties": {
@@ -2273,6 +2356,19 @@
       "required": [
         "label",
         "value"
+      ],
+      "type": "object"
+    },
+    "MintCapabilityTokenRequest": {
+      "additionalProperties": false,
+      "description": "`POST /api/v1/apps/{id}/versions/{version}/capability-tokens` — ask for a\nshort-lived, single-use token for one declared capability.",
+      "properties": {
+        "capability": {
+          "$ref": "#/definitions/CapabilityDto"
+        }
+      },
+      "required": [
+        "capability"
       ],
       "type": "object"
     },

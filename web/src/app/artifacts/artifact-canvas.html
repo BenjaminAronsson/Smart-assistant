@@ -56,6 +56,8 @@
               @if (appDocument(); as document) {
                 <app-sandboxed-app-renderer
                   [document]="document"
+                  [artifactId]="artifactId() ?? ''"
+                  [version]="manifest.version"
                   [label]="'Generated app ' + artifactId() + ', version ' + manifest.version"
                 />
               }

@@ -62,6 +62,10 @@ pub fn export() -> Value {
     // along by reference from the manifest, but the inbound spec DTOs are
     // referenced by no event or response — each must be its own root or it
     // ships absent from the wire schema.
+    generator.subschema_for::<crate::appbridge::CapabilityResultDto>();
+    generator.subschema_for::<crate::appbridge::InvokeCapabilityRequest>();
+    generator.subschema_for::<crate::appbridge::MintCapabilityTokenRequest>();
+    generator.subschema_for::<crate::appbridge::CapabilityTokenDto>();
     generator.subschema_for::<crate::appspec::AppSpecDto>();
     generator.subschema_for::<crate::appspec::CapabilityDto>();
     // Display surface (F3a.4, FR-09/10). The directive is the display-channel

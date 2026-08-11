@@ -325,7 +325,10 @@ export type ErrorCode =
   | "timer.stale"
   | "list.full"
   | "list.unrecognized_command"
-  | "deepdive.nothing_to_promote";
+  | "deepdive.nothing_to_promote"
+  | "app.undeclared_capability"
+  | "app.token_rejected"
+  | "app.invalid_request";
 /**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "ServiceStatus".
@@ -880,6 +883,48 @@ export interface ArtifactVersionsResponse {
   [k: string]: unknown;
 }
 /**
+ * What the operation produced. Deliberately narrow: a content string and
+ * whether it was truncated. No grant, no policy decision, no audit id — an app
+ * learns the answer to its question and nothing about the machinery that
+ * decided to answer it.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "CapabilityResultDto".
+ */
+export interface CapabilityResultDto {
+  content: string;
+  truncated: boolean;
+  [k: string]: unknown;
+}
+/**
+ * The minted token. The value is a secret in the same sense a device token is:
+ * it is returned once, to one authenticated caller, and is spent by use.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "CapabilityTokenDto".
+ */
+export interface CapabilityTokenDto {
+  /**
+   * A capability a validated artifact manifest declares (docs/04 §4
+   * `capabilities`). Exhaustive — the host vocabulary, mirrored on the wire.
+   * One capability has **one** name on every surface: the dotted form the domain
+   * uses, the DB column stores, and an inbound `AppSpecDto.capabilities` string
+   * must contain. `rename_all = "snake_case"` would have produced
+   * `home_read_state` here and `home.read_state` everywhere else, so a client
+   * reading a manifest could not put that string back into a spec (F6.1 review).
+   */
+  capability: "home.read_state" | "home.set_light" | "home.execute_scene";
+  /**
+   * RFC 3339 instant after which the token is dead.
+   */
+  expiresAt: string;
+  /**
+   * Opaque 32-byte hex.
+   */
+  token: string;
+  [k: string]: unknown;
+}
+/**
  * `PATCH /api/v1/lists/{id}/items/{itemId}` — the card's check-off tap, and
  * from M5 the voice path. Deliberately a whole-value set rather than a toggle:
  * two devices tapping the same line converge on the same result instead of
@@ -1428,6 +1473,27 @@ export interface SourceHandoffDto {
   [k: string]: unknown;
 }
 /**
+ * `POST /api/v1/apps/{id}/versions/{version}/invoke` — exchange a token for one
+ * operation.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "InvokeCapabilityRequest".
+ */
+export interface InvokeCapabilityRequest {
+  capability: CapabilityDto;
+  /**
+   * The resource the operation applies to. Validated by the domain and then
+   * re-resolved by the backing tool's own allowlist — naming it confers
+   * nothing (ADR-029).
+   */
+  target: string;
+  token: string;
+  /**
+   * The value the operation takes, where it takes one.
+   */
+  value?: string | null;
+}
+/**
  * `POST /api/v1/lists/command` — run the **deterministic grammar** over one
  * utterance (ADR-024). Zero model calls: an utterance the grammar does not
  * unambiguously recognize is a `list.unrecognized_command` 422, never a guess.
@@ -1715,6 +1781,16 @@ export interface MemoryListResponse {
   memories: MemoryDto[];
   nextCursor?: string | null;
   [k: string]: unknown;
+}
+/**
+ * `POST /api/v1/apps/{id}/versions/{version}/capability-tokens` — ask for a
+ * short-lived, single-use token for one declared capability.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MintCapabilityTokenRequest".
+ */
+export interface MintCapabilityTokenRequest {
+  capability: CapabilityDto;
 }
 /**
  * `POST /api/v1/artifacts/{id}/open` (FR-09/10): request that an artifact be

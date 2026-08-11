@@ -96,6 +96,8 @@ pub struct ToolPlane {
     pub approval_gate: Arc<dyn ApprovalGate>,
     pub grant_minter: Arc<dyn GrantMinter>,
     pub grant_validator: Arc<dyn GrantValidator>,
+    /// Binds the executed arguments into the tool-execution audit row (D-M5-4).
+    pub arg_digest: Arc<dyn jarvis_application::ports::ArgumentDigest>,
 }
 
 /// The host run engine: owns the orchestrator ports and the live-run registry.
@@ -198,6 +200,7 @@ impl RunEngine {
             approval_gate: &*plane.approval_gate,
             grant_minter: &*plane.grant_minter,
             grant_validator: &*plane.grant_validator,
+            arg_digest: &*plane.arg_digest,
         })
     }
 

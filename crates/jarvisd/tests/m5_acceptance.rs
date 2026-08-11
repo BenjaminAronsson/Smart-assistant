@@ -129,6 +129,7 @@ async fn drive(
             approval_gate: gate,
             grant_minter: grants,
             grant_validator: grants,
+            arg_digest: &jarvis_application::testing::FoldingArgumentDigest,
         }),
     };
     orchestrator
