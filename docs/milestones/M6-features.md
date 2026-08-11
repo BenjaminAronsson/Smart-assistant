@@ -262,7 +262,7 @@ F6.5 and F6.6 — this milestone's diff is the sandbox.
 
 ## Phase E — Prove it
 
-- [ ] **F6.7 — Golden 8 + CSP / capability-denial / escape suite (xtask + tests)** · *may be Sonnet*
+- [x] **F6.7 — Golden 8 + CSP / capability-denial / escape suite (xtask + tests)** · *may be Sonnet* — landed 2026-08-11; `cargo xtask golden` now runs traces 1–9 plus the M6 acceptance scenario. Surfaced a **gate finding**: pairing grants `["ui"]` while tool scopes are `home:read`/`app:build`, so a real paired device is denied every tool
   **Exit evidence #2 and #3.** `cargo xtask golden` scenario 8 (docs/07 §2): *"generated app
   requests an undeclared capability; bridge rejects"* — against fixture adapters, per
   CLAUDE.md's fixture-over-live rule. Plus the three test classes docs/01 §6 names for
