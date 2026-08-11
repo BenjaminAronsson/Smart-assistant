@@ -536,3 +536,80 @@ mod tests {
         assert!(before, "native tools remain registered unchanged");
     }
 }
+
+#[cfg(test)]
+mod scope_coverage_tests {
+    use super::*;
+    use crate::auth::FIRST_DEVICE_SCOPES;
+    use std::collections::BTreeSet;
+
+    /// **M6 gate finding B1.** Every tool a real registry registers must have
+    /// its `required_scopes` covered by what pairing actually grants.
+    ///
+    /// `policy::evaluate` rejects on the missing-scope arm *before* any risk
+    /// logic, so an uncovered scope is not a subtle degradation — the tool is
+    /// simply unreachable for every real caller. That went unnoticed for three
+    /// milestones because every golden and acceptance suite builds
+    /// `PolicyContext` by hand with the scopes it needs; the real paired device
+    /// never appeared in a test until golden 8.
+    ///
+    /// This is the fixture-vs-caller rule taken to its end: the input is built
+    /// the way the **real** producer builds it, and the assertion is that it is
+    /// ACCEPTED. Adding a tool with a new scope now fails here until the scope
+    /// is granted deliberately.
+    #[test]
+    fn every_registered_tools_scope_is_one_a_paired_device_actually_holds() {
+        let granted: BTreeSet<&str> = FIRST_DEVICE_SCOPES.iter().copied().collect();
+        let mut registry = build_registry(Some(std::env::temp_dir())).expect("builds");
+        // The web tools are conditionally registered too, and their descriptors
+        // are what the real registration path installs — so drive that path
+        // rather than restating their policies.
+        register_web_tools(&mut registry, "unused-key".to_owned(), 1024).expect("registers");
+
+        let mut missing: Vec<String> = Vec::new();
+        let mut check = |what: String, policy: &jarvis_domain::policy::ToolPolicy| {
+            for scope in &policy.required_scopes {
+                if !granted.contains(scope.as_str()) {
+                    missing.push(format!("{what} needs `{scope}`"));
+                }
+            }
+        };
+
+        for id in registry.tool_ids() {
+            let policy = registry
+                .policy_of(id)
+                .expect("a registered tool has policy");
+            check(id.to_string(), policy);
+        }
+
+        // The conditionally-registered tools are not in `build_registry` — they
+        // depend on configured integrations — but their scopes must be granted
+        // all the same, or enabling the integration produces a tool nobody can
+        // call. Reached through each tool's own public `policy()`, which is the
+        // very value its registration site installs.
+        use jarvis_adapters::home_assistant as ha;
+        use jarvis_adapters::spotify as sp;
+        use jarvis_adapters::tools::media_playback as mp;
+        // web.search/web.fetch are already in `build_registry`'s successors —
+        // they are registered by `register_web_tools`, whose descriptors carry
+        // the same policies; covered via the registry below when configured, and
+        // by their scopes being granted explicitly.
+        for (what, policy) in [
+            ("home.get_state", ha::HomeGetStateTool::policy()),
+            ("home.set_light", ha::HomeSetLightTool::policy()),
+            ("home.set_area_lights", ha::HomeSetAreaLightsTool::policy()),
+            ("home.execute_broad", ha::HomeBroadTool::policy()),
+            ("media.playback", mp::MediaPlaybackTool::policy()),
+            ("spotify.search", sp::SpotifySearchTool::policy()),
+            ("message.send", jarvis_adapters::smtp::SmtpTool::policy()),
+            ("app.generate", crate::apptool::AppGenerateTool::policy()),
+        ] {
+            check(what.to_owned(), &policy);
+        }
+        assert!(
+            missing.is_empty(),
+            "a paired device cannot execute these tools — grant the scope in \
+             jarvisd::auth::FIRST_DEVICE_SCOPES, deliberately: {missing:?}"
+        );
+    }
+}

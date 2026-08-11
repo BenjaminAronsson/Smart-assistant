@@ -247,26 +247,13 @@ impl Harness {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let token = json["deviceToken"].as_str().unwrap().to_owned();
 
-        // **Grant the paired device the tool scope this trace needs.**
-        //
-        // Pairing hands out `["ui"]` and there is no other scope-granting path
-        // in the system (`jarvisd::auth::FIRST_DEVICE_SCOPES`), while every
-        // tool's `required_scopes` speaks a different vocabulary (`home:read`,
-        // `app:build`). So a *real* paired device is denied every tool on the
-        // missing-scope arm — not an M6 regression, and not something a test
-        // may paper over silently: it is written up as a gate finding
-        // (M6-gate-report §"Findings", scope provisioning) for the owner to
-        // decide, because widening what a device is granted is an
-        // authorization decision, not a test fix.
-        //
-        // The trace grants it here so that what is under test is the *bridge*,
-        // not the gap: without this every assertion below would pass for the
-        // wrong reason.
-        sqlx::query("UPDATE identity.devices SET scopes = $1")
-            .bind(vec!["ui".to_owned(), "home:read".to_owned()])
-            .execute(&pool)
-            .await
-            .expect("grant the trace's device its tool scope");
+        // No scope fixup here, deliberately. The device this trace uses is
+        // paired through the **real** route and holds exactly what pairing
+        // grants — which is the point: until the M6 gate (finding B1, owner
+        // decision 2026-08-11) pairing handed out `["ui"]` alone, so a real
+        // device could execute nothing while every suite that built
+        // `PolicyContext` by hand stayed green. If this trace ever needs a
+        // scope patch again, that is the bug returning.
 
         Self {
             router,

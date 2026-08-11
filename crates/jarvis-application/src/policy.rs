@@ -125,6 +125,16 @@ impl ToolRegistry {
         self.get(id).map(|t| &t.policy)
     }
 
+    /// Every registered tool id, in a stable order.
+    ///
+    /// Exists so a host can *audit its own registry* — the M6 gate needed
+    /// "does a paired device hold a scope for every tool we registered?", which
+    /// is unanswerable without enumeration. Read-only: it hands back ids, never
+    /// executors.
+    pub fn tool_ids(&self) -> impl Iterator<Item = &ToolId> {
+        self.tools.keys()
+    }
+
     /// The executor + version for an authorized invocation. Callers reach this
     /// only after [`evaluate`] returned `Auto` (or a grant validated, F2.3).
     pub fn resolve(&self, id: &ToolId) -> Option<(ToolVersion, Arc<dyn ToolExecutor>)> {
