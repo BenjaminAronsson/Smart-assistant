@@ -221,6 +221,12 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
                         "/api/v1/artifacts/{id}/versions/{version}/blob",
                         get(crate::artifacts::get_blob),
                     )
+                    // F6.4: the one deliberately *renderable* artifact path —
+                    // separate from the blob route, which stays attachment-only.
+                    .route(
+                        "/api/v1/apps/{id}/versions/{version}/document",
+                        get(crate::artifacts::get_app_document),
+                    )
                     .with_state(api),
             );
         }

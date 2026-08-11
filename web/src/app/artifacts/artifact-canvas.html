@@ -52,6 +52,14 @@
                 <app-chart-renderer [content]="text" />
               }
             }
+            @case ('bundle') {
+              @if (appDocument(); as document) {
+                <app-sandboxed-app-renderer
+                  [document]="document"
+                  [label]="'Generated app ' + artifactId() + ', version ' + manifest.version"
+                />
+              }
+            }
             @default {
               <app-unsupported-renderer [kind]="manifest.kind" />
             }

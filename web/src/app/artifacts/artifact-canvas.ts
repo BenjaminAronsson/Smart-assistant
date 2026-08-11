@@ -7,6 +7,7 @@ import { CodeRenderer } from './renderers/code-renderer';
 import { ChartRenderer } from './renderers/chart-renderer';
 import { ImageRenderer } from './renderers/image-renderer';
 import { MarkdownRenderer } from './renderers/markdown-renderer';
+import { SandboxedAppRenderer } from './renderers/sandboxed-app-renderer';
 import { UnsupportedRenderer } from './renderers/unsupported-renderer';
 import { sanitizeHref } from './safe-url';
 
@@ -30,7 +31,14 @@ function isNotFound(err: unknown): boolean {
  */
 @Component({
   selector: 'app-artifact-canvas',
-  imports: [MarkdownRenderer, CodeRenderer, ImageRenderer, ChartRenderer, UnsupportedRenderer],
+  imports: [
+    MarkdownRenderer,
+    CodeRenderer,
+    ImageRenderer,
+    ChartRenderer,
+    SandboxedAppRenderer,
+    UnsupportedRenderer,
+  ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './artifact-canvas.html',
   styleUrl: './artifact-canvas.scss',
@@ -42,10 +50,16 @@ export class ArtifactCanvas implements OnInit {
   protected readonly artifactId = signal<string | null>(null);
   protected readonly versions = signal<ArtifactManifestDto[]>([]);
   protected readonly selectedVersion = signal<number | null>(null);
-  /** Set for every kind except `image` (Markdown/HTML, code/text and chart
-   * are all textual; `bundle` and unknown kinds never fetch bytes at all). */
+  /** Set for every textual kind (Markdown/HTML, code/text, chart). A `bundle`
+   * never lands here: its bytes go to [`appDocument`] and from there to
+   * exactly one place, the sandboxed frame's `srcdoc` (F6.4). */
   protected readonly textContent = signal<string | null>(null);
   protected readonly imageBlob = signal<Blob | null>(null);
+  /** A generated app's document (F6.4, ADR-030). Held separately from
+   * `textContent` on purpose: these bytes are model-influenced code, and the
+   * separation is what keeps them out of every renderer that puts text on this
+   * page in the control origin. */
+  protected readonly appDocument = signal<string | null>(null);
   protected readonly loading = signal(false);
   protected readonly error = signal<string | null>(null);
 
@@ -91,16 +105,18 @@ export class ArtifactCanvas implements OnInit {
     this.selectedVersion.set(version);
     this.textContent.set(null);
     this.imageBlob.set(null);
+    this.appDocument.set(null);
     this.error.set(null);
-
-    // Bundle (and any future unrecognized kind) never fetches bytes — the
-    // unsupported-renderer says so without a network round-trip.
-    if (manifest.kind === 'bundle') return;
 
     this.loading.set(true);
     try {
       if (manifest.kind === 'image') {
         this.imageBlob.set(await this.api.getBlobBlob(id, version));
+      } else if (manifest.kind === 'bundle') {
+        // F6.4: a generated app comes from the *app document* route, never the
+        // blob route — and its bytes are kept out of `textContent` so no
+        // control-origin renderer can ever be handed them.
+        this.appDocument.set(await this.api.getAppDocument(id, version));
       } else {
         this.textContent.set(await this.api.getBlobText(id, version));
       }

@@ -117,7 +117,14 @@ describe('ArtifactCanvas', () => {
     expect(el.querySelector('.error')?.textContent).toContain('not found');
   });
 
-  it('never fetches blob bytes for a bundle artifact and shows the unsupported message', async () => {
+  /**
+   * F6.4 (ADR-030): a bundle is fetched from the **app document** route and
+   * rendered in the sandboxed frame. It must never come from `…/blob` — that
+   * route is `Content-Disposition: attachment` for every kind, and keeping it
+   * that way is why the app route exists at all. `http.verify()` in `afterEach`
+   * fails this test if a blob request was made.
+   */
+  it('fetches a bundle from the app-document route and renders it sandboxed', async () => {
     setup();
     fixture.detectChanges();
     await fixture.whenStable();
@@ -125,16 +132,19 @@ describe('ArtifactCanvas', () => {
       .expectOne('/api/v1/artifacts/art-1/versions')
       .flush({ artifactId: 'art-1', versions: [manifest({ version: 1, kind: 'bundle' })] });
     await fixture.whenStable();
-    // The bundle path resolves through an extra microtask hop (loadVersions
-    // awaits selectVersion, which returns immediately for `bundle`) with no
-    // further HTTP round-trip to anchor a second `whenStable` wait on — give
-    // it one more turn before asserting `loading` has settled to false.
+    http
+      .expectOne('/api/v1/apps/art-1/versions/1/document')
+      .flush('<meta http-equiv="Content-Security-Policy" content="default-src \'none\'"><h1>app</h1>');
     await fixture.whenStable();
     fixture.detectChanges();
 
-    // http.verify() in afterEach fails the test if a blob request was made.
-    expect(el.querySelector('app-unsupported-renderer')).not.toBeNull();
-    expect(el.textContent).toContain('sandbox');
+    const renderer = el.querySelector('app-sandboxed-app-renderer');
+    expect(renderer).not.toBeNull();
+    expect(el.querySelector('app-unsupported-renderer')).toBeNull();
+    const frame = renderer?.querySelector('iframe');
+    expect(frame?.getAttribute('sandbox')).toBe('allow-scripts');
+    // The app's markup lives in the frame's srcdoc, never in this document.
+    expect(el.querySelector('h1')?.textContent).not.toBe('app');
   });
 
   it('fetches an image version as a Blob, not text', async () => {

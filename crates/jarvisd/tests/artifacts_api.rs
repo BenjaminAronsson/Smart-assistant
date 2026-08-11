@@ -214,6 +214,7 @@ async fn send(app: &Router, req: Request<Body>) -> (StatusCode, HeaderMapSnapsho
         content_type: header_str(&response, header::CONTENT_TYPE),
         content_disposition: header_str(&response, header::CONTENT_DISPOSITION),
         nosniff: header_str(&response, header::X_CONTENT_TYPE_OPTIONS),
+        csp: header_str(&response, header::CONTENT_SECURITY_POLICY),
     };
     let body = response
         .into_body()
@@ -238,6 +239,7 @@ struct HeaderMapSnapshot {
     content_type: Option<String>,
     content_disposition: Option<String>,
     nosniff: Option<String>,
+    csp: Option<String>,
 }
 
 fn get(path: &str, token: &str) -> Request<Body> {
@@ -581,4 +583,148 @@ async fn a_blob_over_the_served_cap_is_a_typed_413_not_a_partial_download() {
         !body.windows(8).any(|w| w == [b'q'; 8]),
         "a refused blob may not leak a prefix of itself"
     );
+}
+
+// --- F6.4: the generated-app sandbox route ---------------------------------
+
+/// Seed one `Bundle` artifact and return its document bytes.
+async fn seed_bundle(store: &FakeArtifactStore, blobs: &FileBlobStore) -> Vec<u8> {
+    let document = b"<!doctype html><html><body><h1>Kitchen</h1></body></html>".to_vec();
+    let sha = blobs.put(&document).await.unwrap();
+    let content = ArtifactContent {
+        sha256: sha,
+        media_type: "text/html".parse::<MediaType>().unwrap(),
+        kind: ArtifactKind::Bundle,
+        sources: vec![ArtifactSource::Run(RUN.parse::<RunId>().unwrap())],
+        sensitivity: Sensitivity::Normal,
+        build: BuildProvenance::none(),
+        capabilities: vec![Capability::HomeReadState],
+    };
+    store
+        .create_version(
+            &ArtifactManifest::initial(ARTIFACT.parse().unwrap(), RUN.parse().unwrap(), content),
+            &audit(),
+        )
+        .await
+        .unwrap();
+    document
+}
+
+/// The app document is served renderable — `text/html`, **no**
+/// `Content-Disposition: attachment` — under the restrictive CSP, with the
+/// host-authored `<meta http-equiv>` policy as the *first* thing in the
+/// document so it is parsed before any of the app's own markup (F6.4, ADR-030).
+#[tokio::test]
+async fn an_app_document_is_served_renderable_under_the_sandbox_csp() {
+    let store = Arc::new(FakeArtifactStore::default());
+    let blobs = Arc::new(FileBlobStore::new(temp_root()));
+    let document = seed_bundle(&store, &blobs).await;
+    let (app, token) = app(store, blobs).await;
+
+    let (status, headers, body) = send(
+        &app,
+        get(
+            &format!("/api/v1/apps/{ARTIFACT}/versions/1/document"),
+            &token,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers.content_type.as_deref(),
+        Some("text/html; charset=utf-8")
+    );
+    assert_eq!(headers.nosniff.as_deref(), Some("nosniff"));
+    assert_eq!(
+        headers.content_disposition, None,
+        "the app route renders; only the blob route forces a download"
+    );
+
+    let csp = headers.csp.expect("a CSP header");
+    // `sandbox` without `allow-same-origin` is what makes a directly navigated
+    // document opaque-origin, independently of the frame attribute the shell
+    // sets. Losing it would silently re-open the same-origin path.
+    assert!(csp.contains("sandbox allow-scripts"), "{csp}");
+    assert!(!csp.contains("allow-same-origin"), "{csp}");
+    assert!(csp.contains("default-src 'none'"), "{csp}");
+    assert!(csp.contains("connect-src 'none'"), "{csp}");
+    assert!(csp.contains("base-uri 'none'"), "{csp}");
+    assert!(csp.contains("form-action 'none'"), "{csp}");
+
+    let text = String::from_utf8(body).expect("utf-8 document");
+    assert!(
+        text.starts_with("<meta http-equiv=\"Content-Security-Policy\""),
+        "the host's policy must be the first thing parsed: {:?}",
+        &text[..60.min(text.len())]
+    );
+    assert!(text.contains("default-src 'none'"));
+    assert!(
+        text.ends_with(std::str::from_utf8(&document).unwrap()),
+        "the bundle's own bytes follow the policy, unmodified"
+    );
+}
+
+/// Only a `Bundle` renders. A markdown note — whose bytes may have come from a
+/// fetched web page — must never be requestable as executable content
+/// (F6.4 threat note #6; the server half of "one render path per kind").
+#[tokio::test]
+async fn a_non_bundle_artifact_is_not_an_app() {
+    let store = Arc::new(FakeArtifactStore::default());
+    let blobs = Arc::new(FileBlobStore::new(temp_root()));
+    seed(&store, &blobs).await; // markdown
+    let (app, token) = app(store, blobs).await;
+
+    let (status, _h, _b) = send(
+        &app,
+        get(
+            &format!("/api/v1/apps/{ARTIFACT}/versions/1/document"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// Adding the render path did not relax the download path: the *same* bundle
+/// fetched through `…/blob` is still `attachment` + `nosniff` with no CSP-driven
+/// render (M3a security-auditor B1, F6.4 threat note #5).
+#[tokio::test]
+async fn the_blob_route_still_refuses_to_render_the_same_bundle() {
+    let store = Arc::new(FakeArtifactStore::default());
+    let blobs = Arc::new(FileBlobStore::new(temp_root()));
+    seed_bundle(&store, &blobs).await;
+    let (app, token) = app(store, blobs).await;
+
+    let (status, headers, _b) = send(
+        &app,
+        get(
+            &format!("/api/v1/artifacts/{ARTIFACT}/versions/1/blob"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.content_disposition.as_deref(), Some("attachment"));
+    assert_eq!(headers.nosniff.as_deref(), Some("nosniff"));
+}
+
+/// The app document is a privileged fetch like every other artifact read.
+#[tokio::test]
+async fn the_app_document_requires_a_token() {
+    let store = Arc::new(FakeArtifactStore::default());
+    let blobs = Arc::new(FileBlobStore::new(temp_root()));
+    seed_bundle(&store, &blobs).await;
+    let (app, _token) = app(store, blobs).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/apps/{ARTIFACT}/versions/1/document"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }

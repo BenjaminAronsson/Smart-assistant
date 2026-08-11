@@ -754,3 +754,78 @@ not the model — defines.
 - Revisit trigger: if a template ever needs to carry model-authored *source* rather than a
   spec, this ADR is void and the sandbox story has to be re-derived from scratch — that is
   a different security posture, not an increment on this one.
+
+## ADR-030 — Generated apps render in an opaque-origin sandboxed frame, not a second loopback origin {#adr-030}
+
+**Status.** **Proposed** — written at F6.4 (M6). Needs owner acceptance at the M6 gate
+(human-only decision, `docs/11` §3). Depends on and does not reopen [ADR-029](#adr-029).
+
+**Context.** docs/06 §6 requires a generated app to run "in a sandboxed iframe or isolated
+Chromium profile; restrictive CSP; **no same-origin relationship** with the control UI; no
+arbitrary network; no direct MCP/host access." The M6 feature list named the choice
+explicitly — a **separate loopback origin** (a distinct port is a distinct origin) versus
+an **opaque-origin sandboxed frame** — and called it an ADR because everything else in the
+milestone leans on it and it is expensive to move later. The v1 market-scan lesson carried
+in this file's appendix is the constraint behind both options: *agent-editable HTML is
+always untrusted and never shares an origin with privileged surfaces.*
+
+Two facts shaped the answer. First, jarvisd authenticates with a **bearer device token**,
+not cookies (docs/05 §6); an `<iframe src>` cannot carry an `Authorization` header, so a
+second-origin design needs a new URL-token auth surface that exists for no other reason.
+Second, a second loopback origin is **one** origin: every generated app served from it
+shares its `localStorage`, `sessionStorage`, IndexedDB and BroadcastChannel. Two apps
+generated from two unrelated requests would be same-origin *with each other*.
+
+**Decision.**
+1. **The app document is rendered in an iframe with `sandbox="allow-scripts"` and no
+   `allow-same-origin`,** which gives it a **unique opaque origin per frame instance**.
+   Not "a different origin from the shell" — a different origin from *everything*,
+   including every other generated app. The attribute is static in the template; Angular
+   refuses to bind `sandbox` at all (NG0910), so no runtime value can widen it.
+2. **The shell fetches the document with its device token and passes it through `srcdoc`.**
+   No new auth surface, no second listener, no port to configure or firewall — which also
+   keeps the resident footprint where NFR-15 wants it.
+3. **jarvisd serves it from a dedicated route** — `GET /api/v1/apps/{id}/versions/{v}/document`
+   — that requires `ArtifactKind::Bundle` and sends `Content-Security-Policy: sandbox
+   allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';
+   img-src data:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none';
+   frame-ancestors 'self'`. The **existing blob route is untouched**: it still serves every
+   artifact as `attachment` + `nosniff`, so the download path never had to be relaxed to
+   get a render path.
+4. **The policy travels inside the document too.** `srcdoc` content is not delivered by the
+   response whose header the browser saw, so the host prepends its own
+   `<meta http-equiv="Content-Security-Policy">` as the first bytes of the served
+   document. CSP composes intersectively — a second policy in the bundle can only
+   *narrow*, never loosen, the host's.
+5. **`script-src 'unsafe-inline'` is deliberate, not a concession.** A single-file bundle
+   *is* one inline module script; the whole document is the untrusted unit, and running
+   its script is the point of rendering it. What the policy denies is everything that
+   script could reach: origin, network, form submission, base URI, plugins.
+6. **`ArtifactKind::is_renderable_in_m3` is renamed** to `renders_inline_in_shell`, with a
+   complementary `renders_in_app_sandbox`. A test asserts every kind has exactly one render
+   path: a kind in neither would be silently unrenderable, a kind in both would be a
+   same-origin escape.
+
+**Consequences.**
+- (+) Isolation is **per app instance**, strictly stronger than a shared second origin: no
+  generated app can read another's storage, because it has none it shares with anything.
+- (+) No second listener, no second auth surface, no URL-borne token to leak through a
+  referrer, history entry or shoulder.
+- (+) The renderable path is a *separate* route, so M3a's anti-execution guard on the blob
+  route stays exactly as security-auditor B1 left it.
+- (−) The shell holds the untrusted bytes in the control origin's JS heap on the way to
+  `srcdoc`. That is a real footgun — one `innerHTML` away from the thing this ADR exists
+  to prevent — so it is constrained by construction (a dedicated signal, one renderer, one
+  binding) and asserted by tests that the bytes appear only in the frame.
+- (−) `bypassSecurityTrustHtml` appears in the renderer, which looks alarming in review
+  forever. It is correct: Angular's sanitizer would strip the app's own script, and
+  Angular's sanitizer is not the boundary — the opaque origin and the CSP are.
+- (−) An opaque origin cannot be named in a `postMessage` `targetOrigin`, and inbound
+  messages arrive with `origin === "null"`. F6.5 must therefore verify the **`event.source`
+  identity** against the frame's `contentWindow` rather than compare origin strings, and
+  post **into** the frame with `targetOrigin: "*"` — which is safe only because the frame
+  is opaque and single-purpose. This is the one place the choice makes F6.5's job harder,
+  and it is recorded here so that it is designed rather than discovered.
+- Revisit trigger: if a generated app ever legitimately needs persistent storage, a real
+  network origin, or to be opened as a top-level window, this decision is void — those are
+  a different product, and each would need its own origin story.

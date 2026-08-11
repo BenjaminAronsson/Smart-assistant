@@ -97,15 +97,38 @@ impl ArtifactKind {
         }
     }
 
-    /// Whether this kind is renderable in M3. [`ArtifactKind::Bundle`] is
-    /// reserved for the M6 sandbox and has no M3 renderer.
-    pub fn is_renderable_in_m3(self) -> bool {
+    /// Whether this kind may be rendered **inside the control UI's own origin**
+    /// — the shell parses the bytes itself and puts the result on the page.
+    ///
+    /// (Was `is_renderable_in_m3` through M3–M5, when `Bundle` had no renderer
+    /// at all. The milestone number was never the point: what this predicate
+    /// actually decides is *which origin* is allowed to hold the bytes, and
+    /// F6.4 makes the second answer real.)
+    pub fn renders_inline_in_shell(self) -> bool {
         match self {
             ArtifactKind::MarkdownHtml
             | ArtifactKind::CodeText
             | ArtifactKind::Image
             | ArtifactKind::Chart => true,
+            // Never. A bundle is model-influenced code; the control origin is
+            // exactly where it must not run (docs/06 §6, ADR-030).
             ArtifactKind::Bundle => false,
+        }
+    }
+
+    /// Whether this kind is rendered through the **generated-app sandbox** — an
+    /// opaque-origin, script-sandboxed frame under a restrictive CSP (F6.4,
+    /// ADR-030). Exactly the complement of [`Self::renders_inline_in_shell`],
+    /// asserted by a test: every kind has exactly one render path, and a kind
+    /// that fell out of both would silently become unrenderable while a kind in
+    /// both would be a same-origin escape.
+    pub fn renders_in_app_sandbox(self) -> bool {
+        match self {
+            ArtifactKind::Bundle => true,
+            ArtifactKind::MarkdownHtml
+            | ArtifactKind::CodeText
+            | ArtifactKind::Image
+            | ArtifactKind::Chart => false,
         }
     }
 }
@@ -602,16 +625,26 @@ mod tests {
         assert_eq!(ArtifactKind::Bundle.renderer_id(), "sandboxed-webapp/v1");
     }
 
+    /// A bundle never renders in the control origin, and everything else never
+    /// renders through the app sandbox — every kind has **exactly one** render
+    /// path (F6.4, ADR-030). A kind in neither would be silently unrenderable;
+    /// a kind in both would be a same-origin escape.
     #[test]
-    fn bundle_is_reserved_and_not_renderable_in_m3() {
-        assert!(!ArtifactKind::Bundle.is_renderable_in_m3());
+    fn every_kind_has_exactly_one_render_path() {
+        assert!(!ArtifactKind::Bundle.renders_inline_in_shell());
+        assert!(ArtifactKind::Bundle.renders_in_app_sandbox());
         for kind in [
             ArtifactKind::MarkdownHtml,
             ArtifactKind::CodeText,
             ArtifactKind::Image,
             ArtifactKind::Chart,
+            ArtifactKind::Bundle,
         ] {
-            assert!(kind.is_renderable_in_m3());
+            assert_ne!(
+                kind.renders_inline_in_shell(),
+                kind.renders_in_app_sandbox(),
+                "{kind:?} must have exactly one render path"
+            );
         }
     }
 

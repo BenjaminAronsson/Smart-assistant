@@ -52,6 +52,20 @@ export class ArtifactApiService {
     );
   }
 
+  /** Fetch a `bundle` version as an **app document** (F6.4, ADR-030): the
+   * separate, deliberately renderable route, which serves the bundle under a
+   * restrictive CSP with the host's policy `<meta>` prepended. Deliberately not
+   * `…/blob`, which stays `Content-Disposition: attachment` for every kind —
+   * the two routes exist so the download path never has to be relaxed. */
+  getAppDocument(id: string, version: number): Promise<string> {
+    return firstValueFrom(
+      this.http.get(`/api/v1/apps/${id}/versions/${version}/document`, {
+        headers: this.authHeaders(),
+        responseType: 'text',
+      }),
+    );
+  }
+
   private authHeaders(): HttpHeaders {
     const token = localStorage.getItem(TOKEN_KEY);
     return token ? new HttpHeaders({ Authorization: `Bearer ${token}` }) : new HttpHeaders();

@@ -204,7 +204,7 @@ F6.5 and F6.6 — this milestone's diff is the sandbox.
 
 ## Phase C — Run it, isolated
 
-- [ ] **F6.4 — Isolated app origin, CSP, and the sandboxed surface (jarvisd + web + ADR)** · *strong model*
+- [x] **F6.4 — Isolated app origin, CSP, and the sandboxed surface (jarvisd + web + ADR)** · *strong model* — landed 2026-08-11 (**ADR-030**: opaque-origin sandboxed frame, not a second loopback origin; app opens as a full-canvas renderer)
   The "open them sandboxed" half of FR-18 and the first two clauses of docs/06 §6: a bundle
   is served with **no same-origin relationship to the control UI**, under a restrictive CSP,
   with no arbitrary network and no direct MCP/host access. Decide and record how — a
