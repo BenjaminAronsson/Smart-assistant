@@ -683,9 +683,10 @@ already uses, no new trait required.
 
 ## ADR-029 — Generated-app format: a JSON spec against a locked Vite template, over a closed capability vocabulary {#adr-029}
 
-**Status.** **Proposed** — written at F6.1 (M6). Confirms the default the owner settled on
-2026-08-09 (`docs/milestones/M6-features.md` §"Scope decisions" #3); needs owner acceptance
-at the M6 gate (human-only decision, `docs/11` §3).
+**Status.** **Accepted (M6 gate, 11 August 2026).** Written at F6.1; confirms the default
+the owner settled on 2026-08-09 (`docs/milestones/M6-features.md` §"Scope decisions" #3).
+Accepted together with ADR-030 and deviations D-M6-1/D-M6-2
+(`docs/milestones/M6-gate-report.md`).
 
 **Context.** FR-18 says "generate small local web applications **from validated
 templates**; open them sandboxed." docs/08 §6 recorded the format as a decision deferred to
@@ -757,8 +758,9 @@ not the model — defines.
 
 ## ADR-030 — Generated apps render in an opaque-origin sandboxed frame, not a second loopback origin {#adr-030}
 
-**Status.** **Proposed** — written at F6.4 (M6). Needs owner acceptance at the M6 gate
-(human-only decision, `docs/11` §3). Depends on and does not reopen [ADR-029](#adr-029).
+**Status.** **Accepted (M6 gate, 11 August 2026).** Written at F6.4; accepted together with
+ADR-029 and deviations D-M6-1/D-M6-2 (`docs/milestones/M6-gate-report.md`). Depends on and
+does not reopen [ADR-029](#adr-029).
 
 **Context.** docs/06 §6 requires a generated app to run "in a sandboxed iframe or isolated
 Chromium profile; restrictive CSP; **no same-origin relationship** with the control UI; no

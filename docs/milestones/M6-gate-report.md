@@ -1,10 +1,16 @@
 # M6 "Generated apps" — gate report
 
-**Status: AWAITING OWNER SIGN-OFF.** Every exit-evidence item is demonstrated and every
-check in the loop is green. There is **one BLOCKING finding** below that is not an M6
-regression but makes M6's own exit evidence unreachable on a real device, and **two ADRs**
-plus **two deviations** that need an owner decision. A gate is never passed with exceptions
-silently (docs/11 §2), so those are stated as decisions to take, not as noise.
+**Status: SIGNED OFF — owner, 2026-08-11.** Every exit-evidence item is demonstrated and
+every check in the loop is green.
+
+**Owner decisions taken 2026-08-11, both as recommended:**
+1. **B1 (§5) — option 1:** the first paired device is the owner's device and receives the
+   full tool scope set. **FIXED in `28aebd2`**, with the missing test in the two places that
+   close the class (see §5).
+2. **Accept ADR-029, ADR-030, D-M6-1 and D-M6-2**, and tag `m6-complete`.
+
+Final numbers after the two gate fixes: **1267 tests passing**, 35 golden scenarios,
+clippy/fmt/arch-test/codegen clean, web 256 passing.
 
 Run 2026-08-11 on Opus 5. Scope since `m5-complete`: **9 commits**, 89 files,
 +12 235 / −91 lines. Feature list: `docs/milestones/M6-features.md` (all 7 checked).
@@ -48,7 +54,7 @@ exactly **one** tool call ever happened.
 |-------|--------|
 | `cargo fmt --check` | clean |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
-| `cargo test --workspace` | **1266 passed, 0 failed** (was 1131 at `m5-complete`) |
+| `cargo test --workspace` | **1267 passed, 0 failed** (was 1131 at `m5-complete`) |
 | `cargo xtask arch-test` | 9 crates, dependency rules hold |
 | `cargo xtask codegen --check` | generated outputs up to date |
 | `cargo xtask golden` | **35 scenarios green**, traces 1–9 + M3a/M3b/M5/M6 acceptance |
@@ -159,10 +165,10 @@ port-signature change and is out of scope here, as the feature list recorded.
 
 ---
 
-## 5. BLOCKING finding for the owner
+## 5. BLOCKING finding — RESOLVED (owner decision, option 1)
 
-**B1 — a real paired device is denied every tool, so M6's own exit evidence is unreachable
-in production.**
+**B1 — a real paired device was denied every tool, so M6's own exit evidence was
+unreachable in production. FIXED (`28aebd2`).**
 
 `jarvisd::auth::FIRST_DEVICE_SCOPES` grants a paired device `["ui"]`, and pairing is the
 **only** scope-granting path in the system (grep-verified: no other write to
@@ -181,11 +187,25 @@ while the real caller is denied.
 Golden 8 grants its device the scope in a commented block that says exactly this, rather
 than absorbing the gap silently.
 
-**Why this is not fixed in this commit:** widening what a device is granted is an
-authorization decision, and docs/11 §3 reserves those for the owner. Three options, with a
-recommendation:
+**Resolution.** The owner chose **option 1** on 2026-08-11. `FIRST_DEVICE_SCOPES` now
+carries the tool scopes alongside the device class, with the reasoning stated at the
+constant: this is a single-owner, loopback-first system, the pairing code is the trust
+ceremony, and what gates a consequential action is its **risk tier** — approval and an
+`ExecutionGrant` for R2+ — never the length of that list. Per-device differentiation is
+M7's multi-device work.
 
-1. **(Recommended) The first paired device is the owner's device and receives the full tool
+**The missing test, in the two places that close the class:**
+* `jarvisd::tools::scope_coverage_tests` walks a registry built by the **real** registration
+  paths and asserts every tool's required scopes are ones pairing actually grants.
+  Mutation-checked — removing `home:read` fails it with ``home.get_state needs `home:read` ``.
+  A new tool with a new scope now fails here until the scope is granted deliberately.
+* Golden 8 no longer patches its device's scopes: it pairs through the real route and
+  executes on what pairing gives it, so a regression turns the milestone's own exit evidence
+  red rather than leaving it green on a fixture.
+
+The options considered, for the record:
+
+1. **(Chosen) The first paired device is the owner's device and receives the full tool
    scope set.** This is a single-owner, loopback-first system (docs/05 §6); the pairing code
    is the trust ceremony, and the risk tiers — not the scope list — are what gate
    consequential actions. Smallest change, restores the intended behaviour, and leaves
@@ -195,9 +215,8 @@ recommendation:
 3. **Accept as a known limitation and carry it forward.** Honest, but it means M6 ships a
    feature nobody can use, and M5's home control is equally unusable.
 
-Whichever is chosen, the fix needs the missing test: *a device paired through the **real**
-pairing route can execute an allowlisted tool.* Its absence is why this survived three
-milestones.
+Its absence — *a device paired through the **real** pairing route can execute an allowlisted
+tool* — is why this survived three milestones.
 
 ---
 
@@ -209,26 +228,28 @@ what ships. The consequence is made honest rather than papered over: in the fall
 host attests `network: enabled` in every bundle's provenance, because that is true, and
 `check_provenance` **refuses** to attest `disabled` without a worker image. A build whose
 provenance cannot be recorded produces no artifact. → *Recommend ACCEPT as a tracked
-carry-forward, closing together with D-M3a-2 when the container profiles land.*
+carry-forward, closing together with D-M3a-2 when the container profiles land.* →
+**ACCEPTED 2026-08-11.**
 
 **D-M6-2 — a bundle's `created_by_run` is a host-minted correlation id, not the
 conversational run.** `ToolInvocation` carries no run id, so `app.generate` mints one for
 provenance and audit correlation. It is provenance, not authority — the same gap D-M3a-3
 recorded for the coding worker, and it closes with the same orchestrator wiring. →
-*Recommend ACCEPT as a tracked carry-forward, merged into D-M3a-3.*
+*Recommend ACCEPT as a tracked carry-forward, merged into D-M3a-3.* →
+**ACCEPTED 2026-08-11.**
 
 ---
 
 ## 7. ADRs needing acceptance
 
 **ADR-029 — generated-app format: a JSON spec against a locked Vite template, over a closed
-capability vocabulary.** *Proposed.* Confirms the default the owner settled on 2026-08-09;
+capability vocabulary.** **ACCEPTED 2026-08-11.** Confirms the default the owner settled on 2026-08-09;
 F6.1 wrote the record rather than re-opening the option space. The load-bearing half is
 closing the capability vocabulary: a bridge that enforces free-form strings enforces
-nothing. → *Needs acceptance.*
+nothing. → *Accepted.*
 
 **ADR-030 — generated apps render in an opaque-origin sandboxed frame, not a second loopback
-origin.** *Proposed.* The M6 feature list named this choice explicitly and asked for an ADR.
+origin.** **ACCEPTED 2026-08-11.** The M6 feature list named this choice explicitly and asked for an ADR.
 Two facts decided it: jarvisd authenticates with a **bearer token**, not cookies, so an
 `<iframe src>` on a second origin needs a whole new URL-token auth surface that exists for
 no other reason; and a second loopback origin is **one** origin — every generated app served
@@ -237,7 +258,7 @@ from it would share `localStorage`, IndexedDB and BroadcastChannel, i.e. be same
 origin **per frame instance**. The ADR also records, in advance, the one place this makes
 life harder: an opaque origin cannot be named in a `postMessage` `targetOrigin` and arrives
 as `origin === "null"`, so the bridge verifies `event.source` against the frame's
-`contentWindow`. → *Needs acceptance.*
+`contentWindow`. → *Accepted.*
 
 ---
 
@@ -249,20 +270,25 @@ as `origin === "null"`, so the bridge verifies `event.source` against the frame'
 | **D-M5-4** (tool audit rows carry no argument binding) | **CLOSED** by F6.5. Orchestrator and bridge both bind `sha256(canonical_form(args))`, the same function the grant table binds, pinned by an infra test so the two can be joined. |
 | **CF-2** (audit atomicity) | Open from M2. Not made worse; closing it is a port-signature change (human decision). |
 | **D-M3a-2 / D-M3a-3** | Open; D-M6-1 and D-M6-2 fold into them. |
-| **B1** (device scope provisioning) | **BLOCKING, owner decision — §5.** |
+| **B1** (device scope provisioning) | **CLOSED** by `28aebd2` — owner decision option 1, plus the registry-coverage test that stops the class recurring. |
 | `[apps]` config section | Documented in docs/09 §1 this milestone. |
 | Flaky test | One transient failure of a `jarvis-adapters` lib test was observed once under full-workspace parallel load early in the session and never reproduced (8 consecutive isolated runs, plus every full-suite run since). Not identified; noted so a future recurrence is not treated as new. |
 
 ---
 
-## 9. Recommendation
+## 9. Outcome
 
-**Sign off M6 conditional on a decision for B1**, accepting ADR-029 and ADR-030 and
-deviations D-M6-1 and D-M6-2. Everything M6 set out to build is built, demonstrated end to
-end against live Postgres and a real build toolchain, and the milestone closed two
-carry-forwards it inherited. B1 is not M6's bug, but M6 is the milestone that makes it
-matter, and shipping a generated-app feature that no paired device can invoke would be a
-gate passed with a silent exception.
+**M6 is signed off (owner, 2026-08-11).** Everything M6 set out to build is built and
+demonstrated end to end against live Postgres and a real build toolchain; the milestone
+closed two carry-forwards it inherited (CF-M3a-A, D-M5-4) and one three-milestone-old bug it
+uncovered (B1). Two findings were raised by the gate's own passes and both were fixed before
+sign-off, not carried: G1 (bridge skipped CF-9) and B1 (device scope provisioning).
 
-On approval: tag `m6-complete`, tick the docs/08 §1 M6 row, and move ADR-029/ADR-030 to
-**Accepted**.
+Done on approval: ADR-029 and ADR-030 moved to **Accepted**, the docs/08 §1 M6 row ticked,
+and the repo tagged **`m6-complete`**.
+
+**Next milestone.** docs/08 §1 puts M7 (distributed rooms / device pairing, FR-19) next.
+The M6 feature list also parked **FR-17 automations** as "its own small milestone or the M7
+opener", with two findings to start from (it is assembly over `timers.rs`/`scheduler.rs`,
+~2 features, and would likely close D-M4-1; NanoClaw/ADR-028 was considered and rejected as
+the automation *engine*). Run `/milestone` to decompose whichever the owner picks.
