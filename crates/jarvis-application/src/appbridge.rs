@@ -316,10 +316,22 @@ impl AppBridge<'_> {
                         return Err(BridgeError::NotApproved);
                     }
                 };
-                let (tool_version, _executor) = self
+                let (tool_version, executor) = self
                     .registry
                     .resolve(&proposal.tool_id)
                     .ok_or_else(|| BridgeError::Policy("policy.unknown_tool".to_owned()))?;
+                // CF-9, the same gate the orchestrator applies: the human may
+                // have **edited** the arguments away from the proposal, so the
+                // approved ones are validated against the tool's own schema
+                // before a grant binds them. Without this, an edit is the one
+                // path into a grant that never met the tool's input rules —
+                // and it would fail only later, inside `execute`, with a grant
+                // already minted (docs/06 §4).
+                if let Err(e) = executor.validate_args(&approved) {
+                    self.record(actor, "approval.invalid_args", &request, "{}")
+                        .await;
+                    return Err(BridgeError::Tool(e));
+                }
                 let minted = self
                     .grant_minter
                     .mint(GrantBinding {

@@ -783,3 +783,67 @@ async fn a_cancelled_exchange_executes_nothing() {
     assert!(matches!(err, BridgeError::Cancelled));
     assert!(h.tool.call_arguments().is_empty());
 }
+
+/// **CF-9 at the bridge.** The human may edit the arguments in an approval; an
+/// edit that no longer satisfies the tool's own schema must fail **before** a
+/// grant binds it — the same gate the orchestrator applies, applied to the one
+/// other place a grant is now minted (found at the M6 gate's audit pass).
+#[tokio::test]
+async fn an_edited_approval_that_breaks_the_tools_schema_never_mints_a_grant() {
+    let tool = FakeTool::requiring_key("ok", "entity_id");
+    let mut registry = ToolRegistry::new();
+    registry
+        .register(ToolDescriptor {
+            id: ToolId::home_execute_scene(),
+            version: ToolVersion::new(1, 0, 0),
+            policy: Some(policy(RiskLevel::R2, "home:write")),
+            executor: tool.clone(),
+        })
+        .expect("registers");
+
+    let h = Harness {
+        artifacts: FakeArtifacts::with(ArtifactKind::Bundle, vec![Capability::HomeExecuteScene]),
+        tokens: FakeTokens::default(),
+        registry,
+        audit: RecordingAuditSink::default(),
+        clock: ManualClock::at_unix(NOW_SECS),
+        // Approves, but hands back arguments the tool cannot accept.
+        gate: FakeApprovalGate::approving_with(CanonicalValue::obj([(
+            "nonsense",
+            CanonicalValue::str("x"),
+        )])),
+        minter: FakeGrantMinter,
+        validator: FakeGrantValidator::accepting(),
+        digest: FoldingArgumentDigest,
+        tool: tool.clone(),
+        scopes: PolicyContext {
+            user_id: USER.parse().unwrap(),
+            device_id: DEVICE.parse().unwrap(),
+            granted_scopes: [Scope::new("home:write").unwrap()].into_iter().collect(),
+        },
+    };
+
+    let token = h.valid_token(Capability::HomeExecuteScene).await;
+    let mut request = h.request(Capability::HomeExecuteScene, token);
+    request.target = "scene.movie_night".to_owned();
+    request.value = Some("Movie night".to_owned());
+
+    let err = h
+        .bridge()
+        .exchange(request, &actor(), CancellationToken::new())
+        .await
+        .expect_err("an invalid edit must not reach a grant");
+    assert!(matches!(err, BridgeError::Tool(_)), "got {err:?}");
+    assert!(h.tool.call_arguments().is_empty(), "nothing executed");
+    assert!(
+        h.audit
+            .event_types()
+            .contains(&"approval.invalid_args".to_owned()),
+        "the refusal is auditable: {:?}",
+        h.audit.event_types()
+    );
+    assert!(
+        !h.audit.event_types().contains(&"grant.minted".to_owned()),
+        "no grant may be minted for arguments the tool rejects"
+    );
+}
