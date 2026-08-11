@@ -23,7 +23,7 @@ use jarvis_domain::ids::{ArtifactId, RunId};
 use tokio_util::sync::CancellationToken;
 
 use crate::deepdive::{CanvasAction, DeepDiveError, DeepDiveService, ThreadState};
-use crate::ports::{ArtifactStore, BlobStore, BlobStoreError, RepositoryError};
+use crate::ports::{ArtifactStore, BlobRead, BlobStore, BlobStoreError, RepositoryError};
 use crate::testing::ManualClock;
 
 // --- fake ports -----------------------------------------------------------
@@ -58,6 +58,20 @@ impl BlobStore for FakeBlobs {
     }
     async fn contains(&self, hash: &Sha256) -> Result<bool, BlobStoreError> {
         Ok(self.get(hash).await?.is_some())
+    }
+    async fn open(
+        &self,
+        hash: &Sha256,
+        max_bytes: u64,
+    ) -> Result<Option<BlobRead>, BlobStoreError> {
+        match self.get(hash).await? {
+            Some(bytes) if bytes.len() as u64 > max_bytes => Err(BlobStoreError::TooLarge {
+                len: bytes.len() as u64,
+                max: max_bytes,
+            }),
+            Some(bytes) => Ok(Some(BlobRead::from_bytes(bytes))),
+            None => Ok(None),
+        }
     }
 }
 

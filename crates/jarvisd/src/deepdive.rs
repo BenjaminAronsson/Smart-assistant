@@ -559,7 +559,9 @@ fn promotion_problem(error: DeepDiveError) -> Response {
 mod tests {
     use super::*;
     use jarvis_application::orchestrator::Clock;
-    use jarvis_application::ports::{ArtifactStore, BlobStore, BlobStoreError, RepositoryError};
+    use jarvis_application::ports::{
+        ArtifactStore, BlobRead, BlobStore, BlobStoreError, RepositoryError,
+    };
     use jarvis_domain::artifact::{ArtifactManifest, ArtifactVersion};
     use jarvis_domain::audit::AuditEvent;
     use jarvis_domain::grants::Sha256;
@@ -596,6 +598,20 @@ mod tests {
         }
         async fn contains(&self, hash: &Sha256) -> Result<bool, BlobStoreError> {
             Ok(self.get(hash).await?.is_some())
+        }
+        async fn open(
+            &self,
+            hash: &Sha256,
+            max_bytes: u64,
+        ) -> Result<Option<BlobRead>, BlobStoreError> {
+            match self.get(hash).await? {
+                Some(bytes) if bytes.len() as u64 > max_bytes => Err(BlobStoreError::TooLarge {
+                    len: bytes.len() as u64,
+                    max: max_bytes,
+                }),
+                Some(bytes) => Ok(Some(BlobRead::from_bytes(bytes))),
+                None => Ok(None),
+            }
         }
     }
 

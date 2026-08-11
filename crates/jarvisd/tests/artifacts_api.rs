@@ -12,7 +12,9 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
-use jarvis_application::ports::{ArtifactStore, BlobStore, IdentityStore, RepositoryError};
+use jarvis_application::ports::{
+    ArtifactStore, BlobStore, IdentityStore, MAX_SERVED_BLOB_BYTES, RepositoryError,
+};
 use jarvis_domain::artifact::{
     ArtifactContent, ArtifactKind, ArtifactManifest, ArtifactSource, ArtifactVersion,
     BuildProvenance, Capability, MediaType,
@@ -424,5 +426,159 @@ async fn artifact_reopens_through_a_fresh_app_instance() {
     assert_eq!(
         body, bytes,
         "the artifact reopens intact after a fresh start"
+    );
+}
+
+/// F6.3 (CF-M3a-A): a blob larger than one chunk is served **streamed** — the
+/// bytes arrive intact, `Content-Length` is the verified length, and the M3a
+/// anti-execution headers survive the change. The blob route is never relaxed
+/// into a renderable one; F6.4's sandboxed bundle route is separate.
+#[tokio::test]
+async fn a_multi_chunk_blob_streams_intact_with_the_anti_execution_headers() {
+    let store = Arc::new(FakeArtifactStore::default());
+    let root = temp_root();
+    let blobs = Arc::new(FileBlobStore::new(&root));
+
+    // Several chunks plus a partial one — where an off-by-one would surface.
+    let big: Vec<u8> = (0..(64 * 1024 * 3 + 517))
+        .map(|i| (i % 251) as u8)
+        .collect();
+    let sha = blobs.put(&big).await.unwrap();
+    let content = ArtifactContent {
+        sha256: sha,
+        media_type: "application/octet-stream".parse::<MediaType>().unwrap(),
+        kind: ArtifactKind::Bundle,
+        sources: vec![ArtifactSource::Run(RUN.parse::<RunId>().unwrap())],
+        sensitivity: Sensitivity::Normal,
+        build: BuildProvenance::none(),
+        capabilities: vec![],
+    };
+    store
+        .create_version(
+            &ArtifactManifest::initial(ARTIFACT.parse().unwrap(), RUN.parse().unwrap(), content),
+            &audit(),
+        )
+        .await
+        .unwrap();
+    let (app, token) = app(store, blobs).await;
+
+    let (status, headers, body) = send(
+        &app,
+        get(
+            &format!("/api/v1/artifacts/{ARTIFACT}/versions/1/blob"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, big, "streamed bytes must be byte-for-byte the blob");
+    assert_eq!(headers.content_disposition.as_deref(), Some("attachment"));
+    assert_eq!(
+        headers.content_type.as_deref(),
+        Some("application/octet-stream")
+    );
+}
+
+/// A blob whose last chunk is tampered still fails closed with **no body** —
+/// verification completes before the first byte is emitted, so streaming did
+/// not trade integrity for memory (F6.3 threat note #2/#3).
+#[tokio::test]
+async fn a_tampered_multi_chunk_blob_is_a_fail_closed_500_with_no_bytes() {
+    let store = Arc::new(FakeArtifactStore::default());
+    let root = temp_root();
+    let blobs = Arc::new(FileBlobStore::new(&root));
+
+    let big = vec![b'a'; 64 * 1024 * 2 + 10];
+    let sha = blobs.put(&big).await.unwrap();
+    let content = ArtifactContent {
+        sha256: sha,
+        media_type: "application/octet-stream".parse::<MediaType>().unwrap(),
+        kind: ArtifactKind::Bundle,
+        sources: vec![ArtifactSource::Run(RUN.parse::<RunId>().unwrap())],
+        sensitivity: Sensitivity::Normal,
+        build: BuildProvenance::none(),
+        capabilities: vec![],
+    };
+    store
+        .create_version(
+            &ArtifactManifest::initial(ARTIFACT.parse().unwrap(), RUN.parse().unwrap(), content),
+            &audit(),
+        )
+        .await
+        .unwrap();
+
+    // Flip a byte in the LAST chunk: a hash-while-emitting implementation would
+    // already have streamed almost the whole blob before noticing.
+    let hex = sha.to_string();
+    let path = root.join(&hex[0..2]).join(&hex[2..4]).join(&hex);
+    let mut tampered = big.clone();
+    let last = tampered.len() - 1;
+    tampered[last] = b'z';
+    tokio::fs::write(&path, &tampered).await.unwrap();
+
+    let (app, token) = app(store, blobs).await;
+    let (status, _h, body) = send(
+        &app,
+        get(
+            &format!("/api/v1/artifacts/{ARTIFACT}/versions/1/blob"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["code"], "artifact.integrity_failed");
+    assert!(
+        !body.windows(8).any(|w| w == [b'a'; 8]),
+        "no blob content may appear in a fail-closed response"
+    );
+}
+
+/// The served-size cap itself (F6.3 threat note #1): a blob over
+/// `MAX_SERVED_BLOB_BYTES` is refused **whole** with a typed 413, not truncated
+/// into a partial download that would not hash to the address in its own URL.
+/// Without this, the streaming rewrite would have bounded per-chunk memory while
+/// leaving total request cost unbounded — which is the half of CF-M3a-A that
+/// actually threatens an 8 GB host.
+#[tokio::test]
+async fn a_blob_over_the_served_cap_is_a_typed_413_not_a_partial_download() {
+    let store = Arc::new(FakeArtifactStore::default());
+    let root = temp_root();
+    let blobs = Arc::new(FileBlobStore::new(&root));
+
+    let oversized = vec![b'q'; (MAX_SERVED_BLOB_BYTES + 1) as usize];
+    let sha = blobs.put(&oversized).await.unwrap();
+    let content = ArtifactContent {
+        sha256: sha,
+        media_type: "application/octet-stream".parse::<MediaType>().unwrap(),
+        kind: ArtifactKind::Bundle,
+        sources: vec![ArtifactSource::Run(RUN.parse::<RunId>().unwrap())],
+        sensitivity: Sensitivity::Normal,
+        build: BuildProvenance::none(),
+        capabilities: vec![],
+    };
+    store
+        .create_version(
+            &ArtifactManifest::initial(ARTIFACT.parse().unwrap(), RUN.parse().unwrap(), content),
+            &audit(),
+        )
+        .await
+        .unwrap();
+    let (app, token) = app(store, blobs).await;
+
+    let (status, _h, body) = send(
+        &app,
+        get(
+            &format!("/api/v1/artifacts/{ARTIFACT}/versions/1/blob"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["code"], "artifact.too_large");
+    assert!(
+        !body.windows(8).any(|w| w == [b'q'; 8]),
+        "a refused blob may not leak a prefix of itself"
     );
 }

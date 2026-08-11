@@ -190,7 +190,7 @@ F6.5 and F6.6 — this milestone's diff is the sandbox.
   skills `provider-adapter`, `low-power` (a Node build is the heaviest thing this system
   spawns — bound it). Deps: F6.1. security-auditor + rust-reviewer + perf-warden mandatory.
 
-- [ ] **F6.3 — Streaming, size-capped blob read (infra + jarvisd)** · *may be Sonnet*
+- [x] **F6.3 — Streaming, size-capped blob read (infra + jarvisd)** · *may be Sonnet* — landed 2026-08-11, ahead of F6.2 (no structural dependency); CF-M3a-A closed
   Closes **CF-M3a-A**, whose stated trigger is exactly this milestone: `BlobStore::get`
   returns `Vec<u8>` and the blob endpoint buffers the whole artifact with no served-size
   cap. Markdown notes and patches were small; bundles are not. Needs a streaming/size-capped

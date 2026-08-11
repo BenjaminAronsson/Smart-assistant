@@ -226,6 +226,20 @@ impl BlobStore for FakeBlobs {
     async fn get(&self, hash: &Sha256) -> Result<Option<Vec<u8>>, BlobStoreError> {
         Ok(self.blobs.lock().unwrap().get(&hash.to_string()).cloned())
     }
+    async fn open(
+        &self,
+        hash: &Sha256,
+        max_bytes: u64,
+    ) -> Result<Option<jarvis_application::ports::BlobRead>, BlobStoreError> {
+        match self.get(hash).await? {
+            Some(bytes) if bytes.len() as u64 > max_bytes => Err(BlobStoreError::TooLarge {
+                len: bytes.len() as u64,
+                max: max_bytes,
+            }),
+            Some(bytes) => Ok(Some(jarvis_application::ports::BlobRead::from_bytes(bytes))),
+            None => Ok(None),
+        }
+    }
     async fn contains(&self, hash: &Sha256) -> Result<bool, BlobStoreError> {
         Ok(self.blobs.lock().unwrap().contains_key(&hash.to_string()))
     }

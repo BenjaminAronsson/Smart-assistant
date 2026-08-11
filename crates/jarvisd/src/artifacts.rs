@@ -15,7 +15,9 @@ use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use jarvis_application::ports::{ArtifactStore, BlobStore, BlobStoreError, RepositoryError};
+use jarvis_application::ports::{
+    ArtifactStore, BlobStore, BlobStoreError, MAX_SERVED_BLOB_BYTES, RepositoryError,
+};
 use jarvis_contracts::artifacts::{
     ArtifactKindDto, ArtifactManifestDto, ArtifactSensitivityDto, ArtifactSourceDto,
     ArtifactSourceKindDto, ArtifactVersionsResponse, BuildNetworkDto, BuildProvenanceDto,
@@ -138,8 +140,17 @@ pub async fn get_blob(
         return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response());
     }
 
-    let bytes = match api.blobs.get(manifest.sha256()).await {
-        Ok(Some(bytes)) => bytes,
+    // F6.3 (closes CF-M3a-A): stream the blob instead of buffering it, under a
+    // served-size cap. `open` verifies the whole blob *before* yielding a byte,
+    // so the fail-closed behaviour below is unchanged — a corrupt blob is still
+    // a 500 with no content — while peak memory drops from one blob to one
+    // chunk. Bundles (M6) are the artifacts that made this necessary.
+    let blob = match api
+        .blobs
+        .open(manifest.sha256(), MAX_SERVED_BLOB_BYTES)
+        .await
+    {
+        Ok(Some(blob)) => blob,
         // Manifest exists but its blob does not — a dangling manifest. The
         // invariant is blob-before-manifest, so this is a data-integrity
         // condition worth surfacing, not a routine miss; warn, then 404.
@@ -153,6 +164,17 @@ pub async fn get_blob(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 ErrorCode::ArtifactIntegrityFailed,
                 "artifact blob failed integrity verification",
+                None,
+            ));
+        }
+        Err(BlobStoreError::TooLarge { len, max }) => {
+            // Refused whole, never truncated: a prefix of a blob is not the
+            // blob, and its bytes would not hash to the address in the URL.
+            tracing::error!(artifact = %id, len, max, "artifact blob exceeds the served-size cap");
+            return Err(problem(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                ErrorCode::ArtifactTooLarge,
+                "artifact blob exceeds the served-size limit",
                 None,
             ));
         }
@@ -173,6 +195,8 @@ pub async fn get_blob(
     // otherwise execute script in that origin on direct navigation. `nosniff`
     // pins the declared type and `attachment` forces download, not inline render
     // — the HUD renderer (F3b.3) is the only sanctioned place artifacts render.
+    // F6.4's sandboxed bundle route is a *separate* route; this one is never
+    // relaxed to serve a renderable app.
     Ok((
         StatusCode::OK,
         [
@@ -180,13 +204,15 @@ pub async fn get_blob(
                 header::CONTENT_TYPE,
                 manifest.media_type().as_str().to_owned(),
             ),
+            // Known because the blob was verified end to end before streaming.
+            (header::CONTENT_LENGTH, blob.len.to_string()),
             (header::ETAG, etag),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
             (header::CONTENT_DISPOSITION, "attachment".to_owned()),
             // Content-addressed ⇒ a given URL's bytes never change.
             (header::CACHE_CONTROL, "private, immutable".to_owned()),
         ],
-        Body::from(bytes),
+        Body::from_stream(blob.chunks),
     )
         .into_response())
 }
