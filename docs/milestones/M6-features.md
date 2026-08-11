@@ -170,7 +170,7 @@ F6.5 and F6.6 — this milestone's diff is the sandbox.
 
 ## Phase B — Build the bundle
 
-- [ ] **F6.2 — Sandboxed app builder worker + host (adapters + tools/)** · *plumbing may be Sonnet; the ToolPolicy is strong-model*
+- [x] **F6.2 — Sandboxed app builder worker + host (adapters + tools/)** · *plumbing may be Sonnet; the ToolPolicy is strong-model* — landed 2026-08-11; container launch profile deferred (**D-M6-1**, same shape as D-M3a-2)
   `tools/app-builder`: a locked template (Vite, per F6.1's ADR) built by a Node worker with
   a **dependency allowlist, a committed lockfile, network disabled, and size/time limits**,
   plus the static checks docs/06 §6 requires. `jarvis-adapters::app_builder`: a narrow

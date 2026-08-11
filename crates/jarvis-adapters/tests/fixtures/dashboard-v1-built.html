@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jarvis app</title>
+    <script type="module" crossorigin>(function(){const t=document.createElement("link").relList;if(t&&t.supports&&t.supports("modulepreload"))return;for(const e of document.querySelectorAll('link[rel="modulepreload"]'))r(e);new MutationObserver(e=>{for(const n of e)if(n.type==="childList")for(const o of n.addedNodes)o.tagName==="LINK"&&o.rel==="modulepreload"&&r(o)}).observe(document,{childList:!0,subtree:!0});function a(e){const n={};return e.integrity&&(n.integrity=e.integrity),e.referrerPolicy&&(n.referrerPolicy=e.referrerPolicy),e.crossOrigin==="use-credentials"?n.credentials="include":e.crossOrigin==="anonymous"?n.credentials="omit":n.credentials="same-origin",n}function r(e){if(e.ep)return;e.ep=!0;const n=a(e);fetch(e.href,n)}})();const i="Kitchen",d=[{name:"kitchen_temp",capability:"home.read_state",target:"sensor.kitchen_temperature"}],s={title:i,bindings:d};function l(c){const t=document.createElement("section");t.className="card",t.dataset.binding=c.name,t.dataset.capability=c.capability;const a=document.createElement("h2");a.textContent=c.name.replace(/_/g," "),t.append(a);const r=document.createElement("p");r.className="value",r.textContent="—",t.append(r);const e=document.createElement("p");return e.className="target",e.textContent=c.target,t.append(e),t}function p(c){const t=document.createElement("header"),a=document.createElement("h1");if(a.textContent=s.title,t.append(a),c.append(t),s.bindings.length===0){const e=document.createElement("p");e.className="empty",e.textContent="This app declares no data.",c.append(e);return}const r=document.createElement("div");r.className="grid";for(const e of s.bindings)r.append(l(e));c.append(r)}p(document.getElementById("app"));</script>
+    <style rel="stylesheet" crossorigin>:root{color-scheme:dark light;--bg: #14161a;--fg: #e8eaed;--muted: #9aa0a6;--card: #1e2128}body{margin:0;padding:1.5rem;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,sans-serif;line-height:1.4}h1{margin:0 0 1.25rem;font-size:1.5rem;font-weight:600}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(12rem,1fr));gap:.75rem}.card{background:var(--card);border-radius:.75rem;padding:1rem}.card h2{margin:0;font-size:.8rem;font-weight:500;text-transform:capitalize;color:var(--muted)}.value{margin:.35rem 0 0;font-size:1.75rem;font-variant-numeric:tabular-nums}.target,.empty{margin:.35rem 0 0;font-size:.75rem;color:var(--muted);overflow-wrap:anywhere}</style>
+  </head>
+  <body>
+    <main id="app" aria-live="polite"></main>
+  </body>
+</html>
