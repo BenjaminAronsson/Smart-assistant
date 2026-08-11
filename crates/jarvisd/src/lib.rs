@@ -5,6 +5,7 @@
 pub mod api;
 pub mod appbridge;
 pub mod approvals;
+pub mod apptool;
 pub mod artifacts;
 pub mod auth;
 pub mod cards;

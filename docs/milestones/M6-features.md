@@ -249,7 +249,7 @@ F6.5 and F6.6 — this milestone's diff is the sandbox.
   `policy-grants`, `ws-contracts`. Deps: F6.4. security-auditor mandatory; tests-first is
   non-negotiable here (policy/grant surface, CLAUDE.md).
 
-- [ ] **F6.6 — The dashboard app, end to end (application + adapters + web)** · *strong model*
+- [x] **F6.6 — The dashboard app, end to end (application + adapters + web)** · *strong model* — landed 2026-08-11; `app.generate` + `[apps]` config; end-to-end test runs the **real** worker and Vite build (**D-M6-2**: the artifact's `created_by_run` is a correlation id, not the conversational run — same gap as D-M3a-3)
   **Exit evidence #1.** The generation path as a user experiences it: a request produces an
   `app.generate` tool proposal → policy/approval → F6.2 builds → a `Bundle` artifact lands
   in the CAS with provenance → it opens in the F6.4 sandbox → it renders live data it

@@ -142,6 +142,24 @@ pub fn register_web_tools(
     Ok(())
 }
 
+/// Register `app.generate` against a live app-builder host (F6.6, FR-18).
+///
+/// jarvisd calls this **only** when `[apps]` is enabled — the same opt-in stance
+/// as every other capability that spawns a process. No configured builder ⇒ no
+/// `app.generate` ⇒ a model that proposes it gets `policy.unknown_tool`, which
+/// is the correct answer on a host that cannot build.
+pub fn register_app_tools(
+    registry: &mut ToolRegistry,
+    builder: Arc<jarvis_adapters::app_builder::AppBuilderHost>,
+) -> anyhow::Result<()> {
+    registry
+        .register(wrap_with_timeout(
+            crate::apptool::AppGenerateTool::descriptor(builder),
+        ))
+        .map_err(|e| anyhow::anyhow!("registering app.generate: {e}"))?;
+    Ok(())
+}
+
 /// Register the media tools against a live [`MediaController`] (F3a.7, FR-22,
 /// docs/02 §11a). jarvisd calls this **only** when `[integrations.media]` is
 /// enabled and
