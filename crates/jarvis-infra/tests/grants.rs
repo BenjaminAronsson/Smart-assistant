@@ -20,6 +20,27 @@ const USER: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const DEVICE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
 const RUN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB1";
 
+/// A grant is bound to a *device* (docs/06 §4), and since the M7 gate the
+/// store checks that the device is still active before consuming one — a
+/// revoked device's grants die with it. Production always has this row,
+/// because a grant is only ever minted for an authenticated device; the
+/// fixture has to build the world the same way the real caller does.
+async fn seed_owner_device(pool: &PgPool) {
+    sqlx::query("INSERT INTO identity.users (id, name, created_at) VALUES ($1, 'owner', now())")
+        .bind(USER)
+        .execute(pool)
+        .await
+        .expect("seed user");
+    sqlx::query(
+        "INSERT INTO identity.devices          (id, user_id, name, token_hash, scopes, device_class, created_at)          VALUES ($1, $2, 'laptop', 'hash-grants', ARRAY['ui'], 'owner-ui', now())",
+    )
+    .bind(DEVICE)
+    .bind(USER)
+    .execute(pool)
+    .await
+    .expect("seed device");
+}
+
 fn args() -> V {
     V::obj([("to", V::str("alice@example.com")), ("body", V::str("hi"))])
 }
@@ -68,6 +89,7 @@ async fn consumed_at(pool: &PgPool, grant: &ExecutionGrant) -> Option<time::Offs
 
 #[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
 async fn mint_then_validate_consumes_once_and_replay_is_rejected(pool: PgPool) {
+    seed_owner_device(&pool).await;
     let store = PgGrantStore::new(pool.clone());
 
     let grant = store.mint(binding()).await.unwrap();
@@ -99,6 +121,7 @@ async fn mint_then_validate_consumes_once_and_replay_is_rejected(pool: PgPool) {
 
 #[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
 async fn concurrent_validation_consumes_exactly_once(pool: PgPool) {
+    seed_owner_device(&pool).await;
     // The single-use guarantee under a real race, not just by analysis: two
     // validators hit the same grant at once. `SELECT ... FOR UPDATE` must let
     // exactly one consume it; the other blocks, then sees consumed_at and reports
@@ -127,6 +150,7 @@ async fn concurrent_validation_consumes_exactly_once(pool: PgPool) {
 
 #[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
 async fn edited_arguments_fail_validation_and_do_not_consume(pool: PgPool) {
+    seed_owner_device(&pool).await;
     let store = PgGrantStore::new(pool.clone());
     let grant = store.mint(binding()).await.unwrap();
 
@@ -151,6 +175,7 @@ async fn edited_arguments_fail_validation_and_do_not_consume(pool: PgPool) {
 
 #[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
 async fn a_grant_bound_to_another_run_is_rejected(pool: PgPool) {
+    seed_owner_device(&pool).await;
     let store = PgGrantStore::new(pool.clone());
     let grant = store.mint(binding()).await.unwrap();
 
@@ -168,6 +193,7 @@ async fn a_grant_bound_to_another_run_is_rejected(pool: PgPool) {
 
 #[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
 async fn an_expired_grant_is_rejected(pool: PgPool) {
+    seed_owner_device(&pool).await;
     let store = PgGrantStore::new(pool.clone());
     let grant = store.mint(binding()).await.unwrap();
 
@@ -184,6 +210,7 @@ async fn an_expired_grant_is_rejected(pool: PgPool) {
 
 #[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
 async fn an_unknown_grant_is_missing(pool: PgPool) {
+    seed_owner_device(&pool).await;
     let store = PgGrantStore::new(pool.clone());
     // A fully fabricated grant that was never minted — nothing is in the table,
     // so the row lookup fails before any binding check.
@@ -206,5 +233,37 @@ async fn an_unknown_grant_is_missing(pool: PgPool) {
             .validate(&grant, &matching_invocation(), SystemTime::now())
             .await,
         Err(GrantError::Missing)
+    );
+}
+
+/// **M7 gate S-1.** A grant is bound to a device, so revoking the device must
+/// kill the grant. Before this, revoking a stolen `owner-ui` device left every
+/// already-minted R2/R3 grant consumable — and the attacker no longer had to
+/// be present for the effect to land, because the grant carries the authority
+/// on its own.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_revoked_devices_grant_can_no_longer_be_consumed(pool: PgPool) {
+    seed_owner_device(&pool).await;
+    let store = PgGrantStore::new(pool.clone());
+    let now = SystemTime::now();
+    let grant = store.mint(binding()).await.expect("mints");
+
+    // Revoked between minting and execution — the stolen-laptop window.
+    sqlx::query("UPDATE identity.devices SET revoked_at = now() WHERE id = $1")
+        .bind(DEVICE)
+        .execute(&pool)
+        .await
+        .expect("revoke");
+
+    let outcome = store.validate(&grant, &matching_invocation(), now).await;
+    assert!(
+        matches!(outcome, Err(GrantError::WrongActor)),
+        "a revoked device's grant must not execute: {outcome:?}"
+    );
+
+    // And it stays unconsumed rather than being silently burned.
+    assert!(
+        consumed_at(&pool, &grant).await.is_none(),
+        "a refused grant is not consumed"
     );
 }

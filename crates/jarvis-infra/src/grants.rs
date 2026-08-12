@@ -199,6 +199,25 @@ async fn check_and_consume(
     .expect("grant validate: select")
     .ok_or(GrantError::Missing)?;
 
+    // A grant is bound to a device (docs/06 §4), so a revoked device's grants
+    // die with it — docs/06 §7 promises revocation reaches "device keys,
+    // **grants**, provider profiles", and until now this path never asked
+    // (M7 gate S-1). Without it, revoking a stolen owner device left every
+    // already-minted R2/R3 grant consumable: the attacker no longer has to be
+    // present for the effect to land.
+    let device_active: Option<bool> = sqlx::query_scalar!(
+        "SELECT revoked_at IS NULL FROM identity.devices WHERE id = $1",
+        row.device_id,
+    )
+    .fetch_optional(&mut **tx)
+    .await
+    .expect("grant validate: device")
+    .flatten();
+    // Unknown device ⇒ not active (fail closed).
+    if !device_active.unwrap_or(false) {
+        return Err(GrantError::WrongActor);
+    }
+
     let row_version = ToolVersion::new(
         row.tool_version_major as u64,
         row.tool_version_minor as u64,

@@ -505,6 +505,25 @@ fn spotify_registry(transport: Arc<FakeSpotify>) -> ToolRegistry {
     registry
 }
 
+/// The device every grant in this file is bound to (see the M7 note above).
+async fn seed_grant_device(pool: &PgPool) {
+    sqlx::query("INSERT INTO identity.users (id, name, created_at) VALUES ($1, 'owner', now())")
+        .bind(USER)
+        .execute(pool)
+        .await
+        .expect("seed user");
+    sqlx::query(
+        "INSERT INTO identity.devices \
+         (id, user_id, name, token_hash, scopes, device_class, created_at) \
+         VALUES ($1, $2, 'laptop', 'hash-m5', ARRAY['ui'], 'owner-ui', now())",
+    )
+    .bind(DEVICE)
+    .bind(USER)
+    .execute(pool)
+    .await
+    .expect("seed device");
+}
+
 const DEVICES: &str = r#"{"devices": [
   {"id": "kitchendeviceid0001", "name": "Kitchen Sonos", "is_active": false},
   {"id": "deskdeviceid0002", "name": "Desk", "is_active": true}
@@ -863,6 +882,11 @@ async fn evidence2_an_allowlisted_light_is_driven_through_policy_and_audit(pool:
 /// on real infrastructure.
 #[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
 async fn evidence2_a_broad_home_action_needs_approval_and_a_single_use_grant(pool: PgPool) {
+    // A grant is bound to a device, and since the M7 gate the store refuses to
+    // consume one whose device is revoked or absent (docs/06 §7). Production
+    // always has this row — a grant is only minted for an authenticated device
+    // — so the fixture builds the world the same way the real caller does.
+    seed_grant_device(&pool).await;
     let home = FakeHome::new().add(
         "scene.movie_night",
         "unknown",

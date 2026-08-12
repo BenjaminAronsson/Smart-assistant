@@ -215,6 +215,22 @@ pub async fn open_window(
     }
     let now = SystemTime::now();
     let (code, expires_at) = state.pairing.open_window(now);
+    // Opening the door to new enrolment is an authority-relevant owner action;
+    // it gets a durable record, not just a log line (M7 gate S-2).
+    state
+        .auth
+        .record_refusal(AuditEvent {
+            occurred_at: now,
+            actor: format!("device:{}", caller.device_id),
+            event_type: "device.pairing_window_opened".to_owned(),
+            target: "identity:pairing-window".to_owned(),
+            correlation_id: None,
+            payload_json: serde_json::json!({
+                "ttlSeconds": WINDOW_TTL.as_secs(),
+            })
+            .to_string(),
+        })
+        .await;
     // Deliberate: the owner asked for this code and is looking at the reply.
     // It is not logged.
     tracing::info!(
@@ -253,10 +269,26 @@ pub async fn start(
     // stored key is known-good before anything is issued against it.
     let public_key = parse_public_key(&request.public_key).ok_or_else(invalid_public_key)?;
 
-    let class = requested_class(&request.requested_class).ok_or_else(class_not_grantable)?;
+    let Some(class) = requested_class(&request.requested_class) else {
+        state
+            .auth
+            .record_refusal(pairing_refusal(
+                "device.pairing_refused",
+                "requested a class it may not have",
+            ))
+            .await;
+        return Err(class_not_grantable());
+    };
 
     let now = SystemTime::now();
     if !state.pairing.check_code(&request.pairing_code, now) {
+        // A wrong or expired code on an unauthenticated LAN route is the
+        // docs/06 §5 "remote node impersonation" signal, and logs are not the
+        // append-only record that threat deserves (M7 gate S-2).
+        state
+            .auth
+            .record_refusal(pairing_refusal("device.pairing_refused", "code rejected"))
+            .await;
         // Same answer whether the window is closed, expired, or the code is
         // wrong — no oracle for which.
         return Err(problem(
@@ -319,12 +351,22 @@ pub async fn complete(
             challenge_rejected()
         })?;
     let verifying_key = VerifyingKey::from_bytes(&key_bytes).map_err(|_| challenge_rejected())?;
-    verifying_key
+    if verifying_key
         .verify_strict(&challenge.nonce, &Signature::from_bytes(&signature_bytes))
-        .map_err(|_| {
-            tracing::warn!("node pairing signature did not verify");
-            challenge_rejected()
-        })?;
+        .is_err()
+    {
+        tracing::warn!("node pairing signature did not verify");
+        // The sharpest signal on this surface: someone holds a valid challenge
+        // and cannot prove the key it was issued to (M7 gate S-2).
+        state
+            .auth
+            .record_refusal(pairing_refusal(
+                "device.pairing_refused",
+                "signature did not verify",
+            ))
+            .await;
+        return Err(challenge_rejected());
+    }
 
     // Verified. The class was fixed when the challenge was issued.
     let token = generate_token();
@@ -422,6 +464,21 @@ fn requested_class(raw: &str) -> Option<DeviceClass> {
         DeviceClass::RoomNode => Some(DeviceClass::RoomNode),
         // The one class that carries tool authority is not on the menu.
         DeviceClass::OwnerUi => None,
+    }
+}
+
+/// An append-only record of a refused pairing attempt. The actor is
+/// unauthenticated by construction — that is what pairing is — so the event
+/// names the surface rather than a device, and carries no attacker-controlled
+/// text.
+fn pairing_refusal(event_type: &str, reason: &'static str) -> AuditEvent {
+    AuditEvent {
+        occurred_at: SystemTime::now(),
+        actor: "unauthenticated".to_owned(),
+        event_type: event_type.to_owned(),
+        target: "identity:pairing".to_owned(),
+        correlation_id: None,
+        payload_json: serde_json::json!({ "reason": reason }).to_string(),
     }
 }
 
