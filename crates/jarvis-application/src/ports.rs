@@ -221,6 +221,15 @@ pub trait IdentityStore: Send + Sync {
         device: &jarvis_domain::identity::Device,
         audit: &AuditEvent,
     ) -> Result<NodePairOutcome, RepositoryError>;
+    /// Record that a device was seen (F7.4). Called when a socket opens, so
+    /// the owner's device list can distinguish "paired" from "actually here".
+    /// Best-effort by nature: a failure must not refuse the connection, so the
+    /// caller logs and continues.
+    async fn touch_last_seen(
+        &self,
+        device_id: &jarvis_domain::ids::DeviceId,
+        at: std::time::SystemTime,
+    ) -> Result<(), RepositoryError>;
     /// Is this device still active? The WebSocket upgrade re-asks after
     /// subscribing to the revocation bus, because a socket authorizes once and
     /// then holds that authority for its lifetime: without this read, a

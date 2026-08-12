@@ -249,8 +249,14 @@ async fn post_message(harness: &Harness, body: &str) -> serde_json::Value {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "message POST: {}",
+        String::from_utf8_lossy(&bytes)
+    );
     serde_json::from_slice(&bytes).unwrap()
 }
 
@@ -673,5 +679,158 @@ async fn a_repeated_revocation_still_closes_a_surviving_socket(pool: PgPool) {
         again.status(),
         StatusCode::OK,
         "an already-revoked device re-announces rather than erroring"
+    );
+}
+
+/// **CF-8 at the socket, not just in the pure function** (F7.4). A room node
+/// holds a live connection while the owner runs a turn; the node must receive
+/// none of it — neither live nor on a `?since=0` replay, which is where an
+/// unfiltered channel is worst: a reconnecting node would be handed the whole
+/// household history in one burst.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_node_receives_none_of_the_owners_session_traffic(pool: PgPool) {
+    let harness = start(pool.clone(), FakeModel::streaming(["Hello, ", "world"])).await;
+    let (_node_id, node_token) = seed_room_node(&pool).await;
+
+    // The node connects and listens from now on.
+    let url = format!("ws://{}/ws/v1", harness.addr);
+    let mut request = url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {node_token}").parse().unwrap(),
+    );
+    let (mut node_socket, _) = connect_async(request).await.expect("node ws upgrade");
+
+    // The owner runs a turn, which produces session-channel traffic.
+    post_message(&harness, r#"{"content":[{"type":"text","text":"hello"}]}"#).await;
+    let owner_events = collect_ws(&harness, Some(0), "run.completed").await;
+    assert!(
+        types(&owner_events).iter().any(|t| t.starts_with("run.")),
+        "the owner sees their own run: {:?}",
+        types(&owner_events)
+    );
+
+    // The node, meanwhile, has been handed nothing.
+    let mut node_saw = Vec::new();
+    let deadline = tokio::time::sleep(Duration::from_secs(2));
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = &mut deadline => break,
+            frame = node_socket.next() => match frame {
+                Some(Ok(WsMessage::Text(text))) => {
+                    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    node_saw.push(value["type"].as_str().unwrap_or_default().to_owned());
+                }
+                Some(Ok(WsMessage::Close(_))) | None => break,
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        node_saw.is_empty(),
+        "a satellite must not see the owner's session traffic: {node_saw:?}"
+    );
+
+    // And the replay path is filtered too — the same node asking for
+    // everything since the beginning of time still gets nothing.
+    let url = format!("ws://{}/ws/v1?since=0", harness.addr);
+    let mut request = url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {node_token}").parse().unwrap(),
+    );
+    let (mut replaying, _) = connect_async(request).await.expect("node replay upgrade");
+    let mut replayed = Vec::new();
+    let deadline = tokio::time::sleep(Duration::from_secs(2));
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = &mut deadline => break,
+            frame = replaying.next() => match frame {
+                Some(Ok(WsMessage::Text(text))) => {
+                    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    replayed.push(value["type"].as_str().unwrap_or_default().to_owned());
+                }
+                Some(Ok(WsMessage::Close(_))) | None => break,
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        replayed.is_empty(),
+        "replay must be filtered by the same rule as live delivery: {replayed:?}"
+    );
+
+    // The owner's own replay still works — a filter that blocks everyone is
+    // not a fix.
+    let owner_replay = collect_ws(&harness, Some(0), "run.completed").await;
+    assert!(!owner_replay.is_empty(), "the owner still replays");
+}
+
+/// Presence (F7.4): the owner's device list distinguishes "paired" from
+/// "actually here". Recorded when the socket opens, and never for a revoked
+/// device — a revoked row is not present, it is gone.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn connecting_records_the_device_as_seen(pool: PgPool) {
+    let harness = start(pool.clone(), FakeModel::streaming(["hi"])).await;
+    let (node_id, node_token) = seed_room_node(&pool).await;
+
+    let before: Option<time::OffsetDateTime> =
+        sqlx::query_scalar("SELECT last_seen_at FROM identity.devices WHERE id = $1")
+            .bind(&node_id)
+            .fetch_one(&pool)
+            .await
+            .expect("query");
+    assert!(before.is_none(), "not seen before it connects");
+
+    let url = format!("ws://{}/ws/v1", harness.addr);
+    let mut request = url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {node_token}").parse().unwrap(),
+    );
+    let (socket, _) = connect_async(request).await.expect("node ws upgrade");
+    drop(socket);
+
+    // The write happens on the connection path; give it a moment to land.
+    let mut seen = None;
+    for _ in 0..20 {
+        seen = sqlx::query_scalar("SELECT last_seen_at FROM identity.devices WHERE id = $1")
+            .bind(&node_id)
+            .fetch_one(&pool)
+            .await
+            .expect("query");
+        if seen.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let seen: Option<time::OffsetDateTime> = seen;
+    assert!(seen.is_some(), "connecting records presence");
+
+    // The owner's device list surfaces it.
+    let response = harness
+        .app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/devices")
+                .header(header::AUTHORIZATION, format!("Bearer {}", harness.token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let node = body["devices"]
+        .as_array()
+        .expect("devices")
+        .iter()
+        .find(|d| d["deviceClass"] == "room-node")
+        .expect("node listed");
+    assert!(
+        node["lastSeenAt"].is_string(),
+        "the device list shows presence: {node}"
     );
 }

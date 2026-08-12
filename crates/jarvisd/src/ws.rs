@@ -39,6 +39,7 @@ use jarvis_contracts::envelope::{Channel, EventEnvelope};
 use jarvis_contracts::events::TransientEvent;
 use jarvis_contracts::voice::{VoiceControlDto, VoiceErrorCodeDto, VoiceSpeakEndDto};
 use jarvis_domain::display::Surface;
+use jarvis_domain::identity::{ClassScope, DeviceClass};
 use jarvis_domain::ids::{RunId, SessionId};
 use jarvis_infra::dispatcher::{OutboxPublisher, OutboxRecord, PublishError};
 use serde::Deserialize;
@@ -496,6 +497,98 @@ impl RunEventSink for WsHub {
             | RunUpdate::Finished { .. }
             | RunUpdate::CompensationRegistered { .. } => {}
         }
+    }
+}
+
+/// Which envelopes a given connection is allowed to receive (F7.4, **CF-8**).
+///
+/// # The hole this closes
+///
+/// Until now the hub sent **every** envelope to **every** authenticated
+/// socket, and `replay_since` replayed every outbox row the same way. That was
+/// inert while the only device was the owner's own browser, which is why the
+/// M2 gate recorded it as dormant and scheduled it "before M7". F7.1 and F7.2
+/// are what end the dormancy: there can now be a second device on that socket,
+/// and the highest-value payload on the channel is `approval.requested` — it
+/// carries the exact effect, the real arguments (a recipient, a message body)
+/// and the approval id, which is a decision oracle.
+///
+/// # The rule
+///
+/// * **Session** — the owner's channel: runs, messages, approvals, artifacts,
+///   memories. Only a device holding `ui`. A satellite has no business
+///   knowing what the owner asked, let alone what was proposed on their
+///   behalf.
+/// * **Display** — surfaces. Devices that present: `display-agent` holders,
+///   and the owner's shell (which renders the same canvases). Per-*node*
+///   addressing lands in F7.5; this is the class-level gate beneath it.
+/// * **Voice** — capture and speech, restricted to the socket the stream
+///   belongs to. This is the M5 carry-forward: `broadcast_voice_transcript`
+///   fanned live microphone text to every connected socket, which was
+///   defensible when every socket was the owner's and is not once a kitchen
+///   satellite is listening. An envelope naming a stream reaches only the
+///   connection that owns that stream.
+///
+/// Deliberately a pure function over (envelope, class, owned stream): it is
+/// the security-relevant decision in this file, so it is testable as a table
+/// without standing up a hub, and it is applied at **both** delivery sites —
+/// a filter that exists only on the live path is the classic form of this bug.
+pub(crate) fn delivers_to(
+    envelope: &EventEnvelope,
+    class: DeviceClass,
+    owned_stream: Option<&str>,
+) -> bool {
+    match envelope.channel {
+        Channel::Session => class.holds(ClassScope::Ui.as_str()),
+        Channel::Display => {
+            class.holds(ClassScope::DisplayAgent.as_str()) || class.holds(ClassScope::Ui.as_str())
+        }
+        Channel::Voice => {
+            if !(class.holds(ClassScope::VoiceCapture.as_str())
+                || class.holds(ClassScope::Ui.as_str()))
+            {
+                return false;
+            }
+            match envelope.payload.get("streamId").and_then(|v| v.as_str()) {
+                // Addressed to a stream: only its owner hears it.
+                Some(stream) => owned_stream == Some(stream),
+                // No stream named — a pipeline-wide notice. The owner sees it;
+                // a satellite has nothing to do with it.
+                None => class.holds(ClassScope::Ui.as_str()),
+            }
+        }
+    }
+}
+
+/// How many capture streams one socket is remembered as owning. A socket that
+/// opens more than a handful of streams is a long-lived UI; the oldest are no
+/// longer receiving events anyone is waiting for.
+const MAX_REMEMBERED_STREAMS: usize = 8;
+
+/// Remember an id this socket owns — a capture stream or a spoken utterance.
+/// Bounded: the list grows with client behaviour, and the oldest entries are
+/// no longer receiving events anyone is waiting for.
+fn register_owned_stream(owned: &mut std::collections::VecDeque<String>, id: String) {
+    if owned.iter().any(|s| s == &id) {
+        return;
+    }
+    owned.push_back(id);
+    while owned.len() > MAX_REMEMBERED_STREAMS {
+        owned.pop_front();
+    }
+}
+
+/// [`delivers_to`] against every stream this socket owns.
+pub(crate) fn delivers_to_owner_of(
+    envelope: &EventEnvelope,
+    class: DeviceClass,
+    owned: &std::collections::VecDeque<String>,
+) -> bool {
+    match envelope.payload.get("streamId").and_then(|v| v.as_str()) {
+        Some(stream) => {
+            owned.iter().any(|s| s == stream) && delivers_to(envelope, class, Some(stream))
+        }
+        None => delivers_to(envelope, class, None),
     }
 }
 
@@ -1098,7 +1191,17 @@ async fn handle_socket(
     let mut revocations = state.revocations.subscribe();
     if let Some(identity) = &state.identity {
         match identity.is_device_active(&device.device_id).await {
-            Ok(true) => {}
+            Ok(true) => {
+                // Presence (F7.4): the device list distinguishes "paired" from
+                // "actually here". Best-effort — a presence write must never
+                // refuse a connection that is otherwise authorized.
+                if let Err(e) = identity
+                    .touch_last_seen(&device.device_id, SystemTime::now())
+                    .await
+                {
+                    tracing::warn!(error = %e, "recording device presence failed");
+                }
+            }
             Ok(false) => {
                 tracing::info!(
                     device_id = %device.device_id,
@@ -1121,13 +1224,21 @@ async fn handle_socket(
         }
     }
     let mut voice_stream: Option<ActiveVoiceStream> = None;
+    // Every capture stream THIS socket has opened. The currently-open stream is
+    // not enough: a stream's **final** transcript settles after the stream is
+    // torn down (that is what "final" means), so keying delivery on the live
+    // stream would drop the socket's own last utterance — the one that starts
+    // the run. Bounded, because it grows with client behaviour.
+    let mut owned_streams: std::collections::VecDeque<String> = std::collections::VecDeque::new();
     let mut speech: Option<ActiveSpeech> = None;
     // Settled transcripts travel task → loop, because only the loop holds the
     // authenticated device identity a run must be attributed to.
     let (finals_tx, mut finals_rx) = mpsc::channel::<VoiceTurn>(4);
 
     if let Some(since) = since
-        && replay_since(&mut socket, &state, since).await.is_err()
+        && replay_since(&mut socket, &state, since, &device)
+            .await
+            .is_err()
     {
         return; // client gone (or replay failed → it can REST-resync)
     }
@@ -1216,12 +1327,16 @@ async fn handle_socket(
             // has already committed to (an utterance that is *finished*) drains
             // ahead of work that is only just arriving.
             Some(turn) = finals_rx.recv() => {
-                if start_voice_turn(&mut socket, &state, &device, &mut speech, turn).await.is_err() {
+                if start_voice_turn(&mut owned_streams, &mut socket, &state, &device, &mut speech, turn).await.is_err() {
                     shut_down!();
                 }
             }
             received = rx.recv() => match received {
                 Ok(envelope) => {
+                    // CF-8: what this device may see, decided per envelope.
+                    if !delivers_to_owner_of(&envelope, device.class, &owned_streams) {
+                        continue;
+                    }
                     if send_envelope(&mut socket, &envelope).await.is_err() {
                         shut_down!();
                     }
@@ -1291,6 +1406,10 @@ async fn handle_socket(
                                 );
                                 continue;
                             }
+                            // This socket now owns the stream, so its events —
+                            // including the final transcript that settles after
+                            // teardown — reach it and nothing else (F7.4).
+                            register_owned_stream(&mut owned_streams, stream_id.clone());
                             // The per-stream format is client-controlled and is
                             // handed straight to the speech service; the
                             // `[voice].audio` config constrains only what the
@@ -1369,6 +1488,7 @@ async fn handle_socket(
 
 /// Turn a settled transcript into a run, then bind spoken output to it.
 async fn start_voice_turn(
+    owned_streams: &mut std::collections::VecDeque<String>,
     socket: &mut WebSocket,
     state: &WsState,
     device: &crate::auth::DeviceContext,
@@ -1410,6 +1530,13 @@ async fn start_voice_turn(
             ack.run_id,
             state.shutdown.child_token(),
         ));
+        // Voice-pipeline errors are broadcast keyed by the *utterance* id in
+        // the same `streamId` field a capture stream uses, so this socket must
+        // own that id too or it would never hear that its own speech failed
+        // (F7.4).
+        if let Some(active) = speech.as_ref() {
+            register_owned_stream(owned_streams, active.utterance_id.clone());
+        }
     }
     Ok(())
 }
@@ -1472,7 +1599,17 @@ async fn forward_speech_chunk(
 }
 
 /// Replay persisted domain events with `id > since`, paging through the log.
-async fn replay_since(socket: &mut WebSocket, state: &WsState, since: i64) -> Result<(), ()> {
+///
+/// Filtered by the same [`delivers_to`] rule as live delivery (F7.4, CF-8).
+/// Replay is where an unfiltered channel is *worst*: a node reconnecting with
+/// `?since=0` would be handed the entire history of the household's runs and
+/// approval payloads in one burst.
+async fn replay_since(
+    socket: &mut WebSocket,
+    state: &WsState,
+    since: i64,
+    device: &crate::auth::DeviceContext,
+) -> Result<(), ()> {
     let mut cursor = since;
     loop {
         let rows = match state.events.since(cursor, REPLAY_PAGE).await {
@@ -1486,7 +1623,12 @@ async fn replay_since(socket: &mut WebSocket, state: &WsState, since: i64) -> Re
         let n = rows.len();
         for row in &rows {
             let envelope = state.hub.domain_envelope(row);
-            send_envelope(socket, &envelope).await?;
+            // No stream is owned yet at replay time: a reconnecting socket has
+            // not opened a capture stream, so stream-addressed voice events
+            // are correctly not its business.
+            if delivers_to(&envelope, device.class, None) {
+                send_envelope(socket, &envelope).await?;
+            }
             cursor = row.id;
         }
         if (n as i64) < REPLAY_PAGE {
@@ -1895,5 +2037,148 @@ mod tests {
         assert_eq!(seq_of(7), 7);
         assert_eq!(seq_of(0), 0);
         assert_eq!(seq_of(-1), 0);
+    }
+}
+
+#[cfg(test)]
+mod delivery_scope_tests {
+    use super::*;
+    use jarvis_domain::identity::DeviceClass;
+
+    fn envelope(channel: Channel, event_type: &str, payload: serde_json::Value) -> EventEnvelope {
+        EventEnvelope {
+            v: CONTRACT_VERSION,
+            seq: 1,
+            channel,
+            event_type: event_type.to_owned(),
+            occurred_at: "2026-08-12T09:00:00Z".to_owned(),
+            trace_id: None,
+            resource_version: None,
+            payload,
+        }
+    }
+
+    /// **CF-8, stated as a table.** Rows are the events that actually travel
+    /// this channel; columns are the classes that can hold a socket. Every
+    /// cell is a deliberate decision rather than whatever the code happens to
+    /// do — which is the whole reason this is a table and not a handful of
+    /// examples.
+    #[test]
+    fn each_class_receives_exactly_its_own_channel() {
+        let session = envelope(
+            Channel::Session,
+            "approval.requested",
+            serde_json::json!({ "approvalId": "a", "exactEffect": "send mail to landlord" }),
+        );
+        let display = envelope(
+            Channel::Display,
+            "display.directive",
+            serde_json::json!({ "surface": "canvas" }),
+        );
+        let voice_mine = envelope(
+            Channel::Voice,
+            "voice.transcript",
+            serde_json::json!({ "streamId": "mine", "text": "turn on the lamp" }),
+        );
+        let voice_theirs = envelope(
+            Channel::Voice,
+            "voice.transcript",
+            serde_json::json!({ "streamId": "theirs", "text": "my bank password is" }),
+        );
+        let voice_global = envelope(
+            Channel::Voice,
+            "voice.error",
+            serde_json::json!({ "code": "voice.stt_unavailable" }),
+        );
+
+        // (class, owns "mine"): session, display, own voice, other voice, global voice
+        let table = [
+            (DeviceClass::OwnerUi, true, [true, true, true, false, true]),
+            (
+                DeviceClass::DisplayNode,
+                false,
+                [false, true, false, false, false],
+            ),
+            (
+                DeviceClass::VoiceNode,
+                true,
+                [false, false, true, false, false],
+            ),
+            (
+                DeviceClass::RoomNode,
+                true,
+                [false, true, true, false, false],
+            ),
+            // A voice-capable node that owns no stream hears nothing at all.
+            (
+                DeviceClass::RoomNode,
+                false,
+                [false, true, false, false, false],
+            ),
+        ];
+
+        for (class, owns_mine, expected) in table {
+            let owned = owns_mine.then_some("mine");
+            let actual = [
+                delivers_to(&session, class, owned),
+                delivers_to(&display, class, owned),
+                delivers_to(&voice_mine, class, owned),
+                delivers_to(&voice_theirs, class, owned),
+                delivers_to(&voice_global, class, owned),
+            ];
+            assert_eq!(
+                actual, expected,
+                "{class} (owns_mine={owns_mine}) delivery matrix"
+            );
+        }
+    }
+
+    /// The single most important cell, called out on its own so a future edit
+    /// to the table cannot quietly relax it: an approval card carries the exact
+    /// effect, the real arguments, and an id that is a decision oracle.
+    #[test]
+    fn no_node_class_ever_receives_an_approval_card() {
+        let card = envelope(
+            Channel::Session,
+            "approval.requested",
+            serde_json::json!({
+                "approvalId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                "exactEffect": "email landlord@example.com",
+                "proposedArguments": { "to": "landlord@example.com", "body": "…" }
+            }),
+        );
+        for class in [
+            DeviceClass::DisplayNode,
+            DeviceClass::VoiceNode,
+            DeviceClass::RoomNode,
+        ] {
+            assert!(
+                !delivers_to(&card, class, Some("mine")),
+                "{class} must never be handed an approval card"
+            );
+        }
+        assert!(delivers_to(&card, DeviceClass::OwnerUi, None));
+    }
+
+    /// A satellite's microphone must not become a household-wide listening
+    /// device — the M5 carry-forward.
+    #[test]
+    fn one_satellites_transcript_never_reaches_another() {
+        let kitchen = envelope(
+            Channel::Voice,
+            "voice.transcript",
+            serde_json::json!({ "streamId": "kitchen", "text": "read me the message" }),
+        );
+        assert!(delivers_to(
+            &kitchen,
+            DeviceClass::RoomNode,
+            Some("kitchen")
+        ));
+        assert!(!delivers_to(
+            &kitchen,
+            DeviceClass::RoomNode,
+            Some("bedroom")
+        ));
+        assert!(!delivers_to(&kitchen, DeviceClass::VoiceNode, None));
     }
 }
