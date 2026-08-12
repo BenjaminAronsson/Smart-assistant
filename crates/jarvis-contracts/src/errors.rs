@@ -143,6 +143,13 @@ pub enum ErrorCode {
     /// them would let a caller probe the challenge space.
     #[serde(rename = "identity.challenge_rejected")]
     IdentityChallengeRejected,
+    /// A placement named a node that cannot take it — unknown room name, not a
+    /// paired device, revoked, unable to present, or simply not connected
+    /// (F7.5, FR-19). 409, and deliberately **not** a silent fallback to a
+    /// local surface: "put it on the kitchen screen" must not look like it
+    /// worked when the kitchen screen is unplugged.
+    #[serde(rename = "display.node_unavailable")]
+    DisplayNodeUnavailable,
 }
 
 /// RFC 9457 problem details body plus the stable machine `code` (docs/05 §2).

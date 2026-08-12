@@ -229,7 +229,7 @@ not control.
       Refs: `M2-security-carryforward.md` CF-8, M5 gate §6, docs/05 §3, NFR-13.
       Read: `crates/jarvisd/src/ws.rs`; skill `ws-contracts`. Deps: F7.1.
 
-- [ ] **F7.5 — Addressable surfaces: route a surface to a node (exit evidence 2)**
+- [x] **F7.5 — Addressable surfaces: route a surface to a node (exit evidence 2)** — DONE
       · *Sonnet*
       `POST /api/v1/artifacts/{id}/open` gains an optional target: a device id or a **room
       name** resolved through config aliases (same shape as `[integrations.spotify]

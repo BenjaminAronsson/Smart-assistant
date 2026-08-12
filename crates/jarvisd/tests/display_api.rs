@@ -113,7 +113,7 @@ struct FakeSink {
 
 #[async_trait::async_trait]
 impl DisplayDirectiveSink for FakeSink {
-    async fn dispatch(&self, placement: &SurfacePlacement) -> bool {
+    async fn dispatch(&self, placement: &SurfacePlacement, _target: Option<&str>) -> bool {
         self.placements.lock().unwrap().push(placement.clone());
         self.connected
     }
@@ -365,4 +365,188 @@ async fn open_requires_auth() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+// --- F7.5: addressable surfaces -----------------------------------------
+
+/// A placement can name a **node** — by room alias or device id — and every
+/// way that can go wrong is a visible refusal rather than a quiet local
+/// fallback. "Put it on the kitchen screen" must not look like it worked when
+/// the kitchen screen is unplugged.
+mod node_targeting {
+    use super::*;
+    use jarvis_domain::identity::DeviceClass;
+    use jarvisd::devices::ConnectedDevices;
+    use jarvisd::display::NodeTargets;
+
+    const OWNER_TOKEN: &str = "owner-token";
+
+    fn hash(token: &str) -> String {
+        use sha2::Digest as _;
+        hex::encode(sha2::Sha256::digest(token.as_bytes()))
+    }
+
+    struct NodeHarness {
+        app: Router,
+        sink: Arc<FakeSink>,
+        kitchen_id: String,
+        speaker_id: String,
+        gone_id: String,
+    }
+
+    /// Owner + a connected kitchen screen + a connected screenless speaker +
+    /// a revoked screen, with `kitchen` aliased the way an owner would say it.
+    async fn node_harness() -> NodeHarness {
+        let store_identity = Arc::new(InMemoryIdentityStore::new().with_device(
+            identity_fixture::device("owner laptop", DeviceClass::OwnerUi, &hash(OWNER_TOKEN)),
+        ));
+        let kitchen = identity_fixture::device("kitchen screen", DeviceClass::RoomNode, "k");
+        let speaker = identity_fixture::device("hall speaker", DeviceClass::VoiceNode, "s");
+        let mut gone = identity_fixture::device("old tablet", DeviceClass::DisplayNode, "g");
+        gone.revoked_at = Some(std::time::SystemTime::UNIX_EPOCH);
+        let (kitchen_id, speaker_id, gone_id) = (
+            kitchen.id.to_string(),
+            speaker.id.to_string(),
+            gone.id.to_string(),
+        );
+        store_identity.add_device(kitchen);
+        store_identity.add_device(speaker);
+        store_identity.add_device(gone);
+
+        let connected = ConnectedDevices::new();
+        // The kitchen screen and the speaker are here; the revoked tablet is not.
+        std::mem::forget(connected.mark_present(kitchen_id.parse().expect("ulid")));
+        std::mem::forget(connected.mark_present(speaker_id.parse().expect("ulid")));
+
+        let artifacts = Arc::new(FakeArtifactStore::default());
+        seed(&artifacts);
+        let sink = Arc::new(FakeSink {
+            placements: Mutex::new(Vec::new()),
+            connected: true,
+        });
+        let display = DisplayApi::new(
+            artifacts,
+            Arc::new(profile_with_canvas("DP-1")),
+            Arc::new(FakeAuditLog::default()),
+            sink.clone(),
+        )
+        .with_nodes(NodeTargets {
+            aliases: [("kitchen".to_owned(), kitchen_id.clone())]
+                .into_iter()
+                .collect(),
+            identity: store_identity.clone(),
+            connected,
+        });
+
+        let auth = AuthState::bootstrap(store_identity).await;
+        let app = router_with(
+            AppState::new().with_auth(auth),
+            Wiring {
+                display: Some(display),
+                ..Wiring::default()
+            },
+        );
+        NodeHarness {
+            app,
+            sink,
+            kitchen_id,
+            speaker_id,
+            gone_id,
+        }
+    }
+
+    async fn open_on(app: &Router, node: &str) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/api/v1/artifacts/{ARTIFACT}/open"))
+                    .header(header::AUTHORIZATION, format!("Bearer {OWNER_TOKEN}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::json!({ "node": node }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_room_alias_places_the_surface_on_that_node() {
+        let h = node_harness().await;
+        let (status, body) = open_on(&h.app, "kitchen").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["targetDeviceId"], h.kitchen_id);
+        assert_eq!(h.sink.placements.lock().unwrap().len(), 1);
+
+        // The device id works too — the UI has the list in front of it.
+        let (status, body) = open_on(&h.app, &h.kitchen_id).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    #[tokio::test]
+    async fn every_unreachable_target_fails_visibly_and_dispatches_nothing() {
+        let h = node_harness().await;
+        for (node, why) in [
+            ("bathroom", "a room nobody configured"),
+            (
+                "01ARZ3NDEKTSV4RRFFQ69G5FZ9",
+                "a device that was never paired",
+            ),
+            ("not-a-ulid-or-alias", "neither an alias nor an id"),
+        ] {
+            let (status, body) = open_on(&h.app, node).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{why}: {body}");
+            assert_eq!(body["code"], "display.node_unavailable", "{why}");
+        }
+
+        // A device with no screen.
+        let (status, body) = open_on(&h.app, &h.speaker_id).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], "display.node_unavailable");
+        assert!(
+            body["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("present"),
+            "the owner should learn WHY: {body}"
+        );
+
+        // A revoked device — and it is also not connected.
+        let (status, body) = open_on(&h.app, &h.gone_id).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], "display.node_unavailable");
+
+        assert!(
+            h.sink.placements.lock().unwrap().is_empty(),
+            "a refused placement must dispatch nothing at all"
+        );
+    }
+
+    /// Omitting `node` keeps the pre-node behaviour exactly: the local agent.
+    #[tokio::test]
+    async fn an_untargeted_placement_still_goes_to_the_local_agent() {
+        let h = node_harness().await;
+        let response = h
+            .app
+            .clone()
+            .oneshot(
+                Request::post(format!("/api/v1/artifacts/{ARTIFACT}/open"))
+                    .header(header::AUTHORIZATION, format!("Bearer {OWNER_TOKEN}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(body["targetDeviceId"].is_null(), "no target named: {body}");
+        assert_eq!(h.sink.placements.lock().unwrap().len(), 1);
+    }
 }

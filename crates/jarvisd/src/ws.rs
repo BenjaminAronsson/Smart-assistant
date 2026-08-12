@@ -215,11 +215,16 @@ impl WsHub {
     /// subscribed (best-effort delivery; no agent connected ⇒ audited-but-
     /// undelivered). `app_id` is derived server-side from the closed surface set,
     /// never from model/user text.
-    fn broadcast_display(&self, placement: &jarvis_domain::display::SurfacePlacement) -> bool {
+    fn broadcast_display(
+        &self,
+        placement: &jarvis_domain::display::SurfacePlacement,
+        target: Option<&str>,
+    ) -> bool {
         let directive = DisplayDirective::PlaceSurface {
             surface: surface_dto(placement.surface),
             app_id: placement.surface.app_id().to_owned(),
             monitor: placement.monitor.as_str().to_owned(),
+            target_device_id: target.map(ToOwned::to_owned),
         };
         let (event_type, payload) =
             split_tagged(serde_json::to_value(&directive).expect("directive serializes"));
@@ -430,8 +435,12 @@ impl OutboxPublisher for WsHub {
 /// jarvisd dispatches resolved display placements to connected agents here.
 #[async_trait]
 impl DisplayDirectiveSink for WsHub {
-    async fn dispatch(&self, placement: &jarvis_domain::display::SurfacePlacement) -> bool {
-        self.broadcast_display(placement)
+    async fn dispatch(
+        &self,
+        placement: &jarvis_domain::display::SurfacePlacement,
+        target: Option<&str>,
+    ) -> bool {
+        self.broadcast_display(placement, target)
     }
 }
 
@@ -536,12 +545,28 @@ impl RunEventSink for WsHub {
 pub(crate) fn delivers_to(
     envelope: &EventEnvelope,
     class: DeviceClass,
+    device_id: Option<&str>,
     owned_stream: Option<&str>,
 ) -> bool {
     match envelope.channel {
         Channel::Session => class.holds(ClassScope::Ui.as_str()),
         Channel::Display => {
-            class.holds(ClassScope::DisplayAgent.as_str()) || class.holds(ClassScope::Ui.as_str())
+            if !(class.holds(ClassScope::DisplayAgent.as_str())
+                || class.holds(ClassScope::Ui.as_str()))
+            {
+                return false;
+            }
+            // An addressed placement reaches exactly its target (F7.5); an
+            // unaddressed one is the pre-node behaviour and reaches every
+            // presenter.
+            match envelope
+                .payload
+                .get("targetDeviceId")
+                .and_then(|v| v.as_str())
+            {
+                Some(target) => device_id.is_some_and(|id| id == target),
+                None => true,
+            }
         }
         Channel::Voice => {
             if !(class.holds(ClassScope::VoiceCapture.as_str())
@@ -582,13 +607,15 @@ fn register_owned_stream(owned: &mut std::collections::VecDeque<String>, id: Str
 pub(crate) fn delivers_to_owner_of(
     envelope: &EventEnvelope,
     class: DeviceClass,
+    device_id: &str,
     owned: &std::collections::VecDeque<String>,
 ) -> bool {
     match envelope.payload.get("streamId").and_then(|v| v.as_str()) {
         Some(stream) => {
-            owned.iter().any(|s| s == stream) && delivers_to(envelope, class, Some(stream))
+            owned.iter().any(|s| s == stream)
+                && delivers_to(envelope, class, Some(device_id), Some(stream))
         }
-        None => delivers_to(envelope, class, None),
+        None => delivers_to(envelope, class, Some(device_id), None),
     }
 }
 
@@ -636,6 +663,10 @@ pub struct WsState {
     /// `None` in deployments that mount no device surface, where nothing can
     /// revoke anything.
     pub identity: Option<Arc<dyn IdentityStore>>,
+    /// Who is holding a socket right now (F7.5) — read by the placement route
+    /// so "the kitchen screen is not connected" is answerable before a
+    /// directive is audited and dispatched.
+    pub connected: crate::devices::ConnectedDevices,
 }
 
 struct ActiveVoiceStream {
@@ -1230,6 +1261,9 @@ async fn handle_socket(
     // stream would drop the socket's own last utterance — the one that starts
     // the run. Bounded, because it grows with client behaviour.
     let mut owned_streams: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    // Presence lasts exactly as long as this task: the guard deregisters on
+    // every exit path, including the ones that return early.
+    let _presence = state.connected.mark_present(device.device_id.clone());
     let mut speech: Option<ActiveSpeech> = None;
     // Settled transcripts travel task → loop, because only the loop holds the
     // authenticated device identity a run must be attributed to.
@@ -1334,7 +1368,12 @@ async fn handle_socket(
             received = rx.recv() => match received {
                 Ok(envelope) => {
                     // CF-8: what this device may see, decided per envelope.
-                    if !delivers_to_owner_of(&envelope, device.class, &owned_streams) {
+                    if !delivers_to_owner_of(
+                        &envelope,
+                        device.class,
+                        device.device_id.as_str(),
+                        &owned_streams,
+                    ) {
                         continue;
                     }
                     if send_envelope(&mut socket, &envelope).await.is_err() {
@@ -1626,7 +1665,12 @@ async fn replay_since(
             // No stream is owned yet at replay time: a reconnecting socket has
             // not opened a capture stream, so stream-addressed voice events
             // are correctly not its business.
-            if delivers_to(&envelope, device.class, None) {
+            if delivers_to(
+                &envelope,
+                device.class,
+                Some(device.device_id.as_str()),
+                None,
+            ) {
                 send_envelope(socket, &envelope).await?;
             }
             cursor = row.id;
@@ -2045,6 +2089,9 @@ mod delivery_scope_tests {
     use super::*;
     use jarvis_domain::identity::DeviceClass;
 
+    const THIS_DEVICE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    const OTHER_DEVICE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB9";
+
     fn envelope(channel: Channel, event_type: &str, payload: serde_json::Value) -> EventEnvelope {
         EventEnvelope {
             v: CONTRACT_VERSION,
@@ -2120,11 +2167,11 @@ mod delivery_scope_tests {
         for (class, owns_mine, expected) in table {
             let owned = owns_mine.then_some("mine");
             let actual = [
-                delivers_to(&session, class, owned),
-                delivers_to(&display, class, owned),
-                delivers_to(&voice_mine, class, owned),
-                delivers_to(&voice_theirs, class, owned),
-                delivers_to(&voice_global, class, owned),
+                delivers_to(&session, class, Some(THIS_DEVICE), owned),
+                delivers_to(&display, class, Some(THIS_DEVICE), owned),
+                delivers_to(&voice_mine, class, Some(THIS_DEVICE), owned),
+                delivers_to(&voice_theirs, class, Some(THIS_DEVICE), owned),
+                delivers_to(&voice_global, class, Some(THIS_DEVICE), owned),
             ];
             assert_eq!(
                 actual, expected,
@@ -2153,11 +2200,52 @@ mod delivery_scope_tests {
             DeviceClass::RoomNode,
         ] {
             assert!(
-                !delivers_to(&card, class, Some("mine")),
+                !delivers_to(&card, class, Some(THIS_DEVICE), Some("mine")),
                 "{class} must never be handed an approval card"
             );
         }
-        assert!(delivers_to(&card, DeviceClass::OwnerUi, None));
+        assert!(delivers_to(
+            &card,
+            DeviceClass::OwnerUi,
+            Some(THIS_DEVICE),
+            None
+        ));
+    }
+
+    /// An addressed placement reaches exactly one screen (F7.5). Without this,
+    /// "put it on the kitchen screen" would light up every screen in the house.
+    #[test]
+    fn an_addressed_placement_reaches_only_its_target() {
+        let addressed = envelope(
+            Channel::Display,
+            "display.place_surface",
+            serde_json::json!({ "monitor": "DP-1", "targetDeviceId": THIS_DEVICE }),
+        );
+        let unaddressed = envelope(
+            Channel::Display,
+            "display.place_surface",
+            serde_json::json!({ "monitor": "DP-1" }),
+        );
+        for class in [
+            DeviceClass::DisplayNode,
+            DeviceClass::RoomNode,
+            DeviceClass::OwnerUi,
+        ] {
+            assert!(delivers_to(&addressed, class, Some(THIS_DEVICE), None));
+            assert!(
+                !delivers_to(&addressed, class, Some(OTHER_DEVICE), None),
+                "{class} received a placement addressed elsewhere"
+            );
+            // Unaddressed keeps the pre-node behaviour: every presenter.
+            assert!(delivers_to(&unaddressed, class, Some(OTHER_DEVICE), None));
+        }
+        // And a class with no screen is still out, addressed or not.
+        assert!(!delivers_to(
+            &addressed,
+            DeviceClass::VoiceNode,
+            Some(THIS_DEVICE),
+            None
+        ));
     }
 
     /// A satellite's microphone must not become a household-wide listening
@@ -2172,13 +2260,20 @@ mod delivery_scope_tests {
         assert!(delivers_to(
             &kitchen,
             DeviceClass::RoomNode,
+            Some(THIS_DEVICE),
             Some("kitchen")
         ));
         assert!(!delivers_to(
             &kitchen,
             DeviceClass::RoomNode,
+            Some(THIS_DEVICE),
             Some("bedroom")
         ));
-        assert!(!delivers_to(&kitchen, DeviceClass::VoiceNode, None));
+        assert!(!delivers_to(
+            &kitchen,
+            DeviceClass::VoiceNode,
+            Some(THIS_DEVICE),
+            None
+        ));
     }
 }

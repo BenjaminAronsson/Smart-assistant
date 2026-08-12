@@ -92,6 +92,7 @@ async fn start(pool: PgPool, model: FakeModel) -> Harness {
         // The REAL store, as `main.rs` wires it — the revocation re-check at
         // upgrade must be exercised by the socket test, not stubbed out.
         identity: Some(identity.clone()),
+        connected: Default::default(),
         revocations: auth.revocations().clone(),
         hub,
         events,

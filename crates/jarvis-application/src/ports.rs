@@ -591,10 +591,20 @@ pub trait AuditLog: Send + Sync {
 /// wire `DisplayDirective` (deriving the surface's app-id) and broadcasts it.
 #[async_trait::async_trait]
 pub trait DisplayDirectiveSink: Send + Sync {
-    /// Dispatch the placement. Returns true if at least one WS client was
-    /// subscribed to receive it (the closest signal available before per-device
-    /// scoped delivery lands).
-    async fn dispatch(&self, placement: &jarvis_domain::display::SurfacePlacement) -> bool;
+    /// Dispatch the placement to `target` — a paired device id (F7.5) — or to
+    /// every presenter when `None`, which is what every placement meant before
+    /// nodes existed. Returns true if at least one WS client was subscribed to
+    /// receive it.
+    ///
+    /// Note the division of labour: the *caller* has already established that
+    /// the target can take the placement (paired, active, has a screen, and is
+    /// connected), because that is the check whose failure the owner must see.
+    /// This is still fire-and-forget — a socket can drop between the two.
+    async fn dispatch(
+        &self,
+        placement: &jarvis_domain::display::SurfacePlacement,
+        target: Option<&str>,
+    ) -> bool;
 }
 
 /// Local media transport control (FR-22, docs/02 §11a, ADR-012). The universal

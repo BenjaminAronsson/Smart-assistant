@@ -265,3 +265,4 @@ and grows additively. HTTP mapping via RFC 9457 problem details.
 | `identity.last_owner_device` | Revoking this device would leave no `owner-ui` device, so nothing could pair a replacement without a `jarvisd` restart (FR-19, F7.1); never blocks revoking a node | 409 |
 | `identity.class_not_grantable` | A node requested a device class it may not have (`owner-ui`, or an unknown name) — never quietly downgraded (FR-19, F7.2) | 403 |
 | `identity.challenge_rejected` | Pairing challenge unknown, expired, spent, or issued to a different key; one code for all four so the challenge space cannot be probed (FR-19, F7.2) | 403 |
+| `display.node_unavailable` | The named node cannot take the placement — unknown room, not paired, revoked, cannot present, or not connected (FR-19, F7.5). Never a silent fallback to a local surface | 409 |
