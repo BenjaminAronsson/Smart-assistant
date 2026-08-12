@@ -2596,6 +2596,13 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "serverFingerprint": {
+          "description": "sha256 of the server certificate's DER bytes, lowercase hex (F7.3,\nADR-031). The node **pins** this and refuses anything else afterwards:\nthe certificate is self-signed, so the fingerprint delivered inside the\npairing ceremony is what turns \"encrypted to somebody\" into \"encrypted\nto the daemon I paired with\". Absent on a plaintext loopback listener,\nwhere there is no certificate and nothing to pin.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

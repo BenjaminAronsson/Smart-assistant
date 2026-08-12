@@ -26,4 +26,12 @@ pub struct PairResponse {
     pub device_class: String,
     /// Device scopes, e.g. `ui`, `display-agent`, `voice-capture` (docs/05 §6).
     pub scopes: Vec<String>,
+    /// sha256 of the server certificate's DER bytes, lowercase hex (F7.3,
+    /// ADR-031). The node **pins** this and refuses anything else afterwards:
+    /// the certificate is self-signed, so the fingerprint delivered inside the
+    /// pairing ceremony is what turns "encrypted to somebody" into "encrypted
+    /// to the daemon I paired with". Absent on a plaintext loopback listener,
+    /// where there is no certificate and nothing to pin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_fingerprint: Option<String>,
 }

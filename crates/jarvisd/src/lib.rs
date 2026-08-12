@@ -26,5 +26,6 @@ pub mod problem;
 pub mod runs;
 pub mod sessions;
 pub mod timers;
+pub mod tls;
 pub mod tools;
 pub mod ws;

@@ -114,7 +114,6 @@ pub struct RunWiring {
 /// A struct rather than a positional argument list because the list only grows
 /// — with six `Option`s of different types, a mis-ordered call site is a real
 /// hazard, and every one of these mounts an authenticated surface.
-#[derive(Default)]
 pub struct Wiring {
     pub sessions: Option<crate::sessions::SessionApi>,
     pub runs: Option<RunWiring>,
@@ -143,6 +142,40 @@ pub struct Wiring {
     /// that does not pair nodes needs no ceremony; `main` passes the same
     /// instance the daemon lives with.
     pub pairing: crate::pairing::PairingState,
+    /// The TLS fingerprint a pairing node pins (F7.3); `None` on loopback.
+    pub server_fingerprint: Option<String>,
+    /// Whether the unauthenticated health endpoint may be served (F7.3).
+    ///
+    /// docs/05 §6.2 scopes it to "loopback only", which was free to honour
+    /// while loopback was the only bind. Off loopback it becomes an
+    /// unauthenticated readout of adapter state and — worse — of the bootstrap
+    /// pairing code, so on a non-loopback listener health moves **behind
+    /// authentication** rather than being served to the network.
+    pub public_health: bool,
+}
+
+impl Default for Wiring {
+    fn default() -> Self {
+        Self {
+            sessions: None,
+            runs: None,
+            artifacts: None,
+            appbridge: None,
+            display: None,
+            media: None,
+            maps: None,
+            timers: None,
+            lists: None,
+            deepdive: None,
+            memories: None,
+            web_assets: None,
+            pairing: crate::pairing::PairingState::default(),
+            server_fingerprint: None,
+            // Loopback is the default bind, so the default is the loopback
+            // rule: health is public. `main` turns it off for any other bind.
+            public_health: true,
+        }
+    }
 }
 
 pub fn router(state: AppState) -> Router {
@@ -168,10 +201,15 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
         memories,
         web_assets,
         pairing,
+        server_fingerprint,
+        public_health,
     } = wiring;
     // Health and pair are unauthenticated by design but loopback-only:
     // config validation rejects non-loopback binds until M7 (docs/06 §7).
-    let mut router = Router::new().route("/api/v1/diagnostics/health", get(health));
+    let mut router = Router::new();
+    if public_health {
+        router = router.route("/api/v1/diagnostics/health", get(health));
+    }
     if let Some(auth) = &state.auth {
         router = router.route(
             "/api/v1/auth/pair",
@@ -186,6 +224,7 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
         let pairing_api = crate::pairing::PairingApi {
             auth: auth.clone(),
             pairing: pairing.clone(),
+            server_fingerprint: server_fingerprint.clone(),
         };
         router = router
             .route(
@@ -205,6 +244,13 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
         // deliberately by the feature that needs it.
         let mut protected = Router::new();
         let mut node_reachable = Router::new();
+        if !public_health {
+            // Still reachable, but only by an authenticated device.
+            protected = protected.route(
+                "/api/v1/diagnostics/health",
+                get(health).with_state(state.clone()),
+            );
+        }
         // Device management (F7.1, FR-19). Authenticated like everything else
         // here, and additionally `ui`-scoped inside the handlers — a paired
         // room satellite must not be able to enumerate or revoke its siblings.

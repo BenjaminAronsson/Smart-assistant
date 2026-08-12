@@ -697,10 +697,29 @@ fn default_max_fetch_bytes() -> usize {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
-    /// Loopback only for M0–M2 (docs/06 §7); validation enforces it.
+    /// Where the daemon listens. Loopback needs nothing further; **any other
+    /// address requires TLS** and is refused without it (docs/06 §7, F7.3).
     pub bind: String,
     /// Static Angular assets; optional until packaging serves them.
     pub web_assets: Option<PathBuf>,
+    /// TLS for LAN/remote nodes (F7.3, ADR-031). Absent = plaintext, which is
+    /// only legal on loopback.
+    #[serde(default)]
+    pub tls: Option<TlsConfig>,
+}
+
+/// `[server.tls]` — the certificate a node pins at pairing (ADR-031).
+///
+/// Both paths are required together: a certificate without its key cannot
+/// serve, and a key without its certificate cannot be pinned. Self-signed is
+/// the expected case — there is no CA in a house, and the fingerprint handed
+/// to the node during the pairing ceremony is what makes the certificate
+/// meaningful.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsConfig {
+    pub cert_path: PathBuf,
+    pub key_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -824,6 +843,7 @@ impl Default for Config {
             server: ServerConfig {
                 bind: "127.0.0.1:8741".into(),
                 web_assets: None,
+                tls: None,
             },
             database: DatabaseConfig {
                 url_secret: "env:JARVIS_DB_URL".into(),
@@ -884,11 +904,32 @@ impl Config {
                 self.server.bind
             )
         })?;
-        anyhow::ensure!(
-            addr.ip().is_loopback(),
-            "server.bind {addr} is not loopback — jarvisd binds loopback only until M7 \
-             remote nodes exist (docs/06 §7)"
-        );
+        // F7.3 (docs/06 §7): loopback may stay plaintext; anything reachable
+        // from the network may not. Fail closed at startup with no override —
+        // a daemon that serves device tokens in the clear on a LAN is the one
+        // configuration mistake with no recovery, because the credential is
+        // gone the moment it is used.
+        match (&self.server.tls, addr.ip().is_loopback()) {
+            (None, true) => {}
+            (None, false) => anyhow::bail!(
+                "server.bind {addr} is not loopback and [server.tls] is not configured — \
+                 jarvisd refuses to serve device tokens in the clear off loopback \
+                 (docs/06 §7). Configure [server.tls] cert_path/key_path, or bind loopback."
+            ),
+            (Some(tls), _) => {
+                for (field, path) in [
+                    ("[server.tls].cert_path", &tls.cert_path),
+                    ("[server.tls].key_path", &tls.key_path),
+                ] {
+                    anyhow::ensure!(
+                        path.is_absolute(),
+                        "{field} {} must be absolute — a relative path resolves against \
+                         whatever directory the service happened to start in",
+                        path.display()
+                    );
+                }
+            }
+        }
         validate_secret_ref(&self.database.url_secret)?;
         // A relative map path would resolve against whatever directory the
         // service happens to start in — fail fast at config time rather than
@@ -1200,5 +1241,57 @@ mod tests {
         assert_eq!(adapter.workdir, PathBuf::from("/tmp/jarvis-work"));
         assert!(!adapter.disable_builtin_tools);
         assert_eq!(adapter.idle_timeout, std::time::Duration::from_secs(90));
+    }
+
+    /// **F7.3, the rule with no override (docs/06 §7).** A daemon that serves
+    /// device tokens in the clear on a LAN is the one configuration mistake
+    /// with no recovery — the credential is gone the moment it is used — so
+    /// the refusal happens at startup, not at first request.
+    #[test]
+    fn a_non_loopback_bind_without_tls_refuses_to_start() {
+        let figment = Figment::new().merge(figment::providers::Serialized::defaults(
+            serde_json::json!({ "server": { "bind": "0.0.0.0:8080" } }),
+        ));
+        let error = Config::from_figment(figment)
+            .expect_err("a public bind without TLS must not start")
+            .to_string();
+        assert!(
+            error.contains("server.tls"),
+            "the error must name the fix: {error}"
+        );
+
+        // The same bind IS allowed once TLS is configured.
+        let figment = Figment::new().merge(figment::providers::Serialized::defaults(
+            serde_json::json!({
+                "server": {
+                    "bind": "0.0.0.0:8080",
+                    "tls": { "cert_path": "/etc/jarvis/cert.pem", "key_path": "/etc/jarvis/key.pem" }
+                }
+            }),
+        ));
+        Config::from_figment(figment).expect("a TLS-configured public bind is legal");
+    }
+
+    #[test]
+    fn loopback_still_needs_no_tls_and_tls_paths_must_be_absolute() {
+        let figment = Figment::new().merge(figment::providers::Serialized::defaults(
+            serde_json::json!({ "server": { "bind": "127.0.0.1:8080" } }),
+        ));
+        Config::from_figment(figment).expect("loopback plaintext is the M0–M6 shape");
+
+        for bad in ["cert.pem", "./certs/cert.pem"] {
+            let figment = Figment::new().merge(figment::providers::Serialized::defaults(
+                serde_json::json!({
+                    "server": {
+                        "bind": "127.0.0.1:8080",
+                        "tls": { "cert_path": bad, "key_path": "/etc/jarvis/key.pem" }
+                    }
+                }),
+            ));
+            let error = Config::from_figment(figment)
+                .expect_err("a relative TLS path must be refused")
+                .to_string();
+            assert!(error.contains("absolute"), "{error}");
+        }
     }
 }

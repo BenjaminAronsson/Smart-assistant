@@ -404,6 +404,7 @@ pub async fn complete(
         device_token: token,
         device_class: device.class.as_str().to_owned(),
         scopes: device.effective_scopes(),
+        server_fingerprint: state.server_fingerprint.clone(),
     }))
 }
 
@@ -502,4 +503,7 @@ fn rfc3339(at: SystemTime) -> String {
 pub struct PairingApi {
     pub auth: AuthState,
     pub pairing: PairingState,
+    /// The listener's certificate fingerprint, handed to the node so it can
+    /// pin us (F7.3). `None` on plaintext loopback.
+    pub server_fingerprint: Option<String>,
 }

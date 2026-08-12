@@ -419,6 +419,19 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     // One pairing state for the process: the routes that open a window and the
     // routes that consume it must share it (F7.2).
     let pairing = jarvisd::pairing::PairingState::new();
+    // Load the certificate once, here: the fingerprint a node pins must come
+    // from the very bytes the listener serves (F7.3), and a certificate that
+    // cannot be loaded must stop startup before anything binds.
+    let server_tls = match &config.server.tls {
+        Some(tls) => Some(
+            jarvisd::tls::ServerTls::load(&tls.cert_path, &tls.key_path)
+                .context("loading [server.tls]")?,
+        ),
+        None => None,
+    };
+    let server_fingerprint = server_tls.as_ref().map(|t| t.fingerprint.clone());
+    // docs/05 §6.2 scopes the unauthenticated health page to loopback.
+    let public_health = config.bind_addr().ip().is_loopback();
     let ws_state = WsState {
         hub: hub.clone(),
         events: event_log,
@@ -573,6 +586,8 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         jarvisd::api::Wiring {
             // The same instance the pairing routes were built from (F7.2).
             pairing: pairing.clone(),
+            server_fingerprint: server_fingerprint.clone(),
+            public_health,
             sessions: Some(sessions),
             runs: Some(RunWiring {
                 runs: run_api,
@@ -615,25 +630,60 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     // exchange on loopback, twice over in one round trip. Voice is the only path
     // here with a sub-second human-perceptible budget, so latency wins over
     // coalescing. A kernel that refuses the option is not fatal — just slower.
-    let listener = tokio::net::TcpListener::bind(config.bind_addr())
-        .await?
-        .tap_io(|stream| {
-            let _ = stream.set_nodelay(true);
-        });
-    tracing::info!(bind = %config.bind_addr(), "jarvisd listening");
-
-    let cancel = serve_shutdown.clone();
-    let serve =
-        axum::serve(listener, app).with_graceful_shutdown(async move { cancel.cancelled().await });
     // Bounded drain (invariant 4): a wedged in-flight request must not block
     // shutdown — after the signal, connections get DRAIN_DEADLINE to finish.
-    let deadline = async {
-        serve_shutdown.cancelled().await;
+    let deadline_token = serve_shutdown.clone();
+    let deadline = async move {
+        deadline_token.cancelled().await;
         tokio::time::sleep(DRAIN_DEADLINE).await;
     };
-    tokio::select! {
-        result = serve => result?,
-        _ = deadline => tracing::warn!("drain deadline exceeded; forcing exit"),
+
+    match &config.server.tls {
+        // TLS (F7.3): the only legal way to serve anything but loopback.
+        // `axum::serve` has no TLS variant, so the accept loop comes from
+        // `axum-server`, which owns its own graceful-shutdown handle.
+        Some(_) => {
+            let loaded = server_tls.expect("loaded above whenever [server.tls] is set");
+            // The value a node pins at pairing (ADR-031). Logged deliberately:
+            // it is public by construction, and the owner needs to read it off
+            // the journal to compare with what the node displays.
+            tracing::info!(
+                bind = %config.bind_addr(),
+                fingerprint = %loaded.fingerprint,
+                "jarvisd listening over TLS"
+            );
+            let listener = tokio::net::TcpListener::bind(config.bind_addr()).await?;
+            let serve = jarvisd::tls::serve(listener, &loaded, app, serve_shutdown.clone());
+            tokio::select! {
+                result = serve => result?,
+                _ = deadline => tracing::warn!("drain deadline exceeded; forcing exit"),
+            }
+        }
+        // Plaintext, loopback only — config validation refuses anything else.
+        //
+        // Disable Nagle on every accepted connection (F5.2, NFR-04). The voice
+        // channel interleaves many small frames — control frames, transcripts,
+        // text deltas, PCM — and Nagle holds each small write until the
+        // previous one is acknowledged; the voice latency harness measured that
+        // as ~40 ms per exchange on loopback, twice over in one round trip.
+        // Voice is the only path here with a sub-second human-perceptible
+        // budget, so latency wins over coalescing. A kernel that refuses the
+        // option is not fatal — just slower.
+        None => {
+            let listener = tokio::net::TcpListener::bind(config.bind_addr())
+                .await?
+                .tap_io(|stream| {
+                    let _ = stream.set_nodelay(true);
+                });
+            tracing::info!(bind = %config.bind_addr(), "jarvisd listening");
+            let cancel = serve_shutdown.clone();
+            let serve = axum::serve(listener, app)
+                .with_graceful_shutdown(async move { cancel.cancelled().await });
+            tokio::select! {
+                result = serve => result?,
+                _ = deadline => tracing::warn!("drain deadline exceeded; forcing exit"),
+            }
+        }
     }
 
     // Runs were signalled to cancel with `serve_shutdown`; wait (bounded) for

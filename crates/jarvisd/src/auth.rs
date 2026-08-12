@@ -280,6 +280,9 @@ pub async fn pair(
         device_token: token,
         device_class: device.class.as_str().to_owned(),
         scopes: device.effective_scopes(),
+        // The bootstrap ceremony happens on loopback, where there is no
+        // certificate to pin; node pairing carries the fingerprint (F7.3).
+        server_fingerprint: None,
     }))
 }
 

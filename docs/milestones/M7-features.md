@@ -194,7 +194,7 @@ not control.
       in-flight state, so that shape would have to persist the window — giving an offline
       secret a durable home for no gain. Recorded as ADR-031 §5.
 
-- [ ] **F7.3 — TLS listener + private-network binding (docs/06 §7)** · *strong model*
+- [x] **F7.3 — TLS listener + private-network binding (docs/06 §7)** · *strong model* — DONE (branch `feat/m7-f7.3-tls-listener`)
       Today `jarvisd` binds loopback and that is the entire network security model. This
       feature makes a non-loopback bind possible **and safe**: a rustls listener,
       `[network] bind` / `tls_cert` / `tls_key` config with validation, a
