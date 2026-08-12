@@ -133,6 +133,61 @@ impl Drop for PresenceGuard {
     }
 }
 
+/// What each node should currently be showing (F7.7).
+///
+/// Display directives are **transient**: they are commands, not timeline
+/// events, so they are deliberately not replayed from the outbox (docs/05 §3).
+/// That is right for a command and wrong for a *surface* — a kitchen screen
+/// that drops its socket for thirty seconds and reconnects would otherwise
+/// come back blank and stay blank, because the placement it missed is never
+/// coming again.
+///
+/// So the last placement per node is remembered and **re-asserted** on
+/// reconnect rather than replayed: the node ends up showing what it should be
+/// showing now, without receiving a backlog of stale commands it would apply
+/// in sequence. In-memory and per-process, like presence — a daemon restart
+/// legitimately forgets, and the owner places again.
+#[derive(Clone, Default)]
+pub struct SurfaceState {
+    inner: std::sync::Arc<
+        std::sync::RwLock<
+            std::collections::HashMap<DeviceId, jarvis_domain::display::SurfacePlacement>,
+        >,
+    >,
+}
+
+impl SurfaceState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record what a node was last told to show. Only the latest survives:
+    /// this is current state, not a log.
+    pub fn remember(&self, device: DeviceId, placement: jarvis_domain::display::SurfacePlacement) {
+        self.inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(device, placement);
+    }
+
+    pub fn current(&self, device: &DeviceId) -> Option<jarvis_domain::display::SurfacePlacement> {
+        self.inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(device)
+            .cloned()
+    }
+
+    /// Forget a node's surface — it has no business being restored to a device
+    /// that is no longer ours (F7.1 revocation).
+    pub fn forget(&self, device: &DeviceId) {
+        self.inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(device);
+    }
+}
+
 /// `GET /api/v1/devices` — every paired device, revoked ones included.
 #[tracing::instrument(skip_all, fields(device_id = %caller.device_id))]
 pub async fn list(
@@ -230,6 +285,7 @@ pub async fn revoke(
         RevocationOutcome::Revoked => {
             // Close whatever this device has open. Durability lives in the
             // committed `revoked_at`; this is what makes it *immediate*.
+            auth.surfaces().forget(&target);
             let notified = auth.revocations().publish(&target);
             // `send` reports total live subscribers, not sockets closed — an
             // operator reading "closed=3" after revoking one tablet would

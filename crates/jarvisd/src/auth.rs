@@ -56,6 +56,9 @@ pub struct AuthState {
     failed_attempts: Arc<RwLock<u32>>,
     /// Announces revocations to live sockets (F7.1). Shared with `WsState`.
     revocations: crate::devices::RevocationBus,
+    /// What each node should be showing (F7.7). Shared with `WsState` and the
+    /// placement route; revocation clears the revoked device's entry.
+    surfaces: crate::devices::SurfaceState,
     /// Where refused authority operations are recorded (F7.1). A rejection is
     /// itself a durable security event — the in-tree precedent is
     /// `jarvis_infra::grants`, which writes one in the same transaction as the
@@ -90,6 +93,7 @@ impl AuthState {
             pairing_code: Arc::new(RwLock::new(code)),
             failed_attempts: Arc::new(RwLock::new(0)),
             revocations: crate::devices::RevocationBus::new(),
+            surfaces: crate::devices::SurfaceState::new(),
             audit: None,
         }
     }
@@ -126,6 +130,11 @@ impl AuthState {
     /// without waiting for its next request (F7.1).
     pub fn revocations(&self) -> &crate::devices::RevocationBus {
         &self.revocations
+    }
+
+    /// The per-node surface memory re-asserted on reconnect (F7.7).
+    pub fn surfaces(&self) -> &crate::devices::SurfaceState {
+        &self.surfaces
     }
 
     pub fn current_pairing_code(&self) -> Option<String> {

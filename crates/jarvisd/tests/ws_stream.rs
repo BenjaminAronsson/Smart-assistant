@@ -42,6 +42,9 @@ async fn seed_session(pool: &PgPool) {
 }
 
 struct Harness {
+    /// The surface memory the daemon re-asserts from (F7.7) — the same
+    /// instance `main.rs` shares between the placement route and the sockets.
+    ws_surfaces: jarvisd::devices::SurfaceState,
     app: axum::Router,
     addr: std::net::SocketAddr,
     token: String,
@@ -61,6 +64,7 @@ async fn start(pool: PgPool, model: FakeModel) -> Harness {
     let runs = Arc::new(PgRunStore::new(pool.clone()));
     let events = Arc::new(PgEventLog::new(pool.clone()));
     let hub = WsHub::new();
+    let surfaces_for_harness = auth.surfaces().clone();
     let shutdown = CancellationToken::new();
 
     let engine = RunEngine::new(
@@ -93,6 +97,9 @@ async fn start(pool: PgPool, model: FakeModel) -> Harness {
         // upgrade must be exercised by the socket test, not stubbed out.
         identity: Some(identity.clone()),
         connected: Default::default(),
+        // The same surface memory the placement route writes to, exactly as
+        // `main.rs` wires it (F7.7).
+        surfaces: surfaces_for_harness.clone(),
         // The REAL audit sink, as `main.rs` wires it — a refusal that is only
         // logged is not the durable record F7.6 claims to write.
         audit: Some(Arc::new(jarvis_infra::audit_sink::PgAuditLog::new(
@@ -165,6 +172,7 @@ async fn start(pool: PgPool, model: FakeModel) -> Harness {
     });
 
     Harness {
+        ws_surfaces: surfaces_for_harness,
         app,
         addr,
         token,
@@ -1004,4 +1012,85 @@ async fn only_the_node_that_heard_the_request_hears_the_answer(pool: PgPool) {
         bedroom_saw.is_empty(),
         "a satellite must not hear another room: {bedroom_saw:?}"
     );
+}
+
+/// **F7.7: a node that reconnects comes back to its surface.** Display
+/// directives are transient — a node that drops its socket misses them
+/// permanently — so the daemon re-asserts what the node should be showing when
+/// it comes back, rather than replaying a backlog of commands.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_reconnecting_node_is_told_what_it_should_be_showing(pool: PgPool) {
+    let harness = start(pool.clone(), FakeModel::streaming(["hi"])).await;
+    let (node_id, node_token) = seed_room_node(&pool).await;
+
+    // Nothing is remembered for a node that has never been placed: a fresh
+    // socket must not be handed somebody else's canvas.
+    let mut socket = connect_node(harness.addr, &node_token).await;
+    assert!(
+        first_display_directive(&mut socket, Duration::from_millis(750))
+            .await
+            .is_none(),
+        "an unplaced node is sent no surface"
+    );
+    drop(socket);
+
+    // Place a surface on it while it is away. The artifact/placement route is
+    // mounted in `display_api.rs`'s harness, which is where *writing* this
+    // memory is tested; here the question is what a socket does with it.
+    harness.ws_surfaces.remember(
+        node_id.parse().expect("ulid"),
+        jarvis_domain::display::SurfacePlacement {
+            surface: jarvis_domain::display::Surface::ArtifactCanvas,
+            monitor: jarvis_domain::display::MonitorId::new("DP-3").expect("monitor"),
+        },
+    );
+
+    // Reconnecting, it is told what it should be showing.
+    let mut socket = connect_node(harness.addr, &node_token).await;
+    let directive = first_display_directive(&mut socket, Duration::from_secs(3))
+        .await
+        .expect("the node is restored to its surface");
+    assert_eq!(directive["type"], "display.place_surface");
+    assert_eq!(directive["payload"]["monitor"], "DP-3");
+    assert_eq!(
+        directive["payload"]["targetDeviceId"], node_id,
+        "addressed to this node, so no other screen lights up"
+    );
+}
+
+async fn connect_node(
+    addr: std::net::SocketAddr,
+    token: &str,
+) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
+    let url = format!("ws://{addr}/ws/v1");
+    let mut request = url.into_client_request().unwrap();
+    request
+        .headers_mut()
+        .insert("Authorization", format!("Bearer {token}").parse().unwrap());
+    connect_async(request).await.expect("ws upgrade").0
+}
+
+async fn first_display_directive(
+    socket: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    within: Duration,
+) -> Option<serde_json::Value> {
+    let deadline = tokio::time::sleep(within);
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = &mut deadline => return None,
+            frame = socket.next() => match frame {
+                Some(Ok(WsMessage::Text(text))) => {
+                    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    if value["channel"] == "display" {
+                        return Some(value);
+                    }
+                }
+                Some(Ok(WsMessage::Close(_))) | None => return None,
+                _ => {}
+            }
+        }
+    }
 }

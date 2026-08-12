@@ -397,6 +397,10 @@ mod node_targeting {
     /// Owner + a connected kitchen screen + a connected screenless speaker +
     /// a revoked screen, with `kitchen` aliased the way an owner would say it.
     async fn node_harness() -> NodeHarness {
+        node_harness_with_surfaces(jarvisd::devices::SurfaceState::new()).await
+    }
+
+    async fn node_harness_with_surfaces(surfaces: jarvisd::devices::SurfaceState) -> NodeHarness {
         let store_identity = Arc::new(InMemoryIdentityStore::new().with_device(
             identity_fixture::device("owner laptop", DeviceClass::OwnerUi, &hash(OWNER_TOKEN)),
         ));
@@ -436,6 +440,7 @@ mod node_targeting {
                 .collect(),
             identity: store_identity.clone(),
             connected,
+            surfaces,
         });
 
         let auth = AuthState::bootstrap(store_identity).await;
@@ -528,6 +533,65 @@ mod node_targeting {
     }
 
     /// Omitting `node` keeps the pre-node behaviour exactly: the local agent.
+    /// **F7.7: a reconnecting node comes back to the right surface.**
+    /// Directives are transient by design, so a node that misses one would
+    /// otherwise come back blank and stay blank — the placement is never
+    /// coming again. The latest placement per node is remembered so it can be
+    /// re-asserted, and only the latest: this is current state, not a log the
+    /// node would replay command by command.
+    #[tokio::test]
+    async fn the_latest_placement_per_node_is_remembered_for_reconnect() {
+        let surfaces = jarvisd::devices::SurfaceState::new();
+        let h = node_harness_with_surfaces(surfaces.clone()).await;
+        let kitchen: jarvis_domain::ids::DeviceId = h.kitchen_id.parse().expect("ulid");
+
+        assert!(
+            surfaces.current(&kitchen).is_none(),
+            "nothing to restore before anything is placed"
+        );
+
+        let (status, _) = open_on(&h.app, "kitchen").await;
+        assert_eq!(status, StatusCode::OK);
+        let remembered = surfaces
+            .current(&kitchen)
+            .expect("the surface is remembered");
+        assert_eq!(remembered.monitor.as_str(), "DP-1");
+
+        // Placing again replaces rather than accumulates.
+        let (status, _) = open_on(&h.app, "kitchen").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(surfaces.current(&kitchen).is_some());
+
+        // A revoked device's surface is forgotten — it has no business being
+        // restored to a device that is no longer ours.
+        surfaces.forget(&kitchen);
+        assert!(surfaces.current(&kitchen).is_none());
+    }
+
+    /// An untargeted placement belongs to no node, so there is nothing to
+    /// restore later — remembering it would restore the owner's canvas onto
+    /// whichever satellite happened to reconnect.
+    #[tokio::test]
+    async fn an_untargeted_placement_is_not_remembered_against_any_node() {
+        let surfaces = jarvisd::devices::SurfaceState::new();
+        let h = node_harness_with_surfaces(surfaces.clone()).await;
+        let response = h
+            .app
+            .clone()
+            .oneshot(
+                Request::post(format!("/api/v1/artifacts/{ARTIFACT}/open"))
+                    .header(header::AUTHORIZATION, format!("Bearer {OWNER_TOKEN}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let kitchen: jarvis_domain::ids::DeviceId = h.kitchen_id.parse().expect("ulid");
+        assert!(surfaces.current(&kitchen).is_none());
+    }
+
     #[tokio::test]
     async fn an_untargeted_placement_still_goes_to_the_local_agent() {
         let h = node_harness().await;
