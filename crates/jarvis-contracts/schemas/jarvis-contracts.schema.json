@@ -1066,6 +1066,16 @@
           "const": "identity.last_owner_device",
           "description": "Revoking this device would leave the owner with no `owner-ui` device\nand therefore no way to pair a new one without a `jarvisd` restart\n(F7.1, FR-19). 409 — the request was well-formed; the owner pairs a\nreplacement first. Never blocks revoking a *node*, only the last\nowner client.",
           "type": "string"
+        },
+        {
+          "const": "identity.class_not_grantable",
+          "description": "A node asked to be paired as a class it may not request — `owner-ui`,\nor a name this build does not know (F7.2, FR-19). 403: the request was\nwell-formed and the code may even have been right; the *class* is the\nrefusal. A node requesting owner authority is never quietly downgraded,\nbecause a client that thinks it asked for more than it got is a client\nthat will act on the wrong assumption.",
+          "type": "string"
+        },
+        {
+          "const": "identity.challenge_rejected",
+          "description": "The pairing challenge is unknown, expired, already spent, or was issued\nto a different key (F7.2). 403, one code for all of them: distinguishing\nthem would let a caller probe the challenge space.",
+          "type": "string"
         }
       ]
     },
@@ -2450,6 +2460,71 @@
       ],
       "type": "object"
     },
+    "NodePairChallengeDto": {
+      "description": "The challenge to sign. Single-use, short-lived, and bound to the public key\nthat asked for it — a challenge is not a bearer object.",
+      "properties": {
+        "challenge": {
+          "description": "Base64 (standard, padded) random bytes to sign.",
+          "type": "string"
+        },
+        "challengeId": {
+          "type": "string"
+        },
+        "expiresAt": {
+          "description": "RFC 3339.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "challengeId",
+        "challenge",
+        "expiresAt"
+      ],
+      "type": "object"
+    },
+    "NodePairCompleteRequest": {
+      "description": "`POST /api/v1/devices/pair/complete` — step two, from the node.",
+      "properties": {
+        "challengeId": {
+          "type": "string"
+        },
+        "signature": {
+          "description": "Base64 (standard, padded) Ed25519 signature over the raw challenge\nbytes, 64 bytes decoded.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "challengeId",
+        "signature"
+      ],
+      "type": "object"
+    },
+    "NodePairStartRequest": {
+      "description": "`POST /api/v1/devices/pair` — step one, from the node.",
+      "properties": {
+        "deviceName": {
+          "type": "string"
+        },
+        "pairingCode": {
+          "type": "string"
+        },
+        "publicKey": {
+          "description": "Base64 (standard, padded) Ed25519 public key, 32 bytes decoded.",
+          "type": "string"
+        },
+        "requestedClass": {
+          "description": "`display-node`, `voice-node` or `room-node`. A node **requests**; the\nserver **assigns**. Asking for `owner-ui` is refused, never upgraded\n(docs/05 §6.3).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "publicKey",
+        "deviceName",
+        "requestedClass",
+        "pairingCode"
+      ],
+      "type": "object"
+    },
     "OpenArtifactRequest": {
       "description": "`POST /api/v1/artifacts/{id}/open` (FR-09/10): request that an artifact be\nrendered on a selected display. `display` names a monitor connector; when\nomitted, the server falls back to the display profile's `ArtifactCanvas`\nassignment and fails closed (409) if neither resolves a monitor.",
       "properties": {
@@ -2528,6 +2603,24 @@
         "deviceToken",
         "deviceClass",
         "scopes"
+      ],
+      "type": "object"
+    },
+    "PairingWindowDto": {
+      "description": "`POST /api/v1/devices/pairing-window` — the owner opens a window.",
+      "properties": {
+        "expiresAt": {
+          "description": "RFC 3339. A window that is not used in time closes itself.",
+          "type": "string"
+        },
+        "pairingCode": {
+          "description": "The one-time code the owner reads out to the node. Shown once, here;\nnever logged, never stored in the clear.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pairingCode",
+        "expiresAt"
       ],
       "type": "object"
     },

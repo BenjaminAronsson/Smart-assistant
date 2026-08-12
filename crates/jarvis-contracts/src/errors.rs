@@ -130,6 +130,19 @@ pub enum ErrorCode {
     /// owner client.
     #[serde(rename = "identity.last_owner_device")]
     IdentityLastOwnerDevice,
+    /// A node asked to be paired as a class it may not request — `owner-ui`,
+    /// or a name this build does not know (F7.2, FR-19). 403: the request was
+    /// well-formed and the code may even have been right; the *class* is the
+    /// refusal. A node requesting owner authority is never quietly downgraded,
+    /// because a client that thinks it asked for more than it got is a client
+    /// that will act on the wrong assumption.
+    #[serde(rename = "identity.class_not_grantable")]
+    IdentityClassNotGrantable,
+    /// The pairing challenge is unknown, expired, already spent, or was issued
+    /// to a different key (F7.2). 403, one code for all of them: distinguishing
+    /// them would let a caller probe the challenge space.
+    #[serde(rename = "identity.challenge_rejected")]
+    IdentityChallengeRejected,
 }
 
 /// RFC 9457 problem details body plus the stable machine `code` (docs/05 §2).

@@ -27,7 +27,9 @@
 | `GET /api/v1/automations` · `POST /api/v1/automations` | FR-17 | List / create (creation is an R2 action → approval flow). |
 | `PATCH /api/v1/automations/{id}` · `DELETE …` | FR-17 | Edit/disable/delete (R2). |
 | `GET /api/v1/automations/{id}/executions` | FR-17 | Execution history with policy decisions. |
-| `POST /api/v1/devices/pair` | FR-19 | Device challenge/approval flow (nodes, M7). |
+| `POST /api/v1/devices/pairing-window` | FR-19 | Owner opens a node-pairing window and receives the one-time code (`ui` scope). |
+| `POST /api/v1/devices/pair` | FR-19 | Node presents its public key + the code; receives a single-use challenge (unauthenticated — the node has no token yet). |
+| `POST /api/v1/devices/pair/complete` | FR-19 | Node returns the signature; receives its device token and assigned class. |
 | `GET /api/v1/devices` | FR-19 | List paired devices with class, scopes, last seen, revocation state (`ui` scope only). |
 | `POST /api/v1/devices/{id}/revoke` | FR-19 | Revoke a device immediately: token fails closed on the next request and its live socket is closed (`ui` scope only). |
 | `GET /api/v1/providers` | FR-11/12 | Profile health, quota state, reset window. |
@@ -261,3 +263,5 @@ and grows additively. HTTP mapping via RFC 9457 problem details.
 | `list.unrecognized_command` | The deterministic grammar refused rather than guessing which list the owner meant (FR-34, ADR-024/ADR-016); the body was valid, its *content* was not resolvable here, so the caller falls back to the normal run path | 422 |
 | `deepdive.nothing_to_promote` | The deep-dive thread has consulted nothing yet, so there is no Research Notes document to write (FR-27, ADR-017); promoting a bare heading would mint a versioned artifact that says nothing | 409 |
 | `identity.last_owner_device` | Revoking this device would leave no `owner-ui` device, so nothing could pair a replacement without a `jarvisd` restart (FR-19, F7.1); never blocks revoking a node | 409 |
+| `identity.class_not_grantable` | A node requested a device class it may not have (`owner-ui`, or an unknown name) — never quietly downgraded (FR-19, F7.2) | 403 |
+| `identity.challenge_rejected` | Pairing challenge unknown, expired, spent, or issued to a different key; one code for all four so the challenge space cannot be probed (FR-19, F7.2) | 403 |

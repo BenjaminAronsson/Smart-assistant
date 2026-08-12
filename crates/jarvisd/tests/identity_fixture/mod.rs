@@ -18,7 +18,9 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use jarvis_application::ports::{IdentityStore, RepositoryError, RevocationOutcome};
+use jarvis_application::ports::{
+    IdentityStore, NodePairOutcome, RepositoryError, RevocationOutcome,
+};
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::identity::{Device, DeviceClass};
 use jarvis_domain::ids::DeviceId;
@@ -133,6 +135,39 @@ impl IdentityStore for InMemoryIdentityStore {
             .cloned())
     }
 
+    async fn pair_node_device(
+        &self,
+        device: &Device,
+        audit: &AuditEvent,
+    ) -> Result<NodePairOutcome, RepositoryError> {
+        self.guard()?;
+        let mut devices = self.devices.lock().expect("not poisoned");
+        // Same order of checks as the Postgres store: no owner ⇒ no node, and
+        // a key already in use is a conflict, not a re-pair.
+        let Some(owner) = devices
+            .iter()
+            .find(|d| d.class == DeviceClass::OwnerUi && d.is_active())
+            .cloned()
+        else {
+            return Ok(NodePairOutcome::NoOwner);
+        };
+        if device.public_key.is_some()
+            && devices
+                .iter()
+                .any(|d| d.public_key.is_some() && d.public_key == device.public_key)
+        {
+            return Ok(NodePairOutcome::KeyAlreadyPaired);
+        }
+        let mut stored = device.clone();
+        stored.user_id = owner.user_id.clone();
+        devices.push(stored);
+        self.audits
+            .lock()
+            .expect("not poisoned")
+            .push(audit.clone());
+        Ok(NodePairOutcome::Paired)
+    }
+
     async fn is_device_active(&self, device_id: &DeviceId) -> Result<bool, RepositoryError> {
         self.guard()?;
         Ok(self
@@ -200,6 +235,7 @@ pub fn device(name: &str, class: DeviceClass, token_hash: &str) -> Device {
         user_id: jarvisd::auth::fresh_id(),
         name: name.to_owned(),
         token_hash: token_hash.to_owned(),
+        public_key: None,
         class,
         created_at: SystemTime::UNIX_EPOCH,
         last_seen_at: None,

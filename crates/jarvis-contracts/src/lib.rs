@@ -25,6 +25,7 @@ pub mod maps;
 pub mod media;
 pub mod memories;
 pub mod messages;
+pub mod pairing;
 pub mod providers;
 pub mod runs;
 pub mod schema;

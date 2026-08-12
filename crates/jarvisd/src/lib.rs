@@ -20,6 +20,7 @@ pub mod maps;
 pub mod media;
 pub mod memories;
 pub mod observability;
+pub mod pairing;
 pub mod pmtiles;
 pub mod problem;
 pub mod runs;

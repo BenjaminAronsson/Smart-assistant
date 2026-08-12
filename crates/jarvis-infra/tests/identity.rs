@@ -2,7 +2,7 @@
 //! Postgres. Each test runs in an isolated throwaway database created by
 //! `#[sqlx::test]` with the workspace migration stream applied.
 
-use jarvis_application::ports::{IdentityStore, RevocationOutcome};
+use jarvis_application::ports::{IdentityStore, NodePairOutcome, RevocationOutcome};
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::identity::{Device, DeviceClass};
 use jarvis_domain::ids::DeviceId;
@@ -20,6 +20,7 @@ fn device(id: &str, user: &str, name: &str, class: DeviceClass, hash: &str) -> D
         user_id: user.parse().expect("ulid"),
         name: name.to_owned(),
         token_hash: hash.to_owned(),
+        public_key: None,
         class,
         created_at: ts(0),
         last_seen_at: None,
@@ -392,4 +393,106 @@ async fn two_concurrent_revocations_cannot_orphan_the_owner(pool: PgPool) {
     .await
     .expect("count");
     assert_eq!(survivors, 1, "the owner must never be locked out");
+}
+
+/// F7.2 (FR-19): a node joins the **owner's** user, records its public key,
+/// and cannot pair into a house with no owner.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_node_pairs_onto_the_owners_user_and_keeps_its_key(pool: PgPool) {
+    let store = PgIdentityStore::new(pool.clone());
+    let owner = device(
+        OWNER,
+        OWNER_USER,
+        "laptop",
+        DeviceClass::OwnerUi,
+        "hash-owner",
+    );
+
+    // No owner yet: nothing to join.
+    let mut node = device(
+        NODE,
+        OWNER_USER,
+        "kitchen",
+        DeviceClass::RoomNode,
+        "hash-node",
+    );
+    node.public_key = Some("dGVzdC1rZXktb25l".to_owned());
+    assert_eq!(
+        store
+            .pair_node_device(&node, &audit("device.paired", &node.id))
+            .await
+            .expect("query"),
+        NodePairOutcome::NoOwner
+    );
+
+    store
+        .pair_device("owner", &owner, &audit("device.paired", &owner.id))
+        .await
+        .expect("pairs the owner");
+    assert_eq!(
+        store
+            .pair_node_device(&node, &audit("device.paired", &node.id))
+            .await
+            .expect("query"),
+        NodePairOutcome::Paired
+    );
+
+    let stored = store
+        .find_active_device_by_token_hash("hash-node")
+        .await
+        .expect("query")
+        .expect("node found");
+    assert_eq!(stored.class, DeviceClass::RoomNode);
+    assert_eq!(stored.public_key.as_deref(), Some("dGVzdC1rZXktb25l"));
+    assert_eq!(stored.user_id, owner.user_id, "the node joins the owner");
+    assert_eq!(
+        stored.effective_scopes(),
+        vec!["display-agent", "voice-capture"],
+        "authority still comes from the class, not from anything the node said"
+    );
+
+    // The key is the identity: a second device cannot claim it.
+    let mut twin = device(
+        "01ARZ3NDEKTSV4RRFFQ69G5FA8",
+        OWNER_USER,
+        "impostor",
+        DeviceClass::RoomNode,
+        "hash-twin",
+    );
+    twin.public_key = stored.public_key.clone();
+    assert_eq!(
+        store
+            .pair_node_device(&twin, &audit("device.paired", &twin.id))
+            .await
+            .expect("query"),
+        NodePairOutcome::KeyAlreadyPaired
+    );
+}
+
+/// Once the owner's only device is revoked, the house stops accepting new
+/// satellites — an attacker who revoked their way in must not then be able to
+/// enroll hardware.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_node_cannot_pair_against_a_revoked_owner(pool: PgPool) {
+    let store = seed(&pool).await;
+    sqlx::query("UPDATE identity.devices SET revoked_at = now() WHERE device_class = 'owner-ui'")
+        .execute(&pool)
+        .await
+        .expect("revoke the owner behind the guard");
+
+    let mut node = device(
+        "01ARZ3NDEKTSV4RRFFQ69G5FA7",
+        OWNER_USER,
+        "late node",
+        DeviceClass::VoiceNode,
+        "hash-late",
+    );
+    node.public_key = Some("bGF0ZS1rZXk=".to_owned());
+    assert_eq!(
+        store
+            .pair_node_device(&node, &audit("device.paired", &node.id))
+            .await
+            .expect("query"),
+        NodePairOutcome::NoOwner
+    );
 }

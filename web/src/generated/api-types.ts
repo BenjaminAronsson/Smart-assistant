@@ -329,7 +329,9 @@ export type ErrorCode =
   | "app.undeclared_capability"
   | "app.token_rejected"
   | "app.invalid_request"
-  | "identity.last_owner_device";
+  | "identity.last_owner_device"
+  | "identity.class_not_grantable"
+  | "identity.challenge_rejected";
 /**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "ServiceStatus".
@@ -1842,6 +1844,61 @@ export interface MintCapabilityTokenRequest {
   capability: CapabilityDto;
 }
 /**
+ * The challenge to sign. Single-use, short-lived, and bound to the public key
+ * that asked for it — a challenge is not a bearer object.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "NodePairChallengeDto".
+ */
+export interface NodePairChallengeDto {
+  /**
+   * Base64 (standard, padded) random bytes to sign.
+   */
+  challenge: string;
+  challengeId: string;
+  /**
+   * RFC 3339.
+   */
+  expiresAt: string;
+  [k: string]: unknown;
+}
+/**
+ * `POST /api/v1/devices/pair/complete` — step two, from the node.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "NodePairCompleteRequest".
+ */
+export interface NodePairCompleteRequest {
+  challengeId: string;
+  /**
+   * Base64 (standard, padded) Ed25519 signature over the raw challenge
+   * bytes, 64 bytes decoded.
+   */
+  signature: string;
+  [k: string]: unknown;
+}
+/**
+ * `POST /api/v1/devices/pair` — step one, from the node.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "NodePairStartRequest".
+ */
+export interface NodePairStartRequest {
+  deviceName: string;
+  pairingCode: string;
+  /**
+   * Base64 (standard, padded) Ed25519 public key, 32 bytes decoded.
+   */
+  publicKey: string;
+  /**
+   * `display-node`, `voice-node` or `room-node`. A node **requests**; the
+   * server **assigns**. Asking for `owner-ui` is refused, never upgraded
+   * (docs/05 §6.3).
+   */
+  requestedClass: string;
+  [k: string]: unknown;
+}
+/**
  * `POST /api/v1/artifacts/{id}/open` (FR-09/10): request that an artifact be
  * rendered on a selected display. `display` names a monitor connector; when
  * omitted, the server falls back to the display profile's `ArtifactCanvas`
@@ -1902,6 +1959,24 @@ export interface PairResponse {
    * Device scopes, e.g. `ui`, `display-agent`, `voice-capture` (docs/05 §6).
    */
   scopes: string[];
+  [k: string]: unknown;
+}
+/**
+ * `POST /api/v1/devices/pairing-window` — the owner opens a window.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "PairingWindowDto".
+ */
+export interface PairingWindowDto {
+  /**
+   * RFC 3339. A window that is not used in time closes itself.
+   */
+  expiresAt: string;
+  /**
+   * The one-time code the owner reads out to the node. Shown once, here;
+   * never logged, never stored in the clear.
+   */
+  pairingCode: string;
   [k: string]: unknown;
 }
 /**

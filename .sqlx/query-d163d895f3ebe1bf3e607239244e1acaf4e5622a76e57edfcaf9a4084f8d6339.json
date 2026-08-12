@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, user_id, name, token_hash, device_class, created_at,\n                   last_seen_at, revoked_at, revoked_reason\n            FROM identity.devices\n            ORDER BY created_at, id\n            ",
+  "query": "\n            SELECT id, user_id, name, token_hash, device_class, public_key, created_at,\n                   last_seen_at, revoked_at, revoked_reason\n            FROM identity.devices\n            WHERE token_hash = $1 AND revoked_at IS NULL\n            ",
   "describe": {
     "columns": [
       {
@@ -30,27 +30,34 @@
       },
       {
         "ordinal": 5,
+        "name": "public_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "last_seen_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "revoked_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "revoked_reason",
         "type_info": "Text"
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Text"
+      ]
     },
     "nullable": [
       false,
@@ -58,11 +65,12 @@
       false,
       false,
       false,
+      true,
       false,
       true,
       true,
       true
     ]
   },
-  "hash": "d452dfbba36240b33ca6d58215f380f49cbe9a41f7c37835dfa3bbb07a0d95f7"
+  "hash": "d163d895f3ebe1bf3e607239244e1acaf4e5622a76e57edfcaf9a4084f8d6339"
 }

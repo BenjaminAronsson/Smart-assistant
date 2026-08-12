@@ -211,6 +211,16 @@ pub trait IdentityStore: Send + Sync {
     /// Every paired device, revoked ones included — the owner's device list
     /// (docs/05 §6.4) has to show what was revoked, not silently forget it.
     async fn list_devices(&self) -> Result<Vec<jarvis_domain::identity::Device>, RepositoryError>;
+    /// Pair a **node** onto the owner's existing user (F7.2, FR-19). Distinct
+    /// from [`Self::pair_device`], which bootstraps the owner and creates the
+    /// user row: a satellite joins an owner who already exists, and fails
+    /// closed if none does — nothing should be pairable to a house with no
+    /// owner in it.
+    async fn pair_node_device(
+        &self,
+        device: &jarvis_domain::identity::Device,
+        audit: &AuditEvent,
+    ) -> Result<NodePairOutcome, RepositoryError>;
     /// Is this device still active? The WebSocket upgrade re-asks after
     /// subscribing to the revocation bus, because a socket authorizes once and
     /// then holds that authority for its lifetime: without this read, a
@@ -234,6 +244,17 @@ pub trait IdentityStore: Send + Sync {
         revoked_at: std::time::SystemTime,
         audit: &AuditEvent,
     ) -> Result<RevocationOutcome, RepositoryError>;
+}
+
+/// What a node-pairing attempt did (F7.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodePairOutcome {
+    Paired,
+    /// No owner device exists yet, so there is no user to attach the node to.
+    NoOwner,
+    /// Another device already holds this public key. Re-presenting a key is
+    /// not a re-pair: the existing device is revoked first, deliberately.
+    KeyAlreadyPaired,
 }
 
 /// What a revocation attempt did (docs/05 §6.4).

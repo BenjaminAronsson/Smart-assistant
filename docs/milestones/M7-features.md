@@ -168,8 +168,8 @@ not control.
          revocation re-check at socket upgrade (a `broadcast` subscriber cannot see a
          publish that landed before it subscribed).
 
-- [ ] **F7.2 — Challenge-response pairing with per-device keys (FR-19, ADR-031)**
-      · *strong model*
+- [x] **F7.2 — Challenge-response pairing with per-device keys (FR-19, ADR-031)**
+      · *strong model* — DONE (branch `feat/m7-f7.2-node-pairing`)
       `POST /api/v1/devices/pair`, the route docs/05 §1 has reserved since M0. Flow: the
       node generates an Ed25519 keypair and posts `{ publicKey, deviceName, requestedClass,
       pairingCode }`; the server verifies the code against an **owner-opened pairing
@@ -187,6 +187,12 @@ not control.
       Refs: docs/05 §6.1/§6.5, docs/06 §5 ("remote node impersonation"), docs/04 §2.
       Read: F7.1's output, `crates/jarvisd/src/auth.rs`; skills `policy-grants`,
       `ws-contracts`. Deps: F7.1.
+
+      **Deviation:** the window is opened over the owner's authenticated API
+      (`POST /api/v1/devices/pairing-window`, `ui`-scoped), not `jarvisd pair --new` as
+      docs/05 §6.1 sketched. A separate CLI process cannot mutate the running daemon's
+      in-flight state, so that shape would have to persist the window — giving an offline
+      secret a durable home for no gain. Recorded as ADR-031 §5.
 
 - [ ] **F7.3 — TLS listener + private-network binding (docs/06 §7)** · *strong model*
       Today `jarvisd` binds loopback and that is the entire network security model. This

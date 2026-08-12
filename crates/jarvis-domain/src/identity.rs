@@ -203,6 +203,10 @@ pub struct Device {
     pub name: String,
     /// sha256 hex of the opaque bearer token (docs/05 §6).
     pub token_hash: String,
+    /// Base64 Ed25519 public key this device proved possession of at pairing
+    /// (ADR-031). `None` for the code-paired bootstrap device, which predates
+    /// node keys and never leaves loopback.
+    pub public_key: Option<String>,
     pub class: DeviceClass,
     pub created_at: SystemTime,
     /// Last time this device was seen on a socket or a request (docs/04 §2);
@@ -380,6 +384,7 @@ mod tests {
             user_id: "01ARZ3NDEKTSV4RRFFQ69G5FAW".parse().expect("ulid"),
             name: "kitchen screen".into(),
             token_hash: "deadbeef".into(),
+            public_key: None,
             class: DeviceClass::DisplayNode,
             created_at: SystemTime::UNIX_EPOCH,
             last_seen_at: None,

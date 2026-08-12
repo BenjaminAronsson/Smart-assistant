@@ -32,6 +32,13 @@ tower-http = { version = "0.6", features = ["trace", "fs"] }
 figment = { version = "0.10", features = ["toml", "env"] }
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls"] }
 rand = "0.9"
+# Node identity (F7.2, ADR-031): Ed25519 verification only — jarvisd never
+# holds a node's private key. `from_bytes` rejects non-canonical and
+# small-order points, and `verify_strict` rejects the malleable forms, which is
+# why this is a real dependency rather than a hand-rolled check. BSD-3-Clause.
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
+# base64 for the wire encoding of keys, challenges and signatures (ADR-031).
+base64 = "0.22"
 # PMTiles directories and metadata are gzip-encoded inside the archive (F3b.5,
 # ADR-013). Pure-Rust inflate (miniz_oxide) — no C toolchain, no TLS stack, and
 # only the *directory* pages are ever decoded: tile bodies are forwarded to the
@@ -50,6 +57,12 @@ opentelemetry_sdk = { version = "0.30", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.30", features = ["grpc-tonic"] }
 
 [dev-dependencies]
+# Node keypairs for the pairing tests. `ed25519-dalek` 2 generates against
+# rand_core 0.6 while the workspace runs rand 0.9, so the test build pulls the
+# older core explicitly rather than downgrading the daemon's RNG.
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "rand_core"] }
+rand_core6 = { package = "rand_core", version = "0.6", features = ["getrandom"] }
+base64 = "0.22"
 http-body-util = "0.1"
 # The map tests build a synthetic PMTiles archive byte-for-byte (no network, no
 # committed binary fixture), which means gzipping its directories.
