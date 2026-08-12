@@ -232,3 +232,61 @@ Minimum set before M8: Claude CLI re-authentication; quota-exhausted behavior an
 window; database restore drill; artifact CAS integrity check (`jarvisd verify-cas`);
 device token revocation; adding an HA entity to the allowlist; collecting a redacted
 diagnostics bundle; full-disk recovery (Postgres + CAS on same volume — alert at 85%).
+
+## 11. Network exposure: loopback, LAN, remote (F7.3, docs/06 §7)
+
+`jarvisd` binds **loopback** by default and needs nothing else. Any other bind requires
+`[server.tls]`, and **startup refuses without it** — there is no override flag, because a
+daemon serving device tokens in the clear on a LAN is the one configuration mistake with
+no recovery: the credential is gone the moment it is used.
+
+```toml
+[server]
+bind = "0.0.0.0:8443"          # anything non-loopback ⇒ TLS required
+tls = { cert_path = "/etc/jarvis/tls/cert.pem", key_path = "/etc/jarvis/tls/key.pem" }
+```
+
+Both paths must be absolute — a relative path resolves against whatever directory the
+service happened to start in.
+
+**The certificate is self-signed, and that is fine.** There is no CA in a house. What makes
+it meaningful is the **fingerprint**: `jarvisd` logs it at startup and returns it in the
+node pairing response (`serverFingerprint`, ADR-031), delivered inside the ceremony the
+owner already trusted enough to read a one-time code across. The node pins it and refuses
+anything else afterwards. Generate one with:
+
+```bash
+openssl req -x509 -newkey ed25519 -nodes -days 3650 \
+  -subj "/CN=jarvis.lan" -addext "subjectAltName=DNS:jarvis.lan,IP:192.168.1.10" \
+  -keyout /etc/jarvis/tls/key.pem -out /etc/jarvis/tls/cert.pem
+chmod 600 /etc/jarvis/tls/key.pem     # readable only by the service user
+openssl x509 -in /etc/jarvis/tls/cert.pem -noout -fingerprint -sha256
+```
+
+Rotating the certificate **breaks every paired node's pin**; they re-pair. Plan a rotation
+the way you would plan re-pairing the house.
+
+**The health endpoint follows the bind.** `GET /api/v1/diagnostics/health` is
+unauthenticated only while the listener is loopback (docs/05 §6.2). On any other bind it
+moves behind authentication automatically — off loopback it is an unauthenticated readout
+of adapter state and, while a window is open, of the bootstrap pairing code.
+
+**Firewall.** Expose only the jarvisd port, and only to the subnet that holds the
+satellites:
+
+```bash
+firewall-cmd --permanent --new-zone=jarvis
+firewall-cmd --permanent --zone=jarvis --add-source=192.168.1.0/24
+firewall-cmd --permanent --zone=jarvis --add-port=8443/tcp
+firewall-cmd --reload
+```
+
+Postgres, Wyoming, MCP servers, the browser/coding/app workers and any model server stay
+on loopback or a private container network — none of them gain a LAN listener because
+jarvisd did.
+
+**Remote (outside the house).** Use a private overlay — Tailscale or WireGuard — and bind
+jarvisd to the overlay interface. **Never** port-forward jarvisd from a router: the pairing
+window, the health page and every device token would then be reachable from the open
+internet, and a 6-digit pairing code is ~20 bits. This is a standing rule, not a default
+(docs/06 §7).
