@@ -551,9 +551,7 @@ pub(crate) fn delivers_to(
     match envelope.channel {
         Channel::Session => class.holds(ClassScope::Ui.as_str()),
         Channel::Display => {
-            if !(class.holds(ClassScope::DisplayAgent.as_str())
-                || class.holds(ClassScope::Ui.as_str()))
-            {
+            if !class.holds(ClassScope::DisplayAgent.as_str()) {
                 return false;
             }
             // An addressed placement reaches exactly its target (F7.5); an
@@ -569,9 +567,7 @@ pub(crate) fn delivers_to(
             }
         }
         Channel::Voice => {
-            if !(class.holds(ClassScope::VoiceCapture.as_str())
-                || class.holds(ClassScope::Ui.as_str()))
-            {
+            if !class.holds(ClassScope::VoiceCapture.as_str()) {
                 return false;
             }
             match envelope.payload.get("streamId").and_then(|v| v.as_str()) {
@@ -667,6 +663,10 @@ pub struct WsState {
     /// so "the kitchen screen is not connected" is answerable before a
     /// directive is audited and dispatched.
     pub connected: crate::devices::ConnectedDevices,
+    /// Durable record for refused capture attempts (F7.6). A device reaching
+    /// for a microphone it was never granted is exactly the docs/06 §5
+    /// "remote node impersonation" signal worth keeping.
+    pub audit: Option<Arc<dyn jarvis_application::ports::AuditLog>>,
 }
 
 struct ActiveVoiceStream {
@@ -1438,6 +1438,59 @@ async fn handle_socket(
                             // like any other unparseable one above — the browser
                             // already fails closed on the absence of a
                             // transcript.
+                            // F7.6: capture is a *capability*, not something
+                            // any authenticated socket may do. A display-only
+                            // node opening a microphone stream is either
+                            // misconfigured or hostile; either way the daemon
+                            // must not start feeding a speech service on its
+                            // behalf, and the attempt is worth keeping.
+                            if !device.holds(ClassScope::VoiceCapture.as_str()) {
+                                tracing::warn!(
+                                    device_id = %device.device_id,
+                                    class = %device.class,
+                                    "refusing voice capture: device holds no `voice-capture` scope"
+                                );
+                                if let Some(audit) = &state.audit {
+                                    let event = jarvis_domain::audit::AuditEvent {
+                                        occurred_at: SystemTime::now(),
+                                        actor: format!("device:{}", device.device_id),
+                                        event_type: "voice.capture_denied".to_owned(),
+                                        target: format!("device:{}", device.device_id),
+                                        correlation_id: None,
+                                        payload_json: serde_json::json!({
+                                            "deviceClass": device.class.as_str(),
+                                            "reason": "device holds no `voice-capture` scope",
+                                        })
+                                        .to_string(),
+                                    };
+                                    if let Err(e) = audit.record(&event).await {
+                                        tracing::error!(error = %e, "capture-denial audit failed");
+                                    }
+                                }
+                                // Sent on THIS socket rather than broadcast:
+                                // the hub's voice channel is filtered by
+                                // `voice-capture` (F7.4), so a broadcast
+                                // refusal would be dropped before reaching the
+                                // very device being refused. A per-connection
+                                // rejection is not a household event anyway.
+                                let refusal = EventEnvelope {
+                                    v: CONTRACT_VERSION,
+                                    seq: state.hub.high_water(),
+                                    channel: Channel::Voice,
+                                    event_type: "voice.error".to_owned(),
+                                    occurred_at: now_rfc3339(),
+                                    trace_id: None,
+                                    resource_version: None,
+                                    payload: serde_json::json!({
+                                        "streamId": stream_id,
+                                        "code": "voice.capture_denied",
+                                    }),
+                                };
+                                if send_envelope(&mut socket, &refusal).await.is_err() {
+                                    shut_down!();
+                                }
+                                continue;
+                            }
                             if !stream_id_is_acceptable(&stream_id) {
                                 tracing::warn!(
                                     stream_id_len = stream_id.len(),

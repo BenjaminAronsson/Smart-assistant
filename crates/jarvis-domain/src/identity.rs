@@ -127,7 +127,16 @@ impl DeviceClass {
     /// The class scopes this class holds.
     pub fn class_scopes(&self) -> &'static [ClassScope] {
         match self {
-            Self::OwnerUi => &[ClassScope::Ui],
+            // The owner's own client is every kind of client: it shows
+            // surfaces and it captures voice (the M5 push-to-talk path lives
+            // in the Angular shell). Saying so here is what lets the voice and
+            // display gates be a single scope check rather than "this scope,
+            // or the owner, who is special".
+            Self::OwnerUi => &[
+                ClassScope::Ui,
+                ClassScope::DisplayAgent,
+                ClassScope::VoiceCapture,
+            ],
             Self::DisplayNode => &[ClassScope::DisplayAgent],
             Self::VoiceNode => &[ClassScope::VoiceCapture],
             Self::RoomNode => &[ClassScope::DisplayAgent, ClassScope::VoiceCapture],

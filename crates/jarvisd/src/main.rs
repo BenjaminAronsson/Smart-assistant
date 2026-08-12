@@ -445,6 +445,9 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     let public_health = config.bind_addr().ip().is_loopback();
     let ws_state = WsState {
         connected: connected.clone(),
+        audit: Some(Arc::new(jarvis_infra::audit_sink::PgAuditLog::new(
+            pool.clone(),
+        ))),
         hub: hub.clone(),
         events: event_log,
         shutdown: serve_shutdown.clone(),
