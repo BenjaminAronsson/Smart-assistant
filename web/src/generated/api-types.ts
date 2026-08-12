@@ -145,6 +145,14 @@ export type DisplayDirective =
       appId: string;
       monitor: string;
       surface: SurfaceDto;
+      /**
+       * The device this placement is for (F7.5). Absent means the local
+       * desktop agent, which is how every placement worked before nodes
+       * existed — so an older agent that ignores the field still behaves
+       * correctly for its own placements. Delivery is filtered on it, so a
+       * node never *sees* another node's directive regardless.
+       */
+      targetDeviceId?: string | null;
       type: "display.place_surface";
       [k: string]: unknown;
     }
@@ -331,7 +339,8 @@ export type ErrorCode =
   | "app.invalid_request"
   | "identity.last_owner_device"
   | "identity.class_not_grantable"
-  | "identity.challenge_rejected";
+  | "identity.challenge_rejected"
+  | "display.node_unavailable";
 /**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "ServiceStatus".
@@ -1909,6 +1918,17 @@ export interface NodePairStartRequest {
  */
 export interface OpenArtifactRequest {
   display?: string | null;
+  /**
+   * **Which node** should present it (F7.5, FR-19): a paired device id, or a
+   * room name from `[display].node_aliases`. Omitted means the local
+   * desktop agent, which is what every placement meant before nodes.
+   *
+   * An unknown room, an offline node, or a device that cannot present is a
+   * **visible failure** — never a silent fallback to a local surface. "Put
+   * it on the kitchen screen" must not look like it worked when the kitchen
+   * screen is unplugged.
+   */
+  node?: string | null;
   [k: string]: unknown;
 }
 /**
@@ -1928,6 +1948,11 @@ export interface OpenArtifactResponse {
   dispatched: boolean;
   monitor: string;
   surface: SurfaceDto;
+  /**
+   * The device the placement was addressed to (F7.5); absent for the local
+   * desktop agent.
+   */
+  targetDeviceId?: string | null;
   [k: string]: unknown;
 }
 /**

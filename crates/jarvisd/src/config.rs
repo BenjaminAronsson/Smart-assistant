@@ -410,6 +410,13 @@ impl MediaConfig {
 pub struct DisplayConfig {
     #[serde(default)]
     pub profile: std::collections::BTreeMap<String, String>,
+    /// Room name → paired device id (F7.5, FR-19), e.g.
+    /// `node_aliases = { kitchen = "01ARZ…" }`. This is the vocabulary the
+    /// owner actually uses — "put it on the kitchen screen" — mapped to the
+    /// device the pairing flow created. Same shape as
+    /// `[integrations.spotify].device_aliases` (docs/02 §11).
+    #[serde(default)]
+    pub node_aliases: std::collections::BTreeMap<String, String>,
 }
 
 /// `[storage]` (docs/04 §1, ADR-008). Root of the content-addressed artifact

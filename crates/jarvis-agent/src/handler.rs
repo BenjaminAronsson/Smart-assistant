@@ -62,6 +62,10 @@ pub async fn apply(
             surface: _,
             app_id,
             monitor,
+            // Addressing is enforced server-side (F7.5): the agent only ever
+            // receives directives meant for it, so this is context for logs
+            // rather than a check the agent could be trusted to make.
+            target_device_id: _,
         } => {
             if !is_single_line_token(app_id) {
                 return Err(HandleError::Malformed("appId"));
@@ -162,6 +166,7 @@ mod tests {
 
     fn place(app_id: &str, monitor: &str) -> DisplayDirective {
         DisplayDirective::PlaceSurface {
+            target_device_id: None,
             surface: SurfaceDto::ArtifactCanvas,
             app_id: app_id.to_owned(),
             monitor: monitor.to_owned(),

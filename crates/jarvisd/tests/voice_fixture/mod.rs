@@ -282,6 +282,7 @@ impl Harness {
         );
         let ws = WsState {
             identity: None,
+            connected: Default::default(),
             revocations: Default::default(),
             hub,
             events,

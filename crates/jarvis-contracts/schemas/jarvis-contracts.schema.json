@@ -731,6 +731,13 @@
             "surface": {
               "$ref": "#/definitions/SurfaceDto"
             },
+            "targetDeviceId": {
+              "description": "The device this placement is for (F7.5). Absent means the local\ndesktop agent, which is how every placement worked before nodes\nexisted — so an older agent that ignores the field still behaves\ncorrectly for its own placements. Delivery is filtered on it, so a\nnode never *sees* another node's directive regardless.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "const": "display.place_surface",
               "type": "string"
@@ -1075,6 +1082,11 @@
         {
           "const": "identity.challenge_rejected",
           "description": "The pairing challenge is unknown, expired, already spent, or was issued\nto a different key (F7.2). 403, one code for all of them: distinguishing\nthem would let a caller probe the challenge space.",
+          "type": "string"
+        },
+        {
+          "const": "display.node_unavailable",
+          "description": "A placement named a node that cannot take it — unknown room name, not a\npaired device, revoked, unable to present, or simply not connected\n(F7.5, FR-19). 409, and deliberately **not** a silent fallback to a\nlocal surface: \"put it on the kitchen screen\" must not look like it\nworked when the kitchen screen is unplugged.",
           "type": "string"
         }
       ]
@@ -2533,6 +2545,13 @@
             "string",
             "null"
           ]
+        },
+        "node": {
+          "description": "**Which node** should present it (F7.5, FR-19): a paired device id, or a\nroom name from `[display].node_aliases`. Omitted means the local\ndesktop agent, which is what every placement meant before nodes.\n\nAn unknown room, an offline node, or a device that cannot present is a\n**visible failure** — never a silent fallback to a local surface. \"Put\nit on the kitchen screen\" must not look like it worked when the kitchen\nscreen is unplugged.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -2552,6 +2571,13 @@
         },
         "surface": {
           "$ref": "#/definitions/SurfaceDto"
+        },
+        "targetDeviceId": {
+          "description": "The device the placement was addressed to (F7.5); absent for the local\ndesktop agent.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

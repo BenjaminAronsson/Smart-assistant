@@ -51,6 +51,13 @@ pub enum DisplayDirective {
         surface: SurfaceDto,
         app_id: String,
         monitor: String,
+        /// The device this placement is for (F7.5). Absent means the local
+        /// desktop agent, which is how every placement worked before nodes
+        /// existed — so an older agent that ignores the field still behaves
+        /// correctly for its own placements. Delivery is filtered on it, so a
+        /// node never *sees* another node's directive regardless.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_device_id: Option<String>,
     },
     /// Open `url` in the **dedicated media window** on `monitor` (FR-22, ADR-012
     /// cast-a-link): launch it if it is not running, reuse it if it is, then
@@ -78,6 +85,16 @@ pub enum DisplayDirective {
 pub struct OpenArtifactRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
+    /// **Which node** should present it (F7.5, FR-19): a paired device id, or a
+    /// room name from `[display].node_aliases`. Omitted means the local
+    /// desktop agent, which is what every placement meant before nodes.
+    ///
+    /// An unknown room, an offline node, or a device that cannot present is a
+    /// **visible failure** — never a silent fallback to a local surface. "Put
+    /// it on the kitchen screen" must not look like it worked when the kitchen
+    /// screen is unplugged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 /// Response to `POST …/open`: the placement that was audited and dispatched to
@@ -90,6 +107,10 @@ pub struct OpenArtifactResponse {
     pub artifact_id: ArtifactId,
     pub surface: SurfaceDto,
     pub monitor: String,
+    /// The device the placement was addressed to (F7.5); absent for the local
+    /// desktop agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_device_id: Option<String>,
     /// True when at least one display-agent device was connected to receive the
     /// directive; false means audited-but-undelivered (the UI can surface this).
     pub dispatched: bool,

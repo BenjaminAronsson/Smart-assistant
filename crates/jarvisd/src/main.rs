@@ -41,6 +41,10 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     let pool = jarvis_infra::db::connect_lazy(db_url.expose(), config.database.max_connections)?;
 
     let identity = Arc::new(jarvis_infra::identity::PgIdentityStore::new(pool.clone()));
+    let identity_for_display = identity.clone();
+    // One presence registry: the socket loop marks devices present, the
+    // placement route reads it (F7.5).
+    let connected = jarvisd::devices::ConnectedDevices::new();
     let auth = jarvisd::auth::AuthState::bootstrap(identity)
         .await
         .with_audit(Arc::new(jarvis_infra::audit_sink::PgAuditLog::new(
@@ -123,7 +127,14 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         display_profile.clone(),
         Arc::new(jarvis_infra::audit_sink::PgAuditLog::new(pool.clone())),
         hub.clone(),
-    );
+    )
+    // Node targeting (F7.5): room names the owner says, the identity store
+    // that decides whether a device may present, and who is connected now.
+    .with_nodes(jarvisd::display::NodeTargets {
+        aliases: config.display.node_aliases.clone(),
+        identity: identity_for_display,
+        connected: connected.clone(),
+    });
 
     // Two shutdown tokens so the outbox dispatcher outlives the runs it must
     // publish for: `serve_shutdown` stops the HTTP server and cancels in-flight
@@ -433,6 +444,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     // docs/05 §6.2 scopes the unauthenticated health page to loopback.
     let public_health = config.bind_addr().ip().is_loopback();
     let ws_state = WsState {
+        connected: connected.clone(),
         hub: hub.clone(),
         events: event_log,
         shutdown: serve_shutdown.clone(),

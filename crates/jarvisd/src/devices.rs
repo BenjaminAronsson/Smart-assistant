@@ -78,6 +78,61 @@ impl RevocationBus {
     }
 }
 
+/// Which devices currently hold a socket (F7.5).
+///
+/// "Is the kitchen screen there?" has to be answerable *before* a placement is
+/// audited and dispatched, or the honest failure the owner needs becomes a
+/// fire-and-forget directive into the void. Presence is inherently in-memory
+/// and inherently this process's view: a device is here if it is holding one
+/// of *our* sockets.
+#[derive(Clone, Default)]
+pub struct ConnectedDevices {
+    inner: std::sync::Arc<std::sync::RwLock<std::collections::HashSet<DeviceId>>>,
+}
+
+impl ConnectedDevices {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers `device` as present until the returned guard drops — tying
+    /// presence to the socket's own lifetime, so no disconnect path can forget
+    /// to deregister it (panic, early return, or shutdown alike).
+    pub fn mark_present(&self, device: DeviceId) -> PresenceGuard {
+        self.inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(device.clone());
+        PresenceGuard {
+            devices: self.clone(),
+            device,
+        }
+    }
+
+    pub fn is_connected(&self, device: &DeviceId) -> bool {
+        self.inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(device)
+    }
+}
+
+/// Drops a device out of [`ConnectedDevices`] when its socket task ends.
+pub struct PresenceGuard {
+    devices: ConnectedDevices,
+    device: DeviceId,
+}
+
+impl Drop for PresenceGuard {
+    fn drop(&mut self) {
+        self.devices
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.device);
+    }
+}
+
 /// `GET /api/v1/devices` — every paired device, revoked ones included.
 #[tracing::instrument(skip_all, fields(device_id = %caller.device_id))]
 pub async fn list(

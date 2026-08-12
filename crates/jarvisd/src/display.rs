@@ -35,6 +35,20 @@ pub struct DisplayApi {
     profile: Arc<DisplayProfile>,
     audit: Arc<dyn AuditLog>,
     sink: Arc<dyn DisplayDirectiveSink>,
+    /// Node targeting (F7.5): room name → paired device id, the identity store
+    /// that says whether that device may present, and who is connected right
+    /// now. `None` in deployments wired without the device surface, where the
+    /// only display is the local agent.
+    nodes: Option<NodeTargets>,
+}
+
+/// What a placement needs in order to address a node honestly.
+#[derive(Clone)]
+pub struct NodeTargets {
+    /// `[display].node_aliases`: the room names the owner actually says.
+    pub aliases: std::collections::BTreeMap<String, String>,
+    pub identity: Arc<dyn jarvis_application::ports::IdentityStore>,
+    pub connected: crate::devices::ConnectedDevices,
 }
 
 impl DisplayApi {
@@ -49,7 +63,14 @@ impl DisplayApi {
             profile,
             audit,
             sink,
+            nodes: None,
         }
+    }
+
+    /// Enable node targeting (F7.5).
+    pub fn with_nodes(mut self, nodes: NodeTargets) -> Self {
+        self.nodes = Some(nodes);
+        self
     }
 }
 
@@ -112,6 +133,14 @@ pub async fn open_artifact(
         None => None,
     };
 
+    // Resolve the node BEFORE auditing: an unreachable target must fail
+    // visibly, and a placement nobody can present should not be recorded as
+    // though it happened (F7.5).
+    let target_device_id = match req.node.as_deref() {
+        Some(node) => Some(resolve_node(&api, node).await?),
+        None => None,
+    };
+
     let surface = Surface::ArtifactCanvas;
     let placement = api.profile.resolve(surface, requested).ok_or_else(|| {
         problem(
@@ -137,6 +166,7 @@ pub async fn open_artifact(
         payload_json: serde_json::json!({
             "surface": "artifact_canvas",
             "monitor": placement.monitor.as_str(),
+            "targetDeviceId": target_device_id,
         })
         .to_string(),
     };
@@ -144,12 +174,16 @@ pub async fn open_artifact(
 
     // Fire-and-forget to connected agents; a disconnected agent means the
     // directive was audited but not applied (reported via `dispatched`).
-    let dispatched = api.sink.dispatch(&placement).await;
+    let dispatched = api
+        .sink
+        .dispatch(&placement, target_device_id.as_deref())
+        .await;
 
     Ok(Json(OpenArtifactResponse {
         artifact_id: id,
         surface: SurfaceDto::ArtifactCanvas,
         monitor: placement.monitor.as_str().to_owned(),
+        target_device_id,
         dispatched,
     }))
 }
@@ -167,6 +201,72 @@ fn surface_from_wire(name: &str) -> Option<Surface> {
         "media_window" => Some(Surface::MediaWindow),
         _ => None,
     }
+}
+
+/// Turn what the owner said — a room name or a device id — into a device that
+/// can actually present, or an honest refusal.
+///
+/// Every failure here is the same 409 `display.node_unavailable`, because from
+/// the owner's side they are one situation ("that screen can't take it") and
+/// because distinguishing "no such device" from "revoked" would answer
+/// questions a caller has no business asking. The *log* keeps the distinction.
+async fn resolve_node(api: &DisplayApi, node: &str) -> Result<String, Response> {
+    let Some(nodes) = &api.nodes else {
+        return Err(node_unavailable(
+            "this deployment has no paired display nodes",
+        ));
+    };
+    // A room alias first — that is what the owner says out loud — then a raw
+    // device id for the UI, which has the list in front of it.
+    let device_id = nodes
+        .aliases
+        .get(node)
+        .cloned()
+        .unwrap_or_else(|| node.to_owned());
+    let Ok(device_id) = device_id.parse::<jarvis_domain::ids::DeviceId>() else {
+        tracing::warn!(node, "placement named an unknown room");
+        return Err(node_unavailable("no such room or device"));
+    };
+
+    let devices = nodes.identity.list_devices().await.map_err(|e| {
+        tracing::error!(error = %e, "device lookup failed");
+        problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ErrorCode::ProviderUnavailable,
+            "identity store unavailable",
+            None,
+        )
+    })?;
+    let Some(device) = devices.iter().find(|d| d.id == device_id) else {
+        tracing::warn!(%device_id, "placement named a device that is not paired");
+        return Err(node_unavailable("no such room or device"));
+    };
+    if !device.is_active() {
+        tracing::warn!(%device_id, "placement named a revoked device");
+        return Err(node_unavailable("that device has been revoked"));
+    }
+    if !device
+        .class
+        .holds(jarvis_domain::identity::ClassScope::DisplayAgent.as_str())
+    {
+        tracing::warn!(%device_id, class = %device.class, "placement named a device with no screen");
+        return Err(node_unavailable("that device cannot present a surface"));
+    }
+    if !nodes.connected.is_connected(&device_id) {
+        // The honest one. A fire-and-forget directive to a disconnected screen
+        // would leave the owner believing it worked.
+        return Err(node_unavailable("that device is not connected"));
+    }
+    Ok(device_id.to_string())
+}
+
+fn node_unavailable(detail: &str) -> Response {
+    problem(
+        StatusCode::CONFLICT,
+        ErrorCode::DisplayNodeUnavailable,
+        "the named node cannot take this placement",
+        Some(detail.to_owned()),
+    )
 }
 
 fn not_found(what: &str) -> Response {
