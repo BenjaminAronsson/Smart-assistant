@@ -281,12 +281,44 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         jarvisd::tools::register_spotify_tools(&mut registry, client)?;
     }
 
+    // F6.6: the generated-app builder. Opt-in (`[apps].enabled`), and the whole
+    // launch profile is ops': jarvisd spawns the command it is given and hands
+    // the child's pipes to the transport (ADR-027). The **host** reads and hashes
+    // the lockfile, and attests `network: disabled` only when a worker image says
+    // a profile that could isolate the network was actually used (D-M6-1).
+    if config.apps.enabled {
+        match spawn_app_builder(&config, artifact_store.clone(), blob_store.clone()).await {
+            Ok(builder) => jarvisd::tools::register_app_tools(&mut registry, builder)?,
+            Err(e) => {
+                // A builder that cannot start registers no tool: the model then
+                // gets `policy.unknown_tool`, which is the honest answer, rather
+                // than a proposal that fails deep inside a worker.
+                tracing::error!(error = %e, "app builder unavailable; app.generate not registered");
+            }
+        }
+    }
+
+    let bridge_registry = Arc::new(registry);
+    let bridge_audit: Arc<dyn jarvis_application::policy::AuditSink> =
+        Arc::new(jarvis_infra::audit_sink::PgAuditSink::new(pool.clone()));
+    let bridge_digest: Arc<dyn jarvis_application::ports::ArgumentDigest> =
+        Arc::new(jarvis_infra::appbridge::Sha256ArgumentDigest);
+    // F6.5: the capability bridge shares the tool plane's registry, audit sink,
+    // approval gate and grant store — an app-originated call takes the identical
+    // path a model-originated one takes (invariant 1). Tokens are in-memory by
+    // design: one outliving a restart would outlive the app instance it was
+    // minted for.
+    let capability_tokens = Arc::new(jarvis_infra::appbridge::InMemoryCapabilityTokens::new());
+
     let tool_plane = jarvisd::runs::ToolPlane {
-        registry: Arc::new(registry),
-        audit: Arc::new(jarvis_infra::audit_sink::PgAuditSink::new(pool.clone())),
+        registry: bridge_registry.clone(),
+        audit: bridge_audit.clone(),
         approval_gate: approval_gate.clone(),
         grant_minter: grant_store.clone(),
-        grant_validator: grant_store,
+        grant_validator: grant_store.clone(),
+        // D-M5-4: the same sha256(canonical_form(args)) the grant table binds,
+        // so an executed effect is answerable from the audit trail alone.
+        arg_digest: bridge_digest.clone(),
     };
 
     let model = Arc::new(ClaudeCliModel::with_config(
@@ -377,7 +409,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         run_store.clone(),
         event_log.clone(),
         engine.clone(),
-        approval_gate,
+        approval_gate.clone(),
         Some(deepdive.clone()),
     );
     let ws_state = WsState {
@@ -504,7 +536,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             Arc::new(jarvis_application::lists::ListsService::new(
                 Arc::new(jarvis_infra::lists::PgListStore::new(pool.clone())),
                 blob_store,
-                artifact_store,
+                artifact_store.clone(),
                 Arc::new(SystemClock),
             )),
             // The list card rides the same canvas event as the deep-dive cards
@@ -531,6 +563,17 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
                 ws: ws_state,
             }),
             artifacts: Some(artifacts),
+            appbridge: Some(jarvisd::appbridge::AppBridgeApi {
+                artifacts: artifact_store,
+                tokens: capability_tokens,
+                registry: bridge_registry,
+                audit: bridge_audit,
+                clock: Arc::new(SystemClock),
+                approval_gate: approval_gate.clone(),
+                grant_minter: grant_store.clone(),
+                grant_validator: grant_store,
+                arg_digest: bridge_digest,
+            }),
             display: Some(display),
             media: media_api,
             maps,
@@ -725,4 +768,54 @@ fn spawn_signal_listener(shutdown: CancellationToken) {
         tracing::info!("shutdown signal received");
         shutdown.cancel();
     });
+}
+
+/// Spawn the app-builder worker and assemble its host (F6.6, ADR-027).
+async fn spawn_app_builder(
+    config: &jarvisd::config::Config,
+    artifacts: Arc<dyn jarvis_application::ports::ArtifactStore>,
+    blobs: Arc<dyn jarvis_application::ports::BlobStore>,
+) -> anyhow::Result<Arc<jarvis_adapters::app_builder::AppBuilderHost>> {
+    use jarvis_adapters::app_builder::{AppBuilderHost, ChildAppBuilderTransport, lockfile_hash};
+    use jarvis_domain::artifact::{BuildNetwork, BuildProvenance};
+
+    let lockfile = lockfile_hash(&config.apps.lockfile)
+        .await
+        .map_err(|e| anyhow::anyhow!("reading {}: {e}", config.apps.lockfile.display()))?;
+
+    let mut child = tokio::process::Command::new(&config.apps.worker_command)
+        .args(&config.apps.worker_args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        // The worker's stderr is inherited so an operator sees a crash. It is
+        // never read into the host: a build child's stderr can carry a
+        // credential (invariant 5), which is why the worker itself never
+        // forwards it either.
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("spawning {}: {e}", config.apps.worker_command))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("app builder stdin unavailable"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("app builder stdout unavailable"))?;
+
+    Ok(Arc::new(AppBuilderHost::new(
+        Arc::new(ChildAppBuilderTransport::new(stdin, stdout)),
+        blobs,
+        artifacts,
+        BuildProvenance {
+            worker_image: config.apps.worker_image.clone(),
+            lockfile_hash: Some(lockfile),
+            // Honest, not aspirational: only a launch profile with an image
+            // could have isolated the network (D-M6-1).
+            network: match config.apps.worker_image {
+                Some(_) => BuildNetwork::Disabled,
+                None => BuildNetwork::Enabled,
+            },
+        },
+        "system:app-builder",
+    )))
 }

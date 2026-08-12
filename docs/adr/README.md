@@ -680,3 +680,154 @@ already uses, no new trait required.
   recovery; persist important domain events for gap recovery; confirmation-by-default
   execution UX; agent-editable HTML is always untrusted and never shares an origin with
   privileged surfaces.
+
+## ADR-029 — Generated-app format: a JSON spec against a locked Vite template, over a closed capability vocabulary {#adr-029}
+
+**Status.** **Accepted (M6 gate, 11 August 2026).** Written at F6.1; confirms the default
+the owner settled on 2026-08-09 (`docs/milestones/M6-features.md` §"Scope decisions" #3).
+Accepted together with ADR-030 and deviations D-M6-1/D-M6-2
+(`docs/milestones/M6-gate-report.md`).
+
+**Context.** FR-18 says "generate small local web applications **from validated
+templates**; open them sandboxed." docs/08 §6 recorded the format as a decision deferred to
+M6, with the default "JSON spec + locked Vite template". The question this ADR settles is
+what the *model* produces and what the *host* validates, because that determines what
+"validated" can possibly mean: if a model emits arbitrary source, "validated template" is
+marketing; if it emits a constrained document that the host renders against a template it
+owns, the phrase has teeth.
+
+The second, sharper half is what a generated app is allowed to **ask for**. docs/06 §6
+requires "optional interaction only via a `postMessage` bridge exchanging short-lived
+capability tokens for operations named in the artifact manifest; **undeclared capability ⇒
+reject**". Through M3–M5 `Capability` was a free-form `String` newtype, which was harmless
+while it was pure provenance metadata carried in a manifest nobody enforced. It stops being
+harmless the moment a bridge enforces it: *a bridge that enforces free-form strings enforces
+nothing*, because "is this capability declared?" is only decidable against a set the host —
+not the model — defines.
+
+**Decision.**
+1. **The app spec is a small JSON document, not source code.** It names a host template id,
+   a title, the capabilities the app declares, its data bindings, and its build limits.
+   `jarvis-domain::appspec` owns validation; `jarvis-contracts::appspec` owns the wire
+   shape. A spec is validated **before any build starts**, so an invalid spec fails in a
+   pure function with a typed reason, not inside a Node worker as a timeout.
+2. **Templates are a closed, host-owned, versioned set** (`TemplateId`, `dashboard/v1`).
+   A template id selects the exact locked source tree and lockfile the builder uses, so an
+   id a model could invent is an id the builder could not pin. The build is a **Vite**
+   build against a committed lockfile with the network disabled (F6.2) — which is what the
+   `build.lockfileHash` field already in the docs/04 §4 manifest was shaped for.
+3. **The capability vocabulary is closed** (`Capability` becomes an exhaustive enum).
+   Each variant names an **already-registered** tool and carries a declared risk tier.
+   Unknown capability ⇒ the **spec** is rejected at validation time, not at bridge time.
+   Adding a capability is a deliberate host change (a variant, a backing tool, a tier),
+   never a string a model can invent.
+4. **Naming is not authorizing** (invariant 1). A declared capability is at most an
+   authorization to *ask* at bridge time. The host still runs `policy::evaluate` against
+   the live registry and still mints an `ExecutionGrant` for R2+. `Capability::risk()` is a
+   **preview** used for approval text only; a test in `jarvisd` asserts it never diverges
+   from the registered tool's host-owned `ToolPolicy.risk`.
+5. **Rejections echo untrusted text safely.** Template/capability/title/binding names come
+   from model output and travel into problem bodies, spans and audit reasons, so every
+   error variant that quotes one clamps its length and strips control and bidi/zero-width
+   characters (CF-13, docs/06 §5).
+6. **Limits are host-owned ceilings, and are rejected rather than clamped.** A spec may
+   request *less* than the host maximum for bundle size and build time; requesting more is
+   an error, so a caller never silently receives a build under a limit it did not choose.
+
+**Consequences.**
+- (+) "Validated template" becomes a decidable property, and "undeclared capability ⇒
+  reject" becomes a decidable question — which is what makes golden 8 assertable at all.
+- (+) The spec-validation table is a pure-domain test table with no I/O, so the whole
+  rejection surface is covered without a builder, a browser, or a database.
+- (+) The manifest's `capabilities` becomes an exhaustive union on the wire, so the web
+  shell can `switch` on it instead of guessing at a string.
+- (−) **Every capability needs host code.** A generated app can never reach a tool nobody
+  wrote a variant for. That is the intended cost, not a limitation to engineer around.
+- (−) The vocabulary starts small (three Home Assistant operations: read state, set a
+  light, execute a scene — chosen to span R0/R1/R2 so the bridge exercises the
+  auto-authorized, live-shown and approval+grant paths). Later milestones widen it
+  deliberately.
+- (−) **A stored capability string outside the vocabulary now fails the manifest load**
+  rather than being dropped. Fail-closed is the only reading that keeps the bridge honest —
+  a silently shortened capability list would describe a *less* capable app than the bundle
+  in the CAS. No such row can exist today (every M3–M5 producer wrote an empty array), so
+  this is asserted by a test rather than handled by a migration.
+- Revisit trigger: if a template ever needs to carry model-authored *source* rather than a
+  spec, this ADR is void and the sandbox story has to be re-derived from scratch — that is
+  a different security posture, not an increment on this one.
+
+## ADR-030 — Generated apps render in an opaque-origin sandboxed frame, not a second loopback origin {#adr-030}
+
+**Status.** **Accepted (M6 gate, 11 August 2026).** Written at F6.4; accepted together with
+ADR-029 and deviations D-M6-1/D-M6-2 (`docs/milestones/M6-gate-report.md`). Depends on and
+does not reopen [ADR-029](#adr-029).
+
+**Context.** docs/06 §6 requires a generated app to run "in a sandboxed iframe or isolated
+Chromium profile; restrictive CSP; **no same-origin relationship** with the control UI; no
+arbitrary network; no direct MCP/host access." The M6 feature list named the choice
+explicitly — a **separate loopback origin** (a distinct port is a distinct origin) versus
+an **opaque-origin sandboxed frame** — and called it an ADR because everything else in the
+milestone leans on it and it is expensive to move later. The v1 market-scan lesson carried
+in this file's appendix is the constraint behind both options: *agent-editable HTML is
+always untrusted and never shares an origin with privileged surfaces.*
+
+Two facts shaped the answer. First, jarvisd authenticates with a **bearer device token**,
+not cookies (docs/05 §6); an `<iframe src>` cannot carry an `Authorization` header, so a
+second-origin design needs a new URL-token auth surface that exists for no other reason.
+Second, a second loopback origin is **one** origin: every generated app served from it
+shares its `localStorage`, `sessionStorage`, IndexedDB and BroadcastChannel. Two apps
+generated from two unrelated requests would be same-origin *with each other*.
+
+**Decision.**
+1. **The app document is rendered in an iframe with `sandbox="allow-scripts"` and no
+   `allow-same-origin`,** which gives it a **unique opaque origin per frame instance**.
+   Not "a different origin from the shell" — a different origin from *everything*,
+   including every other generated app. The attribute is static in the template; Angular
+   refuses to bind `sandbox` at all (NG0910), so no runtime value can widen it.
+2. **The shell fetches the document with its device token and passes it through `srcdoc`.**
+   No new auth surface, no second listener, no port to configure or firewall — which also
+   keeps the resident footprint where NFR-15 wants it.
+3. **jarvisd serves it from a dedicated route** — `GET /api/v1/apps/{id}/versions/{v}/document`
+   — that requires `ArtifactKind::Bundle` and sends `Content-Security-Policy: sandbox
+   allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';
+   img-src data:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none';
+   frame-ancestors 'self'`. The **existing blob route is untouched**: it still serves every
+   artifact as `attachment` + `nosniff`, so the download path never had to be relaxed to
+   get a render path.
+4. **The policy travels inside the document too.** `srcdoc` content is not delivered by the
+   response whose header the browser saw, so the host prepends its own
+   `<meta http-equiv="Content-Security-Policy">` as the first bytes of the served
+   document. CSP composes intersectively — a second policy in the bundle can only
+   *narrow*, never loosen, the host's.
+5. **`script-src 'unsafe-inline'` is deliberate, not a concession.** A single-file bundle
+   *is* one inline module script; the whole document is the untrusted unit, and running
+   its script is the point of rendering it. What the policy denies is everything that
+   script could reach: origin, network, form submission, base URI, plugins.
+6. **`ArtifactKind::is_renderable_in_m3` is renamed** to `renders_inline_in_shell`, with a
+   complementary `renders_in_app_sandbox`. A test asserts every kind has exactly one render
+   path: a kind in neither would be silently unrenderable, a kind in both would be a
+   same-origin escape.
+
+**Consequences.**
+- (+) Isolation is **per app instance**, strictly stronger than a shared second origin: no
+  generated app can read another's storage, because it has none it shares with anything.
+- (+) No second listener, no second auth surface, no URL-borne token to leak through a
+  referrer, history entry or shoulder.
+- (+) The renderable path is a *separate* route, so M3a's anti-execution guard on the blob
+  route stays exactly as security-auditor B1 left it.
+- (−) The shell holds the untrusted bytes in the control origin's JS heap on the way to
+  `srcdoc`. That is a real footgun — one `innerHTML` away from the thing this ADR exists
+  to prevent — so it is constrained by construction (a dedicated signal, one renderer, one
+  binding) and asserted by tests that the bytes appear only in the frame.
+- (−) `bypassSecurityTrustHtml` appears in the renderer, which looks alarming in review
+  forever. It is correct: Angular's sanitizer would strip the app's own script, and
+  Angular's sanitizer is not the boundary — the opaque origin and the CSP are.
+- (−) An opaque origin cannot be named in a `postMessage` `targetOrigin`, and inbound
+  messages arrive with `origin === "null"`. F6.5 must therefore verify the **`event.source`
+  identity** against the frame's `contentWindow` rather than compare origin strings, and
+  post **into** the frame with `targetOrigin: "*"` — which is safe only because the frame
+  is opaque and single-purpose. This is the one place the choice makes F6.5's job harder,
+  and it is recorded here so that it is designed rather than discovered.
+- Revisit trigger: if a generated app ever legitimately needs persistent storage, a real
+  network origin, or to be opened as a top-level window, this decision is void — those are
+  a different product, and each would need its own origin story.

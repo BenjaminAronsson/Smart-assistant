@@ -320,6 +320,11 @@ promotion pattern.)
   small) but a streaming/size-capped read port is needed before large-artifact producers
   (F3a.6 patches are still small; **M6 `Bundle`** is the real trigger). Verify-on-read
   currently requires buffering to re-hash, so streaming needs chunked-hash-then-emit.
+  **CLOSED by M6 F6.3 (2026-08-11).** `BlobStore::open` streams in 64 KiB chunks under a
+  caller-supplied cap; `get` is now bounded too. Integrity survived the change and got
+  stricter: verification completes over the whole blob *before* the first byte is emitted
+  (verify-then-emit, not hash-while-emitting), so a corrupt blob is still a fail-closed
+  error with zero bytes served — HTTP cannot retract bytes already on the wire.
 - **D-M3a-2 (F3a.5): browser worker host + Node/Playwright worker shipped; jarvisd tool-stack
   wiring + keyring credential resolution + container launch profile deferred.** Shipped: the
   `jarvis-adapters::browser` host (host-owned `BrowserPolicyTable` overlay, typed actions

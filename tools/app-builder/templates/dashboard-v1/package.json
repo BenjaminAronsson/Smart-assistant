@@ -1,0 +1,14 @@
+{
+  "name": "jarvis-app-template-dashboard-v1",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Locked Jarvis app template `dashboard/v1` (ADR-029). Its source tree and lockfile are the host's, not the model's — a spec selects this template, it never supplies code. Builds to ONE self-contained document (no external subresources: the host refuses one, and F6.4's CSP forbids fetching one).",
+  "type": "module",
+  "scripts": {
+    "build": "vite build"
+  },
+  "devDependencies": {
+    "vite": "6.4.3",
+    "vite-plugin-singlefile": "2.3.3"
+  }
+}

@@ -22,9 +22,49 @@ use std::time::SystemTime;
 
 use crate::problem::problem;
 
-/// Scopes granted to the first paired device (docs/05 §6.3). Scope
-/// differentiation (display-agent, voice-capture) arrives with those clients.
-const FIRST_DEVICE_SCOPES: &[&str] = &["ui"];
+/// Scopes granted to the first paired device (docs/05 §6.3).
+///
+/// **Two vocabularies live in this list**, and conflating them was a real bug
+/// (M6 gate finding B1, owner decision 2026-08-11):
+///
+/// * *device-class* scopes — `ui` today; `display-agent` and `voice-capture`
+///   arrive with those clients;
+/// * *tool* scopes — what every `ToolPolicy::required_scopes` actually names.
+///   `policy::evaluate` rejects on the missing-scope arm **before** any risk
+///   logic, so a device holding only `ui` could execute nothing at all: not a
+///   generated app's read, not a light, not a timer. Through M3–M5 every golden
+///   and acceptance suite constructed `PolicyContext` directly and was green
+///   while the real paired device was denied — the fixture-vs-caller class, and
+///   the reason `a_paired_device_can_execute_an_allowlisted_tool` now exists.
+///
+/// The first paired device is **the owner's device** on a single-owner,
+/// loopback-first system (docs/05 §6): the pairing code is the trust ceremony,
+/// and what gates a consequential action is its **risk tier** — approval and an
+/// `ExecutionGrant` for R2+ — never the length of this list. Per-device scope
+/// differentiation is M7's multi-device work, which is also when a *second*
+/// device stops inheriting this set.
+///
+/// Adding a tool with a new scope means adding it here, deliberately. That is
+/// the intended cost: a scope nobody granted is a tool nobody can run.
+pub(crate) const FIRST_DEVICE_SCOPES: &[&str] = &[
+    // Device class.
+    "ui",
+    // Tool scopes, in the order the tools were introduced.
+    "files:read",
+    "demo:light",
+    "mcp:echo",
+    "web:search",
+    "web:fetch",
+    "browser:act",
+    "coding:patch",
+    "home:read",
+    "home:control",
+    "home:write",
+    "media:control",
+    "media:search",
+    "message:send",
+    "app:build",
+];
 
 /// Wrong guesses tolerated before the window closes (restart reopens it).
 /// A 6-digit code is ~20 bits; loopback-only, but a local brute force must

@@ -201,6 +201,13 @@ impl jarvis_application::ports::BlobStore for FakeBlobs {
     async fn get(&self, _hash: &Sha256) -> Result<Option<Vec<u8>>, BlobStoreError> {
         Ok(None)
     }
+    async fn open(
+        &self,
+        _hash: &Sha256,
+        _max_bytes: u64,
+    ) -> Result<Option<jarvis_application::ports::BlobRead>, BlobStoreError> {
+        Ok(None)
+    }
     async fn contains(&self, _hash: &Sha256) -> Result<bool, BlobStoreError> {
         Ok(false)
     }

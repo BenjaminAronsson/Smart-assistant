@@ -2,6 +2,7 @@
 //! Provider/tool adapters behind application ports: claude-cli, home-assistant,
 //! mcp-host, wyoming, embeddings (docs/02 §3).
 
+pub mod app_builder;
 pub mod browser;
 pub mod caldav;
 pub mod claude_cli;

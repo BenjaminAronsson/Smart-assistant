@@ -593,3 +593,29 @@ impl GrantValidator for FakeGrantValidator {
         }
     }
 }
+
+/// A deterministic stand-in for the infra SHA-256 argument digest (D-M5-4).
+///
+/// Not a cryptographic hash and not pretending to be one: tests need
+/// *distinguishability* (different arguments ⇒ different value, same arguments
+/// in any key order ⇒ same value), which `canonical_form` plus a fold gives,
+/// and the real `sha2` implementation is exercised by an infra test that pins
+/// it to the very function the grant minter binds with.
+pub struct FoldingArgumentDigest;
+
+impl crate::ports::ArgumentDigest for FoldingArgumentDigest {
+    fn digest(&self, arguments: &jarvis_domain::tools::CanonicalValue) -> Sha256 {
+        let canonical = jarvis_domain::tools::canonical_form(arguments);
+        let mut out = [0u8; 32];
+        // FNV-1a per lane — enough to make two different argument trees differ.
+        for (i, slot) in out.iter_mut().enumerate() {
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ (i as u64);
+            for b in canonical.iter() {
+                h ^= u64::from(*b);
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            *slot = (h >> 24) as u8;
+        }
+        Sha256::from_bytes(out)
+    }
+}

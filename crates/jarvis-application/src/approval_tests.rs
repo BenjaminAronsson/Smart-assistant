@@ -117,6 +117,7 @@ async fn approved_r2_mints_grant_and_executes_with_it() {
             approval_gate: &gate,
             grant_minter: &minter,
             grant_validator: &validator,
+            arg_digest: &crate::testing::FoldingArgumentDigest,
         }),
     };
 
@@ -175,6 +176,7 @@ async fn denied_r2_never_executes_and_replans() {
             approval_gate: &gate,
             grant_minter: &minter,
             grant_validator: &validator,
+            arg_digest: &crate::testing::FoldingArgumentDigest,
         }),
     };
 
@@ -229,6 +231,7 @@ async fn edited_arguments_bind_the_grant_and_execute() {
             approval_gate: &gate,
             grant_minter: &minter,
             grant_validator: &validator,
+            arg_digest: &crate::testing::FoldingArgumentDigest,
         }),
     };
 
@@ -278,6 +281,7 @@ async fn failed_grant_validation_blocks_execution() {
             approval_gate: &gate,
             grant_minter: &minter,
             grant_validator: &validator,
+            arg_digest: &crate::testing::FoldingArgumentDigest,
         }),
     };
 
@@ -338,6 +342,7 @@ async fn reversible_tool_registers_a_compensation_in_the_timeline() {
             approval_gate: &gate,
             grant_minter: &minter,
             grant_validator: &validator,
+            arg_digest: &crate::testing::FoldingArgumentDigest,
         }),
     };
 
@@ -395,6 +400,7 @@ async fn grant_mint_failure_fails_the_run_and_never_executes() {
             approval_gate: &gate,
             grant_minter: &minter,
             grant_validator: &validator,
+            arg_digest: &crate::testing::FoldingArgumentDigest,
         }),
     };
 
@@ -459,6 +465,7 @@ async fn malformed_edited_arguments_are_rejected_before_a_grant_binds() {
             approval_gate: &gate,
             grant_minter: &minter,
             grant_validator: &validator,
+            arg_digest: &crate::testing::FoldingArgumentDigest,
         }),
     };
 
@@ -536,6 +543,7 @@ async fn arguments_claiming_prior_approval_do_not_bypass_the_gate() {
             approval_gate: &gate,
             grant_minter: &minter,
             grant_validator: &validator,
+            arg_digest: &crate::testing::FoldingArgumentDigest,
         }),
     };
 

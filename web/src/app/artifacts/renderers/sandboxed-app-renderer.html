@@ -1,0 +1,16 @@
+<!-- The frame is the boundary. `sandbox` WITHOUT `allow-same-origin` gives the
+     document an opaque origin; `referrerpolicy` keeps even the control URL out
+     of it; `loading="lazy"` keeps an unopened app from costing anything.
+
+     `sandbox` is a static attribute, not a binding — Angular refuses to bind it
+     (NG0910) precisely so no runtime value can widen it, which is the same
+     property the spec asserts. -->
+<iframe
+  #frame
+  class="app-frame"
+  sandbox="allow-scripts"
+  [title]="label()"
+  [srcdoc]="srcdoc()"
+  referrerpolicy="no-referrer"
+  loading="lazy"
+></iframe>

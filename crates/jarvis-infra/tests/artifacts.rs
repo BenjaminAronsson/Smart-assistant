@@ -10,7 +10,7 @@ use std::time::SystemTime;
 use jarvis_application::ports::{ArtifactStore, RepositoryError};
 use jarvis_domain::artifact::{
     ArtifactContent, ArtifactKind, ArtifactManifest, ArtifactSource, ArtifactVersion,
-    BuildProvenance, MediaType,
+    BuildProvenance, Capability, MediaType,
 };
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::grants::Sha256;
@@ -45,7 +45,9 @@ fn content(sha_byte: u8) -> ArtifactContent {
         ],
         sensitivity: Sensitivity::Sensitive,
         build: BuildProvenance::none(),
-        capabilities: vec!["artifact.read-own-data".parse().unwrap()],
+        // F6.1: the capability vocabulary is closed; `artifact.read-own-data`
+        // (the pre-M6 illustrative name) no longer parses.
+        capabilities: vec![Capability::HomeReadState],
     }
 }
 
@@ -208,4 +210,53 @@ async fn stored_manifests_are_immutable_at_the_db_level(pool: PgPool) {
     // The row is still there and intact.
     let latest = store.latest(&artifact_id()).await.unwrap().unwrap();
     assert_eq!(latest.media_type().as_str(), "text/markdown");
+}
+
+/// F6.1 fail-closed: the capability vocabulary is closed, so a stored
+/// capability string outside it — a row from before the vocabulary closed, or a
+/// row written by a future/rogue version — must surface as a **storage error**,
+/// not be silently dropped from the manifest.
+///
+/// Dropping it would be the dangerous failure: the manifest would come back
+/// looking like a *less* capable app than the one whose bundle is in the CAS,
+/// and the F6.5 bridge decides "declared or not?" against exactly this list.
+/// Refusing to load is the only reading that keeps "undeclared ⇒ reject"
+/// (docs/06 §6) honest. No such row can exist today — every M3–M5 producer
+/// wrote an empty array — which is why this is asserted rather than migrated.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_stored_capability_outside_the_closed_vocabulary_fails_closed(pool: PgPool) {
+    let store = PgArtifactStore::new(pool.clone());
+    store
+        .create_version(&manifest_v1(), &created_event())
+        .await
+        .unwrap();
+
+    // Manifests are append-only, so the legacy row is inserted directly rather
+    // than by mutating the one above.
+    sqlx::query(
+        r#"
+        INSERT INTO artifacts.manifests
+            (artifact_id, version, created_by_run, sha256, media_type, kind,
+             sensitivity, build_worker_image, build_lockfile_hash,
+             build_network, sources, capabilities, created_at)
+        VALUES ($1, 2, $2, $3, 'text/markdown', 'markdown_html', 'normal',
+                NULL, NULL, 'disabled', '[]'::jsonb,
+                ARRAY['artifact.read-own-data'], now())
+        "#,
+    )
+    .bind(ARTIFACT)
+    .bind(RUN)
+    .bind(sha(0xCC).to_string())
+    .execute(&pool)
+    .await
+    .expect("the legacy row inserts — the DB column is still TEXT[]");
+
+    let err = store
+        .get(&artifact_id(), ArtifactVersion::new(2).unwrap())
+        .await
+        .expect_err("an unrecognised stored capability must not load silently");
+    assert!(
+        matches!(err, RepositoryError::Storage(ref m) if m.contains("capability")),
+        "expected a storage error naming the capability, got {err:?}"
+    );
 }

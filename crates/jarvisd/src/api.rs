@@ -119,6 +119,11 @@ pub struct Wiring {
     pub sessions: Option<crate::sessions::SessionApi>,
     pub runs: Option<RunWiring>,
     pub artifacts: Option<crate::artifacts::ArtifactApi>,
+    /// The generated-app capability bridge (F6.5, docs/06 §6). `None` until the
+    /// tool plane exists — without a registry there is nothing an app could be
+    /// evaluated against, and a bridge that cannot evaluate must not exist
+    /// rather than default to permitting.
+    pub appbridge: Option<crate::appbridge::AppBridgeApi>,
     pub display: Option<crate::display::DisplayApi>,
     pub media: Option<crate::media::MediaApi>,
     /// Local PMTiles map serving (F3b.5, ADR-013). `None` when no archive is
@@ -149,6 +154,7 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
         sessions,
         runs,
         artifacts,
+        appbridge,
         display,
         media,
         maps,
@@ -220,6 +226,29 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
                     .route(
                         "/api/v1/artifacts/{id}/versions/{version}/blob",
                         get(crate::artifacts::get_blob),
+                    )
+                    // F6.4: the one deliberately *renderable* artifact path —
+                    // separate from the blob route, which stays attachment-only.
+                    .route(
+                        "/api/v1/apps/{id}/versions/{version}/document",
+                        get(crate::artifacts::get_app_document),
+                    )
+                    .with_state(api),
+            );
+        }
+        if let Some(api) = appbridge {
+            protected = protected.merge(
+                Router::new()
+                    // F6.5: mint a short-lived, single-use capability token…
+                    .route(
+                        "/api/v1/apps/{id}/versions/{version}/capability-tokens",
+                        axum::routing::post(crate::appbridge::mint_token),
+                    )
+                    // …and exchange it for exactly one operation, through
+                    // `policy::evaluate` and a grant for R2+.
+                    .route(
+                        "/api/v1/apps/{id}/versions/{version}/invoke",
+                        axum::routing::post(crate::appbridge::invoke),
                     )
                     .with_state(api),
             );

@@ -97,15 +97,38 @@ impl ArtifactKind {
         }
     }
 
-    /// Whether this kind is renderable in M3. [`ArtifactKind::Bundle`] is
-    /// reserved for the M6 sandbox and has no M3 renderer.
-    pub fn is_renderable_in_m3(self) -> bool {
+    /// Whether this kind may be rendered **inside the control UI's own origin**
+    /// — the shell parses the bytes itself and puts the result on the page.
+    ///
+    /// (Was `is_renderable_in_m3` through M3–M5, when `Bundle` had no renderer
+    /// at all. The milestone number was never the point: what this predicate
+    /// actually decides is *which origin* is allowed to hold the bytes, and
+    /// F6.4 makes the second answer real.)
+    pub fn renders_inline_in_shell(self) -> bool {
         match self {
             ArtifactKind::MarkdownHtml
             | ArtifactKind::CodeText
             | ArtifactKind::Image
             | ArtifactKind::Chart => true,
+            // Never. A bundle is model-influenced code; the control origin is
+            // exactly where it must not run (docs/06 §6, ADR-030).
             ArtifactKind::Bundle => false,
+        }
+    }
+
+    /// Whether this kind is rendered through the **generated-app sandbox** — an
+    /// opaque-origin, script-sandboxed frame under a restrictive CSP (F6.4,
+    /// ADR-030). Exactly the complement of [`Self::renders_inline_in_shell`],
+    /// asserted by a test: every kind has exactly one render path, and a kind
+    /// that fell out of both would silently become unrenderable while a kind in
+    /// both would be a same-origin escape.
+    pub fn renders_in_app_sandbox(self) -> bool {
+        match self {
+            ArtifactKind::Bundle => true,
+            ArtifactKind::MarkdownHtml
+            | ArtifactKind::CodeText
+            | ArtifactKind::Image
+            | ArtifactKind::Chart => false,
         }
     }
 }
@@ -221,21 +244,193 @@ pub enum BuildNetwork {
     Enabled,
 }
 
-/// A capability the artifact declares it needs to render/run (docs/04 §4
-/// `capabilities`, e.g. `artifact.read-own-data`). In M3 this is provenance
-/// metadata carried through the manifest; the capability *bridge* that enforces
-/// it for generated apps is M6 (FR-18). Non-empty.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Capability(String);
+/// A capability an artifact declares it needs to run (docs/04 §4
+/// `capabilities`). For a generated app (FR-18) this is the *only* vocabulary
+/// the F6.5 bridge will honour: a `postMessage` from a bundle may name one of
+/// these and nothing else.
+///
+/// **Closed on purpose (F6.1).** Through M3–M5 this was a free-form `String`
+/// newtype, which was harmless while it was pure provenance metadata. It is not
+/// harmless once a bridge enforces it: a bridge that enforces free-form strings
+/// enforces nothing, because "undeclared capability ⇒ reject" (docs/06 §6) is
+/// only a decidable question against a host-defined, exhaustive set. Adding a
+/// capability is therefore a deliberate host change — a new variant here, a
+/// registered tool to back it, and a risk tier — never a string a model can
+/// invent.
+///
+/// Each variant names an **already-registered** tool. Naming it grants nothing
+/// (invariant #1): the bridge still runs `policy::evaluate` against the live
+/// registry at call time, and [`Capability::risk`] is only the *declared* tier
+/// used for spec-time preview and approval text. The authoritative tier is the
+/// registered [`crate::policy::ToolPolicy`]; a test in `jarvisd` asserts the two
+/// never diverge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Capability {
+    /// Read Home Assistant entity state — backed by `home.get_state` (R0).
+    HomeReadState,
+    /// Set a single allowlisted light — backed by `home.set_light` (R1).
+    HomeSetLight,
+    /// Activate an allowlisted scene — backed by `home.execute_scene` (R2, so
+    /// it takes the full approval + `ExecutionGrant` path).
+    HomeExecuteScene,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[error("capability must be non-empty")]
-pub struct CapabilityError;
+#[error("unknown capability {0:?} (the host vocabulary is closed; see Capability::ALL)")]
+pub struct CapabilityError(String);
 
-impl Capability {
-    pub fn as_str(&self) -> &str {
+impl CapabilityError {
+    /// The rejected name, already length-clamped and control-stripped by
+    /// [`FromStr`] — this string is model-authored and travels into error
+    /// bodies, spans and audit reasons, so it never carries raw untrusted text
+    /// (docs/06 §5).
+    pub fn rejected(&self) -> &str {
         &self.0
     }
+}
+
+impl Capability {
+    /// Every capability the host defines.
+    ///
+    /// What actually keeps this honest is the `match` in [`Capability::as_str`]
+    /// and its siblings: adding a variant is a compile error until every one of
+    /// them is visited, and this list sits directly beside them. That is
+    /// weaker than a proof — a new variant could be given an `as_str` and left
+    /// out of `ALL`, and it would then be silently unnameable in a spec (fail
+    /// closed, but silent). The F6.1 review named this precisely; the real fix
+    /// is generating enum + list + tables from one source, which is a bigger
+    /// change than this milestone should make. Until then: **add the variant
+    /// here in the same edit.**
+    pub const ALL: [Capability; 3] = [
+        Capability::HomeReadState,
+        Capability::HomeSetLight,
+        Capability::HomeExecuteScene,
+    ];
+
+    /// The stable wire name (docs/04 §4 `capabilities`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Capability::HomeReadState => "home.read_state",
+            Capability::HomeSetLight => "home.set_light",
+            Capability::HomeExecuteScene => "home.execute_scene",
+        }
+    }
+
+    /// The registered tool that backs this capability. The bridge resolves the
+    /// capability to exactly this id and never to anything a message supplies.
+    pub fn tool_id(self) -> crate::tools::ToolId {
+        match self {
+            Capability::HomeReadState => crate::tools::ToolId::home_get_state(),
+            Capability::HomeSetLight => crate::tools::ToolId::home_set_light(),
+            Capability::HomeExecuteScene => crate::tools::ToolId::home_execute_scene(),
+        }
+    }
+
+    /// The **declared** risk tier, used for spec-time preview and approval text.
+    /// Never a substitute for `policy::evaluate` on the live registry.
+    pub fn risk(self) -> crate::policy::RiskLevel {
+        match self {
+            Capability::HomeReadState => crate::policy::RiskLevel::R0,
+            Capability::HomeSetLight => crate::policy::RiskLevel::R1,
+            Capability::HomeExecuteScene => crate::policy::RiskLevel::R2,
+        }
+    }
+
+    /// Whether this capability's operation takes a **value** in addition to its
+    /// target, and what that value means. `None` for a pure read.
+    pub fn value_argument(self) -> Option<&'static str> {
+        match self {
+            Capability::HomeReadState => None,
+            Capability::HomeSetLight => Some("state"),
+            Capability::HomeExecuteScene => Some("friendly_name"),
+        }
+    }
+
+    /// Build the **canonical argument tree** the backing tool expects, from a
+    /// validated target and, where the operation takes one, a value (F6.5).
+    ///
+    /// This is the reason a bridge message cannot name arbitrary tool arguments:
+    /// the *host* assembles the tree from a closed capability and two checked
+    /// strings, so an app can influence the target and the value and nothing
+    /// else — not the argument names, not their count, not a second entity, not
+    /// a nested structure. Both strings remain **non-authorizing**: the tool
+    /// re-resolves the target through its own allowlist and (for a scene)
+    /// verifies the label against Home Assistant.
+    pub fn arguments_for(
+        self,
+        target: &str,
+        value: Option<&str>,
+    ) -> Result<crate::tools::CanonicalValue, CapabilityArgumentError> {
+        use crate::tools::CanonicalValue as V;
+
+        let value = match (self.value_argument(), value) {
+            (None, _) => None,
+            (Some(name), Some(v)) => Some((name, check_value(v)?)),
+            (Some(name), None) => return Err(CapabilityArgumentError::MissingValue(name)),
+        };
+        Ok(match value {
+            None => V::obj([("entity_id", V::str(target))]),
+            Some((name, v)) => V::obj([("entity_id", V::str(target)), (name, V::str(&v))]),
+        })
+    }
+}
+
+/// Why a capability's arguments could not be assembled (F6.5). A rejection here
+/// means no tool was called at all.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CapabilityArgumentError {
+    #[error("this operation requires a `{0}` value")]
+    MissingValue(&'static str),
+    #[error("the supplied value is empty, too long, or contains unsafe characters")]
+    InvalidValue,
+}
+
+/// The longest value an app may supply alongside a target. Generous for a light
+/// state, tight for a friendly name — both are short by nature, and a value is
+/// untrusted text that reaches an approval card a human reads.
+const MAX_CAPABILITY_VALUE_BYTES: usize = 64;
+
+fn check_value(raw: &str) -> Result<String, CapabilityArgumentError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > MAX_CAPABILITY_VALUE_BYTES
+        || trimmed.chars().any(crate::tools::is_unsafe_in_single_line)
+    {
+        return Err(CapabilityArgumentError::InvalidValue);
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// The longest rejected-name echoed back in an error.
+const MAX_ECHOED_NAME_BYTES: usize = 64;
+
+/// Clamp and strip an untrusted **name** before it is echoed in an error.
+/// Model- or app-authored text reaches logs, problem bodies and audit reasons,
+/// so every character [`is_unsafe_in_single_line`](crate::tools) covers is
+/// removed and the length is capped: a rejection can be used neither to smuggle
+/// nor to flood.
+///
+/// Deliberately **not** [`crate::tools::sanitize_result_content`], which keeps
+/// `\n` and `\t` because it was written for tool-result *prose*. A capability or
+/// template name has no legitimate newline, and this value is exposed raw
+/// (`CapabilityError::rejected`, the payload of several `AppSpecError`
+/// variants), so a preserved newline would let a rejected name forge a second
+/// log or audit line. The F6.1 security review found exactly that gap.
+///
+/// Stripping happens before the byte count, so the result is `≤
+/// MAX_ECHOED_NAME_BYTES` however much invisible padding the input carried.
+pub(crate) fn echo_untrusted(s: &str) -> String {
+    let mut out = String::new();
+    for ch in s.chars() {
+        if crate::tools::is_unsafe_in_single_line(ch) {
+            continue;
+        }
+        if out.len() + ch.len_utf8() > MAX_ECHOED_NAME_BYTES {
+            break;
+        }
+        out.push(ch);
+    }
+    out
 }
 
 impl FromStr for Capability {
@@ -243,16 +438,16 @@ impl FromStr for Capability {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let trimmed = s.trim();
-        if trimmed.is_empty() {
-            return Err(CapabilityError);
-        }
-        Ok(Capability(trimmed.to_owned()))
+        Capability::ALL
+            .into_iter()
+            .find(|c| c.as_str() == trimmed)
+            .ok_or_else(|| CapabilityError(echo_untrusted(s)))
     }
 }
 
 impl fmt::Display for Capability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(self.as_str())
     }
 }
 
@@ -494,16 +689,26 @@ mod tests {
         assert_eq!(ArtifactKind::Bundle.renderer_id(), "sandboxed-webapp/v1");
     }
 
+    /// A bundle never renders in the control origin, and everything else never
+    /// renders through the app sandbox — every kind has **exactly one** render
+    /// path (F6.4, ADR-030). A kind in neither would be silently unrenderable;
+    /// a kind in both would be a same-origin escape.
     #[test]
-    fn bundle_is_reserved_and_not_renderable_in_m3() {
-        assert!(!ArtifactKind::Bundle.is_renderable_in_m3());
+    fn every_kind_has_exactly_one_render_path() {
+        assert!(!ArtifactKind::Bundle.renders_inline_in_shell());
+        assert!(ArtifactKind::Bundle.renders_in_app_sandbox());
         for kind in [
             ArtifactKind::MarkdownHtml,
             ArtifactKind::CodeText,
             ArtifactKind::Image,
             ArtifactKind::Chart,
+            ArtifactKind::Bundle,
         ] {
-            assert!(kind.is_renderable_in_m3());
+            assert_ne!(
+                kind.renders_inline_in_shell(),
+                kind.renders_in_app_sandbox(),
+                "{kind:?} must have exactly one render path"
+            );
         }
     }
 
@@ -540,19 +745,94 @@ mod tests {
         assert_eq!(MediaType::markdown().as_str(), "text/markdown");
     }
 
-    // --- Capability validation --------------------------------------------
+    // --- Capability validation (closed enum, F6.1) -------------------------
+    //
+    // Through M3-M5 `Capability` was a free-form `String` newtype; F6.1 closed
+    // it to a fixed vocabulary (docs/06 §6 "undeclared capability ⇒ reject" is
+    // only decidable against a closed set). These tests replace the old
+    // `capability_rejects_empty` free-form test.
+
+    // A new variant added to the enum without extending this match fails to
+    // *compile* — that is the exhaustiveness guarantee, independent of (and
+    // stronger than) counting `Capability::ALL`'s length.
+    #[test]
+    fn capability_all_covers_every_variant_exhaustive() {
+        fn assert_listed_in_all(c: Capability) {
+            assert!(
+                Capability::ALL.contains(&c),
+                "{c:?} is a real variant but missing from Capability::ALL"
+            );
+        }
+        for c in Capability::ALL {
+            match c {
+                Capability::HomeReadState => assert_listed_in_all(Capability::HomeReadState),
+                Capability::HomeSetLight => assert_listed_in_all(Capability::HomeSetLight),
+                Capability::HomeExecuteScene => assert_listed_in_all(Capability::HomeExecuteScene),
+            }
+        }
+        assert_eq!(
+            Capability::ALL.len(),
+            3,
+            "ALL must list exactly the enum's variants"
+        );
+    }
 
     #[test]
-    fn capability_rejects_empty() {
-        assert_eq!(
-            "artifact.read-own-data"
-                .parse::<Capability>()
-                .unwrap()
-                .as_str(),
-            "artifact.read-own-data"
+    fn capability_as_str_round_trips_through_from_str_for_every_variant() {
+        for c in Capability::ALL {
+            let s = c.as_str();
+            let parsed: Capability = s.parse().expect("known capability string parses");
+            assert_eq!(parsed, c);
+        }
+    }
+
+    #[test]
+    fn capability_from_str_rejects_unknown() {
+        assert!("not.a.capability".parse::<Capability>().is_err());
+        // The pre-F6.1 free-form vocabulary is no longer valid: closing the
+        // enum must reject strings that used to be accepted.
+        assert!(
+            "artifact.read-own-data".parse::<Capability>().is_err(),
+            "the old free-form vocabulary must now be rejected"
         );
+    }
+
+    #[test]
+    fn capability_from_str_rejects_empty_and_whitespace() {
         assert!("".parse::<Capability>().is_err());
         assert!("   ".parse::<Capability>().is_err());
+    }
+
+    #[test]
+    fn capability_tool_id_matches_the_registered_backing_tool() {
+        assert_eq!(
+            Capability::HomeReadState.tool_id(),
+            "home.get_state".parse().unwrap()
+        );
+        assert_eq!(
+            Capability::HomeSetLight.tool_id(),
+            "home.set_light".parse().unwrap()
+        );
+        assert_eq!(
+            Capability::HomeExecuteScene.tool_id(),
+            "home.execute_scene".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn capability_risk_matches_the_documented_tier() {
+        assert_eq!(
+            Capability::HomeReadState.risk(),
+            crate::policy::RiskLevel::R0
+        );
+        assert_eq!(
+            Capability::HomeSetLight.risk(),
+            crate::policy::RiskLevel::R1
+        );
+        assert_eq!(
+            Capability::HomeExecuteScene.risk(),
+            crate::policy::RiskLevel::R2
+        );
     }
 
     // --- getters carry every manifest field (FR-08 provenance) ------------
@@ -575,7 +855,7 @@ mod tests {
                 lockfile_hash: Some(sha(0x22)),
                 network: BuildNetwork::Disabled,
             },
-            capabilities: vec!["artifact.read-own-data".parse().unwrap()],
+            capabilities: vec!["home.read_state".parse().unwrap()],
         };
         let m = ArtifactManifest::initial(artifact_id(), run_id(), content);
 

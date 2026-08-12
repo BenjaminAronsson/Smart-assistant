@@ -113,6 +113,19 @@ allow_ip_geolocation_fallback = true     # coarse last resort; always labeled ap
 alarm_sound = "default"                  # always-available playback path, independent of TTS
 announce_reminders = true                # TTS "reminder — call Mom" when voice available
 
+[apps]                                   # generated apps (FR-18, M6). Opt-in: unset ⇒ no app.generate tool.
+enabled = false
+worker_command = "node"                  # ops owns the launch profile (ADR-027)
+worker_args = ["tools/app-builder/src/index.mjs"]
+lockfile = "tools/app-builder/templates/dashboard-v1/package-lock.json"
+                                         # hashed by the HOST into every bundle's build provenance
+# worker_image = "jarvis-app-builder@sha256:…"
+                                         # set ONLY for a profile that really isolates the network:
+                                         # its presence is what lets the host attest
+                                         # `network: disabled`. Unset ⇒ `enabled` is recorded, honestly
+                                         # (D-M6-1). Requires `npm --prefix tools/app-builder run
+                                         # install-templates` in the dev/CI fallback.
+
 [integrations.caldav]
 enabled = false                          # flip at M4
 server_url = ""

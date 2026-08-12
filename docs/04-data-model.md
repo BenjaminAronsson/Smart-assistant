@@ -66,9 +66,14 @@ stream; every migration reversible or explicitly marked destructive with a backu
     "lockfileHash": "…",
     "network": "disabled"
   },
-  "capabilities": ["artifact.read-own-data"]
+  "capabilities": ["home.read_state"]
 }
 ```
+
+`capabilities` is a **closed, host-owned vocabulary** (ADR-029, F6.1), not free text: each
+value names an already-registered tool and a risk tier, which is what makes docs/06 §6's
+"undeclared capability ⇒ reject" a decidable question. An unrecognized value fails the
+manifest load rather than being dropped.
 
 Manifests are immutable; a new version is a new row + new CAS entry. Deletion coordinates
 manifest, CAS blob, and any derived embeddings so "forget" is real (FR-16).

@@ -63,6 +63,71 @@
       ],
       "type": "object"
     },
+    "AppLimitsDto": {
+      "description": "Build limits the spec requests (docs/06 §6 \"size/time limits\"). Omitted\nfields mean the host ceiling; a value **above** the ceiling is rejected, not\nclamped.",
+      "properties": {
+        "maxBuildSeconds": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "maxBundleBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AppSpecDto": {
+      "description": "The app spec as it arrives from a model (FR-18 \"validated templates\").\nUntrusted in full: nothing here is authority, and everything here is\nvalidated by the domain before a build starts.",
+      "properties": {
+        "bindings": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/DataBindingDto"
+          },
+          "type": "array"
+        },
+        "capabilities": {
+          "default": [],
+          "description": "Capabilities the app declares it needs. May be empty — an app that needs\nno authority is the best kind. Unknown names are rejected.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limits": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppLimitsDto"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "template": {
+          "description": "Host template id, e.g. `dashboard/v1`. Unknown ids are rejected.",
+          "type": "string"
+        },
+        "title": {
+          "description": "Single-line title shown in the app's window chrome.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "template",
+        "title"
+      ],
+      "type": "object"
+    },
     "ApprovalCardDto": {
       "description": "What a human is asked to approve (docs/06 §3). Carries the exact effect and\nthe real proposed arguments so the approval binds precisely what is shown.",
       "properties": {
@@ -152,8 +217,9 @@
           "$ref": "#/definitions/BuildProvenanceDto"
         },
         "capabilities": {
+          "description": "Declared capabilities, from the host's closed vocabulary (F6.1). A\nmanifest only ever holds validated capabilities, so the wire type is the\nexhaustive union rather than a string the client must interpret.",
           "items": {
-            "type": "string"
+            "$ref": "#/definitions/CapabilityDto"
           },
           "type": "array"
         },
@@ -308,6 +374,65 @@
         }
       ]
     },
+    "CapabilityDto": {
+      "description": "A capability a validated artifact manifest declares (docs/04 §4\n`capabilities`). Exhaustive — the host vocabulary, mirrored on the wire.\nOne capability has **one** name on every surface: the dotted form the domain\nuses, the DB column stores, and an inbound `AppSpecDto.capabilities` string\nmust contain. `rename_all = \"snake_case\"` would have produced\n`home_read_state` here and `home.read_state` everywhere else, so a client\nreading a manifest could not put that string back into a spec (F6.1 review).",
+      "oneOf": [
+        {
+          "const": "home.read_state",
+          "description": "Read Home Assistant entity state (R0).",
+          "type": "string"
+        },
+        {
+          "const": "home.set_light",
+          "description": "Set a single allowlisted light (R1).",
+          "type": "string"
+        },
+        {
+          "const": "home.execute_scene",
+          "description": "Activate an allowlisted scene (R2).",
+          "type": "string"
+        }
+      ]
+    },
+    "CapabilityResultDto": {
+      "description": "What the operation produced. Deliberately narrow: a content string and\nwhether it was truncated. No grant, no policy decision, no audit id — an app\nlearns the answer to its question and nothing about the machinery that\ndecided to answer it.",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "content",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "CapabilityTokenDto": {
+      "description": "The minted token. The value is a secret in the same sense a device token is:\nit is returned once, to one authenticated caller, and is spent by use.",
+      "properties": {
+        "capability": {
+          "$ref": "#/definitions/CapabilityDto",
+          "description": "Echoed so a client cannot mix up which token is for which capability."
+        },
+        "expiresAt": {
+          "description": "RFC 3339 instant after which the token is dead.",
+          "type": "string"
+        },
+        "token": {
+          "description": "Opaque 32-byte hex.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "token",
+        "expiresAt",
+        "capability"
+      ],
+      "type": "object"
+    },
     "Channel": {
       "description": "One WebSocket replaces v1's three hubs; `channel` discriminates (docs/05 §1).",
       "enum": [
@@ -423,6 +548,29 @@
       },
       "required": [
         "kind"
+      ],
+      "type": "object"
+    },
+    "DataBindingDto": {
+      "description": "One data binding the app declares (see [`AppSpecDto`]).",
+      "properties": {
+        "capability": {
+          "description": "The declared capability that supplies it — validated host-side against\nthe closed vocabulary.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Identifier the template binds this data under (`[a-z][a-z0-9_]*`).",
+          "type": "string"
+        },
+        "target": {
+          "description": "The resource it addresses (e.g. an entity id). Opaque to the host; the\nbacking tool's own allowlist resolves it at call time.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "capability",
+        "target"
       ],
       "type": "object"
     },
@@ -824,6 +972,21 @@
         {
           "const": "deepdive.nothing_to_promote",
           "description": "The deep-dive thread has accumulated nothing worth keeping, so there is\nno Research Notes document to write (F3b.6, FR-27/ADR-017). 409: the\nrequest was well-formed and retrying it unchanged will not help — the\nthread has to consult something first. Promoting a bare heading would\nmint a versioned artifact that says nothing.",
+          "type": "string"
+        },
+        {
+          "const": "app.undeclared_capability",
+          "description": "A generated app asked for a capability its own manifest does not declare\n(F6.5, docs/06 §6). 403 — the request was authenticated and well-formed;\nthe app simply has no such authority to ask for. The audit row\n`app.capability_denied` is the durable half of this rejection.",
+          "type": "string"
+        },
+        {
+          "const": "app.token_rejected",
+          "description": "A capability token was unknown, spent, expired, or bound to a different\napp, version, capability or device (F6.5). 403, one code for all of them:\ntelling a caller *which* would let it probe the token space.",
+          "type": "string"
+        },
+        {
+          "const": "app.invalid_request",
+          "description": "The bridge request named a target the domain refuses to carry (F6.5).\n400.",
           "type": "string"
         }
       ]
@@ -1508,6 +1671,35 @@
       ],
       "type": "object"
     },
+    "InvokeCapabilityRequest": {
+      "additionalProperties": false,
+      "description": "`POST /api/v1/apps/{id}/versions/{version}/invoke` — exchange a token for one\noperation.",
+      "properties": {
+        "capability": {
+          "$ref": "#/definitions/CapabilityDto"
+        },
+        "target": {
+          "description": "The resource the operation applies to. Validated by the domain and then\nre-resolved by the backing tool's own allowlist — naming it confers\nnothing (ADR-029).",
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        },
+        "value": {
+          "description": "The value the operation takes, where it takes one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "capability",
+        "target",
+        "token"
+      ],
+      "type": "object"
+    },
     "ListCommandRequest": {
       "description": "`POST /api/v1/lists/command` — run the **deterministic grammar** over one\nutterance (ADR-024). Zero model calls: an utterance the grammar does not\nunambiguously recognize is a `list.unrecognized_command` 422, never a guess.\n422 rather than 400 because the body was perfectly valid — it is the\n*content* that did not resolve here, and the caller's answer is to fall back\nto the normal run path rather than to fix its request.",
       "properties": {
@@ -2164,6 +2356,19 @@
       "required": [
         "label",
         "value"
+      ],
+      "type": "object"
+    },
+    "MintCapabilityTokenRequest": {
+      "additionalProperties": false,
+      "description": "`POST /api/v1/apps/{id}/versions/{version}/capability-tokens` — ask for a\nshort-lived, single-use token for one declared capability.",
+      "properties": {
+        "capability": {
+          "$ref": "#/definitions/CapabilityDto"
+        }
+      },
+      "required": [
+        "capability"
       ],
       "type": "object"
     },

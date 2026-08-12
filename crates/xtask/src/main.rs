@@ -34,9 +34,13 @@ fn main() -> anyhow::Result<()> {
 /// the docs/12 §9 checklist. Trace 9 and the M5 acceptance scenarios (F5.8)
 /// need live Postgres and nothing else — every speech engine, home and media
 /// service they touch is a fixture: see `docs/milestones/M5-acceptance.md`.
-/// (Trace 8 is M6's generated-app capability trace and does not exist yet.)
+/// Trace 8 and the M6 acceptance scenario (F6.6/F6.7) need live Postgres and
+/// `node`; the acceptance scenario additionally needs the locked template's
+/// dependencies (`npm --prefix tools/app-builder run install-templates`) and
+/// **skips with a message** when they are absent, so a fresh checkout does not
+/// fail for a reason that looks like a bug.
 fn golden() -> anyhow::Result<()> {
-    println!("Running golden traces 1–7, 9 + M3a/M3b/M5 acceptance scenarios...");
+    println!("Running golden traces 1–9 + M3a/M3b/M5/M6 acceptance scenarios...");
     println!("  Trace 1: simple question streams within budget");
     println!("  Trace 2: complex question (placeholder for M1)");
     println!("  Trace 3: quota-exhausted → degraded mode → recovery");
@@ -44,6 +48,9 @@ fn golden() -> anyhow::Result<()> {
     println!("  Trace 5: R2 approval → grant → execute (+ deny/edit/reject) (F2.3/F2.6)");
     println!("  Trace 6: malicious fetched page → policy denies exfiltration (F2.11)");
     println!("  Trace 7: coding task → patch artifact in a disposable worktree (F3a.6/F3a.8)");
+    println!(
+        "  Trace 8: generated app requests an undeclared capability; the bridge rejects (F6.7)"
+    );
     println!(
         "  Trace 9: voice response interrupted — TTS, model and tool cancellation (F5.2/F5.8)"
     );
@@ -71,6 +78,24 @@ fn golden() -> anyhow::Result<()> {
         None,
         2,
         "golden 7: coding task → patch artifact, no direct deployment",
+    )?;
+
+    // Trace 8 — the whole file is the scenario: the capability-denial matrix
+    // through the real HTTP routes and audit log, the CSP the app document is
+    // served under, and the builder's own escape test (docs/06 §8 gate 4).
+    run_scenario(
+        &["test", "-p", "jarvisd", "--test", "golden8_generated_app"],
+        None,
+        3,
+        "golden 8: generated app requests an undeclared capability; bridge rejects",
+    )?;
+
+    // M6 acceptance: exit evidence #1, the real worker and a real Vite build.
+    run_scenario(
+        &["test", "-p", "jarvisd", "--test", "apps_end_to_end"],
+        None,
+        1,
+        "M6 acceptance #1: a dashboard app is generated, stored, and reopens sandboxed",
     )?;
 
     // M3a acceptance scenarios (F3a.8): each named test is the repeatable

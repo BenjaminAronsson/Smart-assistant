@@ -2,6 +2,8 @@
 //! Entities, value types, `RunState`, risk tiers, grant types, budget types.
 //! Pure logic, no I/O (docs/02 §3).
 
+pub mod appbridge;
+pub mod appspec;
 pub mod artifact;
 pub mod audit;
 pub mod conversations;

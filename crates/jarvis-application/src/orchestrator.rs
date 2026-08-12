@@ -175,6 +175,11 @@ pub struct ToolStack<'a> {
     /// consumes the grant (docs/06 §4).
     pub grant_minter: &'a dyn GrantMinter,
     pub grant_validator: &'a dyn GrantValidator,
+    /// Hashes the arguments that actually execute, so a `tool.executed` row
+    /// names *which* effect ran and not merely which tool (**D-M5-4**, carried
+    /// from the M5 gate and closed in M6/F6.5). The application computes no
+    /// crypto itself; this is the infra seam.
+    pub arg_digest: &'a dyn crate::ports::ArgumentDigest,
 }
 
 /// The orchestrator: borrows the ports it drives for the duration of one run.
@@ -718,6 +723,10 @@ impl Orchestrator<'_> {
         // Counts against `max_tool_calls`, enforced at the next loop top.
         run.usage.tool_calls = run.usage.tool_calls.saturating_add(1);
         let tool_id = invocation.tool_id.clone();
+        // D-M5-4: hash exactly what is about to execute, before `invocation` is
+        // moved into the executor. Computed here rather than taken from the
+        // grant so the R0/R1 path — which has no grant — is bound too.
+        let args_sha = stack.arg_digest.digest(&invocation.arguments);
 
         // Race execution against cancellation so a hung tool is abandoned
         // promptly (invariant #4); dropping the future cancels it.
@@ -730,14 +739,26 @@ impl Orchestrator<'_> {
                 // the error's raw text (invariant #5).
                 stack
                     .audit
-                    .record(self.tool_audit_event(run, "tool.failed", &tool_id, stack))
+                    .record(self.tool_audit_event_with_args(
+                        run,
+                        "tool.failed",
+                        &tool_id,
+                        stack,
+                        Some(&args_sha),
+                    ))
                     .await;
                 Err(StepError::Tool(err))
             }
             Ran::Done(Ok(result)) => {
                 stack
                     .audit
-                    .record(self.tool_audit_event(run, "tool.executed", &tool_id, stack))
+                    .record(self.tool_audit_event_with_args(
+                        run,
+                        "tool.executed",
+                        &tool_id,
+                        stack,
+                        Some(&args_sha),
+                    ))
                     .await;
                 // A reversible tool's registered undo is surfaced in the timeline.
                 if let Some(description) = &result.compensation {
@@ -830,13 +851,32 @@ impl Orchestrator<'_> {
         tool_id: &jarvis_domain::tools::ToolId,
         stack: &ToolStack<'_>,
     ) -> AuditEvent {
+        self.tool_audit_event_with_args(run, event_type, tool_id, stack, None)
+    }
+
+    /// As above, plus the **argument binding** (D-M5-4). The payload carries the
+    /// hash, never the arguments: they may be a recipient, a path, a message
+    /// body (invariant 5). The hash is the same `sha256(canonical_form(args))`
+    /// the grant table binds, so an audit row and a grant row for the same
+    /// effect carry the same value and can be joined after the fact.
+    fn tool_audit_event_with_args(
+        &self,
+        run: &Run,
+        event_type: &str,
+        tool_id: &jarvis_domain::tools::ToolId,
+        stack: &ToolStack<'_>,
+        args_sha256: Option<&jarvis_domain::grants::Sha256>,
+    ) -> AuditEvent {
         AuditEvent {
             occurred_at: self.clock.now(),
             actor: format!("user:{}", stack.context.user_id),
             event_type: event_type.to_owned(),
             target: format!("tool:{tool_id}"),
             correlation_id: Some(run.id.to_string()),
-            payload_json: "{}".to_owned(),
+            payload_json: match args_sha256 {
+                Some(hash) => format!("{{\"args_sha256\":\"{hash}\"}}"),
+                None => "{}".to_owned(),
+            },
         }
     }
 
@@ -888,7 +928,7 @@ fn grant_presence_ok(requires_grant: bool, grant_present: bool) -> bool {
 }
 
 /// The result of racing an arbitrary future against cancellation.
-enum Ran<T> {
+pub(crate) enum Ran<T> {
     Done(T),
     Cancelled,
 }
@@ -896,7 +936,7 @@ enum Ran<T> {
 /// Run `fut` to completion, but resolve to [`Ran::Cancelled`] the moment the
 /// token fires — dropping (cancelling) `fut`. Used for tool execution so a hung
 /// tool cannot outlive a cancel (invariant #4), without a `tokio::select!`.
-async fn run_or_cancel<F: std::future::Future>(
+pub(crate) async fn run_or_cancel<F: std::future::Future>(
     fut: F,
     cancel: &CancellationToken,
 ) -> Ran<F::Output> {

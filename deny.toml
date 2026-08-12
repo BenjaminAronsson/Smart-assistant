@@ -6,6 +6,17 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+# Accepted findings. Each needs a reason and a re-check trigger — an ignore
+# list without those is how a real advisory hides behind a stale one.
+ignore = [
+    # `paste` (transitive: fastembed → tokenizers → paste) is archived by its
+    # author. Unmaintained, NOT vulnerable: no advisory describes a defect, and
+    # RustSec itself records "no safe upgrade is available". The crate is a
+    # compile-time macro helper — it contributes no runtime code and no I/O.
+    # Re-check when fastembed moves to `pastey`, or when the ADR-011 revisit
+    # reopens the embeddings choice.
+    "RUSTSEC-2024-0436",
+]
 
 [licenses]
 version = 2
@@ -23,6 +34,14 @@ allow = [
     "Zlib",
     "Unicode-3.0",
     "CDLA-Permissive-2.0",
+    # 0BSD is public-domain-equivalent — strictly more permissive than MIT,
+    # with no attribution requirement (quoted_printable, via lettre/SMTP).
+    "0BSD",
+    # MPL-2.0 is *file-level* copyleft: it reaches modified MPL files, never
+    # the program that links them. `option-ext` is consumed unmodified as a
+    # library, which is exactly the case MPL-2.0 §3.3 permits. Revisit only if
+    # we ever fork the crate — then its files stay MPL and must be published.
+    "MPL-2.0",
 ]
 confidence-threshold = 0.9
 

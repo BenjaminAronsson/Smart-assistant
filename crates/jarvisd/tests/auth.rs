@@ -110,7 +110,17 @@ async fn pairing_succeeds_once_and_stores_only_the_hash() {
     assert_eq!(status, StatusCode::OK);
     let token = body["deviceToken"].as_str().unwrap();
     assert_eq!(token.len(), 64, "256-bit hex token");
-    assert_eq!(body["scopes"], serde_json::json!(["ui"]));
+    // docs/05 §6 step 1: the granted scope list is returned explicitly so a
+    // client never infers it. The *content* of that list is asserted where it
+    // matters — `jarvisd::tools::scope_coverage_tests` checks that it covers
+    // every registered tool, which is the property that actually broke (M6
+    // gate finding B1). Here we assert only the contract: the device class is
+    // present, and the list is not empty.
+    let scopes = body["scopes"].as_array().expect("scopes are returned");
+    assert!(
+        scopes.iter().any(|s| s == "ui"),
+        "the shell's device-class scope must be granted: {scopes:?}"
+    );
 
     // invariant 5: the store holds a hash, never the token value.
     let devices = store.devices.lock().unwrap();

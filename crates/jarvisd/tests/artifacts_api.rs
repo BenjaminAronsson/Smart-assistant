@@ -12,10 +12,12 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
-use jarvis_application::ports::{ArtifactStore, BlobStore, IdentityStore, RepositoryError};
+use jarvis_application::ports::{
+    ArtifactStore, BlobStore, IdentityStore, MAX_SERVED_BLOB_BYTES, RepositoryError,
+};
 use jarvis_domain::artifact::{
     ArtifactContent, ArtifactKind, ArtifactManifest, ArtifactSource, ArtifactVersion,
-    BuildProvenance, MediaType,
+    BuildProvenance, Capability, MediaType,
 };
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::identity::Device;
@@ -180,7 +182,8 @@ async fn seed(store: &FakeArtifactStore, blobs: &FileBlobStore) -> Vec<u8> {
         sources: vec![ArtifactSource::Run(RUN.parse::<RunId>().unwrap())],
         sensitivity: Sensitivity::Sensitive,
         build: BuildProvenance::none(),
-        capabilities: vec!["artifact.read-own-data".parse().unwrap()],
+        // F6.1: the capability vocabulary is closed (ADR-029).
+        capabilities: vec![Capability::HomeReadState],
     };
     let manifest =
         ArtifactManifest::initial(ARTIFACT.parse().unwrap(), RUN.parse().unwrap(), content);
@@ -211,6 +214,7 @@ async fn send(app: &Router, req: Request<Body>) -> (StatusCode, HeaderMapSnapsho
         content_type: header_str(&response, header::CONTENT_TYPE),
         content_disposition: header_str(&response, header::CONTENT_DISPOSITION),
         nosniff: header_str(&response, header::X_CONTENT_TYPE_OPTIONS),
+        csp: header_str(&response, header::CONTENT_SECURITY_POLICY),
     };
     let body = response
         .into_body()
@@ -235,6 +239,7 @@ struct HeaderMapSnapshot {
     content_type: Option<String>,
     content_disposition: Option<String>,
     nosniff: Option<String>,
+    csp: Option<String>,
 }
 
 fn get(path: &str, token: &str) -> Request<Body> {
@@ -269,7 +274,8 @@ async fn list_versions_returns_provenance() {
     assert_eq!(versions[0]["sensitivity"], "sensitive");
     assert_eq!(versions[0]["mediaType"], "text/markdown");
     assert_eq!(versions[0]["sources"][0]["kind"], "run");
-    assert_eq!(versions[0]["capabilities"][0], "artifact.read-own-data");
+    // The wire form is the closed vocabulary's snake_case name (F6.1).
+    assert_eq!(versions[0]["capabilities"][0], "home.read_state");
 }
 
 #[tokio::test]
@@ -423,4 +429,302 @@ async fn artifact_reopens_through_a_fresh_app_instance() {
         body, bytes,
         "the artifact reopens intact after a fresh start"
     );
+}
+
+/// F6.3 (CF-M3a-A): a blob larger than one chunk is served **streamed** — the
+/// bytes arrive intact, `Content-Length` is the verified length, and the M3a
+/// anti-execution headers survive the change. The blob route is never relaxed
+/// into a renderable one; F6.4's sandboxed bundle route is separate.
+#[tokio::test]
+async fn a_multi_chunk_blob_streams_intact_with_the_anti_execution_headers() {
+    let store = Arc::new(FakeArtifactStore::default());
+    let root = temp_root();
+    let blobs = Arc::new(FileBlobStore::new(&root));
+
+    // Several chunks plus a partial one — where an off-by-one would surface.
+    let big: Vec<u8> = (0..(64 * 1024 * 3 + 517))
+        .map(|i| (i % 251) as u8)
+        .collect();
+    let sha = blobs.put(&big).await.unwrap();
+    let content = ArtifactContent {
+        sha256: sha,
+        media_type: "application/octet-stream".parse::<MediaType>().unwrap(),
+        kind: ArtifactKind::Bundle,
+        sources: vec![ArtifactSource::Run(RUN.parse::<RunId>().unwrap())],
+        sensitivity: Sensitivity::Normal,
+        build: BuildProvenance::none(),
+        capabilities: vec![],
+    };
+    store
+        .create_version(
+            &ArtifactManifest::initial(ARTIFACT.parse().unwrap(), RUN.parse().unwrap(), content),
+            &audit(),
+        )
+        .await
+        .unwrap();
+    let (app, token) = app(store, blobs).await;
+
+    let (status, headers, body) = send(
+        &app,
+        get(
+            &format!("/api/v1/artifacts/{ARTIFACT}/versions/1/blob"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, big, "streamed bytes must be byte-for-byte the blob");
+    assert_eq!(headers.content_disposition.as_deref(), Some("attachment"));
+    assert_eq!(
+        headers.content_type.as_deref(),
+        Some("application/octet-stream")
+    );
+}
+
+/// A blob whose last chunk is tampered still fails closed with **no body** —
+/// verification completes before the first byte is emitted, so streaming did
+/// not trade integrity for memory (F6.3 threat note #2/#3).
+#[tokio::test]
+async fn a_tampered_multi_chunk_blob_is_a_fail_closed_500_with_no_bytes() {
+    let store = Arc::new(FakeArtifactStore::default());
+    let root = temp_root();
+    let blobs = Arc::new(FileBlobStore::new(&root));
+
+    let big = vec![b'a'; 64 * 1024 * 2 + 10];
+    let sha = blobs.put(&big).await.unwrap();
+    let content = ArtifactContent {
+        sha256: sha,
+        media_type: "application/octet-stream".parse::<MediaType>().unwrap(),
+        kind: ArtifactKind::Bundle,
+        sources: vec![ArtifactSource::Run(RUN.parse::<RunId>().unwrap())],
+        sensitivity: Sensitivity::Normal,
+        build: BuildProvenance::none(),
+        capabilities: vec![],
+    };
+    store
+        .create_version(
+            &ArtifactManifest::initial(ARTIFACT.parse().unwrap(), RUN.parse().unwrap(), content),
+            &audit(),
+        )
+        .await
+        .unwrap();
+
+    // Flip a byte in the LAST chunk: a hash-while-emitting implementation would
+    // already have streamed almost the whole blob before noticing.
+    let hex = sha.to_string();
+    let path = root.join(&hex[0..2]).join(&hex[2..4]).join(&hex);
+    let mut tampered = big.clone();
+    let last = tampered.len() - 1;
+    tampered[last] = b'z';
+    tokio::fs::write(&path, &tampered).await.unwrap();
+
+    let (app, token) = app(store, blobs).await;
+    let (status, _h, body) = send(
+        &app,
+        get(
+            &format!("/api/v1/artifacts/{ARTIFACT}/versions/1/blob"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["code"], "artifact.integrity_failed");
+    assert!(
+        !body.windows(8).any(|w| w == [b'a'; 8]),
+        "no blob content may appear in a fail-closed response"
+    );
+}
+
+/// The served-size cap itself (F6.3 threat note #1): a blob over
+/// `MAX_SERVED_BLOB_BYTES` is refused **whole** with a typed 413, not truncated
+/// into a partial download that would not hash to the address in its own URL.
+/// Without this, the streaming rewrite would have bounded per-chunk memory while
+/// leaving total request cost unbounded — which is the half of CF-M3a-A that
+/// actually threatens an 8 GB host.
+#[tokio::test]
+async fn a_blob_over_the_served_cap_is_a_typed_413_not_a_partial_download() {
+    let store = Arc::new(FakeArtifactStore::default());
+    let root = temp_root();
+    let blobs = Arc::new(FileBlobStore::new(&root));
+
+    let oversized = vec![b'q'; (MAX_SERVED_BLOB_BYTES + 1) as usize];
+    let sha = blobs.put(&oversized).await.unwrap();
+    let content = ArtifactContent {
+        sha256: sha,
+        media_type: "application/octet-stream".parse::<MediaType>().unwrap(),
+        kind: ArtifactKind::Bundle,
+        sources: vec![ArtifactSource::Run(RUN.parse::<RunId>().unwrap())],
+        sensitivity: Sensitivity::Normal,
+        build: BuildProvenance::none(),
+        capabilities: vec![],
+    };
+    store
+        .create_version(
+            &ArtifactManifest::initial(ARTIFACT.parse().unwrap(), RUN.parse().unwrap(), content),
+            &audit(),
+        )
+        .await
+        .unwrap();
+    let (app, token) = app(store, blobs).await;
+
+    let (status, _h, body) = send(
+        &app,
+        get(
+            &format!("/api/v1/artifacts/{ARTIFACT}/versions/1/blob"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["code"], "artifact.too_large");
+    assert!(
+        !body.windows(8).any(|w| w == [b'q'; 8]),
+        "a refused blob may not leak a prefix of itself"
+    );
+}
+
+// --- F6.4: the generated-app sandbox route ---------------------------------
+
+/// Seed one `Bundle` artifact and return its document bytes.
+async fn seed_bundle(store: &FakeArtifactStore, blobs: &FileBlobStore) -> Vec<u8> {
+    let document = b"<!doctype html><html><body><h1>Kitchen</h1></body></html>".to_vec();
+    let sha = blobs.put(&document).await.unwrap();
+    let content = ArtifactContent {
+        sha256: sha,
+        media_type: "text/html".parse::<MediaType>().unwrap(),
+        kind: ArtifactKind::Bundle,
+        sources: vec![ArtifactSource::Run(RUN.parse::<RunId>().unwrap())],
+        sensitivity: Sensitivity::Normal,
+        build: BuildProvenance::none(),
+        capabilities: vec![Capability::HomeReadState],
+    };
+    store
+        .create_version(
+            &ArtifactManifest::initial(ARTIFACT.parse().unwrap(), RUN.parse().unwrap(), content),
+            &audit(),
+        )
+        .await
+        .unwrap();
+    document
+}
+
+/// The app document is served renderable — `text/html`, **no**
+/// `Content-Disposition: attachment` — under the restrictive CSP, with the
+/// host-authored `<meta http-equiv>` policy as the *first* thing in the
+/// document so it is parsed before any of the app's own markup (F6.4, ADR-030).
+#[tokio::test]
+async fn an_app_document_is_served_renderable_under_the_sandbox_csp() {
+    let store = Arc::new(FakeArtifactStore::default());
+    let blobs = Arc::new(FileBlobStore::new(temp_root()));
+    let document = seed_bundle(&store, &blobs).await;
+    let (app, token) = app(store, blobs).await;
+
+    let (status, headers, body) = send(
+        &app,
+        get(
+            &format!("/api/v1/apps/{ARTIFACT}/versions/1/document"),
+            &token,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers.content_type.as_deref(),
+        Some("text/html; charset=utf-8")
+    );
+    assert_eq!(headers.nosniff.as_deref(), Some("nosniff"));
+    assert_eq!(
+        headers.content_disposition, None,
+        "the app route renders; only the blob route forces a download"
+    );
+
+    let csp = headers.csp.expect("a CSP header");
+    // `sandbox` without `allow-same-origin` is what makes a directly navigated
+    // document opaque-origin, independently of the frame attribute the shell
+    // sets. Losing it would silently re-open the same-origin path.
+    assert!(csp.contains("sandbox allow-scripts"), "{csp}");
+    assert!(!csp.contains("allow-same-origin"), "{csp}");
+    assert!(csp.contains("default-src 'none'"), "{csp}");
+    assert!(csp.contains("connect-src 'none'"), "{csp}");
+    assert!(csp.contains("base-uri 'none'"), "{csp}");
+    assert!(csp.contains("form-action 'none'"), "{csp}");
+
+    let text = String::from_utf8(body).expect("utf-8 document");
+    assert!(
+        text.starts_with("<meta http-equiv=\"Content-Security-Policy\""),
+        "the host's policy must be the first thing parsed: {:?}",
+        &text[..60.min(text.len())]
+    );
+    assert!(text.contains("default-src 'none'"));
+    assert!(
+        text.ends_with(std::str::from_utf8(&document).unwrap()),
+        "the bundle's own bytes follow the policy, unmodified"
+    );
+}
+
+/// Only a `Bundle` renders. A markdown note — whose bytes may have come from a
+/// fetched web page — must never be requestable as executable content
+/// (F6.4 threat note #6; the server half of "one render path per kind").
+#[tokio::test]
+async fn a_non_bundle_artifact_is_not_an_app() {
+    let store = Arc::new(FakeArtifactStore::default());
+    let blobs = Arc::new(FileBlobStore::new(temp_root()));
+    seed(&store, &blobs).await; // markdown
+    let (app, token) = app(store, blobs).await;
+
+    let (status, _h, _b) = send(
+        &app,
+        get(
+            &format!("/api/v1/apps/{ARTIFACT}/versions/1/document"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// Adding the render path did not relax the download path: the *same* bundle
+/// fetched through `…/blob` is still `attachment` + `nosniff` with no CSP-driven
+/// render (M3a security-auditor B1, F6.4 threat note #5).
+#[tokio::test]
+async fn the_blob_route_still_refuses_to_render_the_same_bundle() {
+    let store = Arc::new(FakeArtifactStore::default());
+    let blobs = Arc::new(FileBlobStore::new(temp_root()));
+    seed_bundle(&store, &blobs).await;
+    let (app, token) = app(store, blobs).await;
+
+    let (status, headers, _b) = send(
+        &app,
+        get(
+            &format!("/api/v1/artifacts/{ARTIFACT}/versions/1/blob"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.content_disposition.as_deref(), Some("attachment"));
+    assert_eq!(headers.nosniff.as_deref(), Some("nosniff"));
+}
+
+/// The app document is a privileged fetch like every other artifact read.
+#[tokio::test]
+async fn the_app_document_requires_a_token() {
+    let store = Arc::new(FakeArtifactStore::default());
+    let blobs = Arc::new(FileBlobStore::new(temp_root()));
+    seed_bundle(&store, &blobs).await;
+    let (app, _token) = app(store, blobs).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/apps/{ARTIFACT}/versions/1/document"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }

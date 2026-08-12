@@ -1,0 +1,58 @@
+/* `dashboard/v1` styling. System fonts only: a webfont would be an external
+   subresource, which the host refuses and F6.4's CSP forbids fetching. */
+:root {
+  color-scheme: dark light;
+  --bg: #14161a;
+  --fg: #e8eaed;
+  --muted: #9aa0a6;
+  --card: #1e2128;
+}
+
+body {
+  margin: 0;
+  padding: 1.5rem;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.4;
+}
+
+h1 {
+  margin: 0 0 1.25rem;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+  gap: 0.75rem;
+}
+
+.card {
+  background: var(--card);
+  border-radius: 0.75rem;
+  padding: 1rem;
+}
+
+.card h2 {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 500;
+  text-transform: capitalize;
+  color: var(--muted);
+}
+
+.value {
+  margin: 0.35rem 0 0;
+  font-size: 1.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.target,
+.empty {
+  margin: 0.35rem 0 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}

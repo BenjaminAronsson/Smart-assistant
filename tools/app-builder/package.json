@@ -1,0 +1,17 @@
+{
+  "name": "jarvis-app-builder",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Out-of-process app builder for Jarvis (F6.2, FR-18, docs/06 §6, ADR-027/ADR-029). Renders a host-validated app spec against a locked Vite template and returns one self-contained document — it never decides what may be built.",
+  "type": "module",
+  "bin": {
+    "jarvis-app-builder": "src/index.mjs"
+  },
+  "scripts": {
+    "start": "node src/index.mjs",
+    "install-templates": "cd templates/dashboard-v1 && npm ci"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
