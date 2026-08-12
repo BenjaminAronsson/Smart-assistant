@@ -28,6 +28,8 @@
 | `PATCH /api/v1/automations/{id}` · `DELETE …` | FR-17 | Edit/disable/delete (R2). |
 | `GET /api/v1/automations/{id}/executions` | FR-17 | Execution history with policy decisions. |
 | `POST /api/v1/devices/pair` | FR-19 | Device challenge/approval flow (nodes, M7). |
+| `GET /api/v1/devices` | FR-19 | List paired devices with class, scopes, last seen, revocation state (`ui` scope only). |
+| `POST /api/v1/devices/{id}/revoke` | FR-19 | Revoke a device immediately: token fails closed on the next request and its live socket is closed (`ui` scope only). |
 | `GET /api/v1/providers` | FR-11/12 | Profile health, quota state, reset window. |
 | `GET /api/v1/diagnostics/health` | — | Core + adapter readiness (unauthenticated, loopback only). |
 | `GET /ws/v1?since=…` | — | WebSocket (token-authenticated): run events, deltas, approvals, artifacts, presence, display commands, voice control. |
@@ -169,6 +171,13 @@ newtyped IDs, and explicit cancellation throughout.
 - Tool schemas are versioned; historical runs preserve the schema version they used.
 - Breaking change ⇒ new `v` and a compatibility shim window; the owner controls all
   clients (A-07), so windows can be short but never zero.
+- **Adding a required field to a *response* DTO is additive; adding one to a *request*
+  DTO is breaking.** Old readers ignore unknown fields, and the reverse skew (new client
+  against old server) cannot occur in this topology — server and clients live in one repo
+  and deploy together (A-07). A request DTO has no such asymmetry: an older client that
+  cannot send the field is refused. Precedent: `PairResponse.deviceClass` (F7.1), made
+  required rather than defaulted because a default would be a silently wrong
+  *authority-relevant* value. A future change may cite this only for responses.
 
 ## 6. Authentication model (v1)
 
@@ -188,10 +197,30 @@ Single-owner, loopback-first — deliberately simple, upgraded at M7:
    `jarvisd::auth::ws_subprotocol_token` accepts that as a fallback, scoped to genuine WS
    handshakes only, and echoes back the sentinel (never the token) to complete the
    negotiation. Unauthenticated surface: `GET /api/v1/diagnostics/health` on loopback only.
-3. **Scopes.** Tokens carry device scopes (e.g. `ui`, `display-agent`, `voice-capture`);
-   the desktop agent and the Angular shell are separate devices with separate scopes.
-4. **Revocation.** Immediate per-device token revocation via settings; revoked tokens fail
-   closed on the next request/frame.
+3. **Scopes come from the device class (M7 F7.1).** A device never names its own
+   authority: pairing assigns a **class**, and the class decides the scopes. Two
+   vocabularies, typed apart in `jarvis_domain::identity`:
+   *class scopes* — `ui`, `display-agent`, `voice-capture` — and *tool scopes*
+   (`<area>:<capability>`, e.g. `home:control`) which only `owner-ui` holds.
+
+   | Class | Class scopes | Tool scopes | What it is |
+   |---|---|---|---|
+   | `owner-ui` | `ui` | all (`OWNER_TOOL_SCOPES`) | The owner's shell/CLI; the bootstrap device. |
+   | `display-node` | `display-agent` | none | A screen: the local `jarvis-agent`, or a remote display node. |
+   | `voice-node` | `voice-capture` | none | A microphone/speaker satellite with no screen. |
+   | `room-node` | `display-agent`, `voice-capture` | none | A satellite that both listens and shows. |
+
+   A satellite is therefore **toolless by construction** — its authority is to present
+   and to capture, never to act. The class is stored on the device row and is what
+   authorization reads; `identity.devices.scopes` is the pairing-time snapshot kept for
+   audit only, so a stale or tampered row cannot widen authority. Device management
+   (`GET /api/v1/devices`, revoke) requires `ui`, so no node can enumerate or revoke.
+4. **Revocation.** Immediate per-device revocation (`POST /api/v1/devices/{id}/revoke`,
+   `ui` scope, audited with a reason). Revoked tokens fail closed on the next request, and
+   the device's **live WebSocket is closed** rather than left running until it happens to
+   reconnect. Revocation is idempotent. Revoking the last active `owner-ui` device is
+   refused (`identity.last_owner_device`): it would leave nothing able to pair a
+   replacement short of a restart.
 5. **M7 upgrade path.** LAN/remote adds TLS + per-device keys with challenge-response
    pairing and mTLS or signed tokens (06 §5); the token model above remains for loopback.
 
@@ -231,3 +260,4 @@ and grows additively. HTTP mapping via RFC 9457 problem details.
 | `list.full` | The list is at its item bound; retrying unchanged will not help — the owner removes or checks something off, or promotes the list to an artifact (FR-34) | 409 |
 | `list.unrecognized_command` | The deterministic grammar refused rather than guessing which list the owner meant (FR-34, ADR-024/ADR-016); the body was valid, its *content* was not resolvable here, so the caller falls back to the normal run path | 422 |
 | `deepdive.nothing_to_promote` | The deep-dive thread has consulted nothing yet, so there is no Research Notes document to write (FR-27, ADR-017); promoting a bare heading would mint a versioned artifact that says nothing | 409 |
+| `identity.last_owner_device` | Revoking this device would leave no `owner-ui` device, so nothing could pair a replacement without a `jarvisd` restart (FR-19, F7.1); never blocks revoking a node | 409 |

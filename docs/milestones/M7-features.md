@@ -128,8 +128,8 @@ not control.
 
 ## Features
 
-- [ ] **F7.1 — Device classes, per-class scope sets, device list + revocation (FR-19)**
-      · *strong model*
+- [x] **F7.1 — Device classes, per-class scope sets, device list + revocation (FR-19)**
+      · *strong model* — DONE (branch `feat/m7-f7.1-device-classes`)
       The identity model stops assuming one device. Domain: a `DeviceClass` value type
       (`owner-ui`, `display-node`, `voice-node`, and the existing `display-agent` for the
       local Hyprland agent), each mapping to an explicit scope set — a room satellite gets
@@ -146,6 +146,27 @@ not control.
       Refs: docs/05 §6.3/§6.4, docs/04 §2, docs/06 §2. Read: `crates/jarvisd/src/auth.rs`,
       `crates/jarvis-domain/src/identity.rs`, `jarvisd::tools` scope tests; skills
       `policy-grants`, `sqlx-data`, `ws-contracts`. Deps: none.
+
+      **Deviations from this entry, for the gate to sign off (docs/11 §3):**
+      1. **Revocation is not approval-gated.** Written above as "R2 → approval + audit".
+         Shipped scope-gated (`ui`) + audited + immediate: `policy::evaluate` governs the
+         model→tool path and there is no model in this loop, and the approval card would
+         render *on the device being revoked*. Reasoning recorded in **docs/06 §3**, not
+         only in a source comment. The security audit accepted it and named the residual
+         gap: the last-owner guard prevents self-lockout by *accident*, not by an
+         *adversary* holding a stolen owner token — **open owner decision, carried to the
+         gate**.
+      2. **Class set is `owner-ui` / `display-node` / `voice-node` / `room-node`.** The
+         entry listed "the existing `display-agent`"; that is a class *scope*, and the
+         local Hyprland agent is a `display-node`. `room-node` was added because M7's own
+         exit evidence needs one node that both shows a surface and does a voice turn.
+      3. **No `capabilities` column.** Subsumed by the class; F7.5 adds one if surface
+         routing needs a finer answer than the class gives.
+      4. **Added beyond the entry, on security-audit findings:** a deny-by-default `ui`
+         gate on *every* authenticated route except `/ws/v1` (a node could otherwise have
+         resolved approvals — the grant-minting decision — once F7.2 mints one), and a
+         revocation re-check at socket upgrade (a `broadcast` subscriber cannot see a
+         publish that landed before it subscribed).
 
 - [ ] **F7.2 — Challenge-response pairing with per-device keys (FR-19, ADR-031)**
       · *strong model*

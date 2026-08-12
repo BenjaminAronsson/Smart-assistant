@@ -6,6 +6,8 @@
 //! bytes carry escaped content, the item bound mapping to its own code, unknown
 //! ids, and auth required on every route.
 
+mod identity_fixture;
+use identity_fixture::InMemoryIdentityStore;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -17,12 +19,11 @@ use http_body_util::BodyExt;
 use jarvis_application::lists::ListsService;
 use jarvis_application::orchestrator::Clock;
 use jarvis_application::ports::{
-    ArtifactStore, BlobStore, BlobStoreError, IdentityStore, ListStore, RepositoryError,
+    ArtifactStore, BlobStore, BlobStoreError, ListStore, RepositoryError,
 };
 use jarvis_domain::artifact::{ArtifactManifest, ArtifactVersion};
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::grants::Sha256;
-use jarvis_domain::identity::Device;
 use jarvis_domain::ids::{ArtifactId, ListId, ListItemId};
 use jarvis_domain::lists::{ItemList, ItemText, ListItem, ListName, MAX_ITEMS_PER_LIST};
 use jarvisd::api::{AppState, Wiring, router_with};
@@ -45,39 +46,6 @@ impl Clock for FixedClock {
 }
 
 // --- fakes --------------------------------------------------------------
-
-#[derive(Default)]
-struct FakeIdentityStore {
-    devices: Mutex<Vec<Device>>,
-}
-
-#[async_trait::async_trait]
-impl IdentityStore for FakeIdentityStore {
-    async fn device_count(&self) -> Result<u64, RepositoryError> {
-        Ok(self.devices.lock().unwrap().len() as u64)
-    }
-    async fn pair_device(
-        &self,
-        _owner_name: &str,
-        device: &Device,
-        _audit: &AuditEvent,
-    ) -> Result<(), RepositoryError> {
-        self.devices.lock().unwrap().push(device.clone());
-        Ok(())
-    }
-    async fn find_active_device_by_token_hash(
-        &self,
-        token_hash: &str,
-    ) -> Result<Option<Device>, RepositoryError> {
-        Ok(self
-            .devices
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|d| d.token_hash == token_hash && d.is_active())
-            .cloned())
-    }
-}
 
 #[derive(Default)]
 struct FakeLists {
@@ -373,7 +341,7 @@ impl Harness {
 }
 
 async fn harness(seed: Vec<ItemList>) -> Harness {
-    let identity = Arc::new(FakeIdentityStore::default());
+    let identity = Arc::new(InMemoryIdentityStore::default());
     let auth = AuthState::bootstrap(identity).await;
     let code = auth.current_pairing_code().unwrap();
 
@@ -772,7 +740,7 @@ async fn the_list_surface_is_absent_when_it_is_not_wired() {
     // unauthenticated caller gets to probe (that property is covered by
     // `every_list_route_requires_a_device_token`). Authenticating first is what
     // makes the 404 here mean "not wired" rather than "not authenticated".
-    let identity = Arc::new(FakeIdentityStore::default());
+    let identity = Arc::new(InMemoryIdentityStore::default());
     let auth = AuthState::bootstrap(identity).await;
     let code = auth.current_pairing_code().unwrap();
     let app = router_with(AppState::new().with_auth(auth), Wiring::default());

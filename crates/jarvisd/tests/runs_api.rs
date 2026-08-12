@@ -3,6 +3,8 @@
 //! the real engine (a scripted `FakeModel`); no database. The end-to-end
 //! streaming + resync path (real Postgres + WebSocket) is `ws_stream.rs`.
 
+mod identity_fixture;
+use identity_fixture::InMemoryIdentityStore;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -12,15 +14,13 @@ use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use jarvis_application::orchestrator::{CheckpointError, Checkpointer};
 use jarvis_application::ports::{
-    BlobStoreError, CreateOutcome, IdentityStore, MessageStore, RepositoryError, RunStore, RunView,
-    SessionStore,
+    BlobStoreError, CreateOutcome, MessageStore, RepositoryError, RunStore, RunView, SessionStore,
 };
 use jarvis_application::testing::FakeModel;
 use jarvis_domain::artifact::{ArtifactManifest, ArtifactVersion};
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::conversations::{Message, Session};
 use jarvis_domain::grants::Sha256;
-use jarvis_domain::identity::Device;
 use jarvis_domain::ids::{ArtifactId, RunId, SessionId};
 use jarvis_domain::run::{Run, RunBudget, RunEvent};
 use jarvis_infra::dispatcher::OutboxRecord;
@@ -35,39 +35,6 @@ const SESSION: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
 const TERMINAL_RUN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 
 // --- fakes -----------------------------------------------------------------
-
-#[derive(Default)]
-struct FakeIdentityStore {
-    devices: Mutex<Vec<Device>>,
-}
-
-#[async_trait::async_trait]
-impl IdentityStore for FakeIdentityStore {
-    async fn device_count(&self) -> Result<u64, RepositoryError> {
-        Ok(self.devices.lock().unwrap().len() as u64)
-    }
-    async fn pair_device(
-        &self,
-        _owner: &str,
-        device: &Device,
-        _audit: &AuditEvent,
-    ) -> Result<(), RepositoryError> {
-        self.devices.lock().unwrap().push(device.clone());
-        Ok(())
-    }
-    async fn find_active_device_by_token_hash(
-        &self,
-        token_hash: &str,
-    ) -> Result<Option<Device>, RepositoryError> {
-        Ok(self
-            .devices
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|d| d.token_hash == token_hash && d.is_active())
-            .cloned())
-    }
-}
 
 struct FakeSessionStore {
     known: SessionId,
@@ -253,7 +220,7 @@ async fn app_with_token(
     model: FakeModel,
     run_store: Arc<FakeRunStore>,
 ) -> (Router, String, Arc<WsHub>) {
-    let identity = Arc::new(FakeIdentityStore::default());
+    let identity = Arc::new(InMemoryIdentityStore::default());
     let auth = AuthState::bootstrap(identity).await;
     let code = auth.current_pairing_code().unwrap();
 
@@ -300,6 +267,8 @@ async fn app_with_token(
         Some(deepdive.clone()),
     );
     let ws = WsState {
+        identity: None,
+        revocations: Default::default(),
         hub: hub.clone(),
         events: Arc::new(EmptyEventReader),
         shutdown: CancellationToken::new(),

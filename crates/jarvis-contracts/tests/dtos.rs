@@ -132,6 +132,9 @@ mod auth {
         let value = json!({
             "deviceId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             "deviceToken": "opaque-256-bit-token",
+            // F7.1: the server states the class it assigned, for the same
+            // reason it states the scopes — a client is told its authority.
+            "deviceClass": "owner-ui",
             "scopes": ["ui", "display-agent"]
         });
         let resp: PairResponse =
@@ -161,6 +164,7 @@ mod auth {
         let value = json!({
             "deviceId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             "deviceToken": "opaque-256-bit-token",
+            "deviceClass": "display-node",
             "scopes": []
         });
         let resp: PairResponse = serde_json::from_value(value.clone()).unwrap();
@@ -326,5 +330,87 @@ mod content {
         let value = json!({ "type": "text" });
         let result: Result<ContentBlock, _> = serde_json::from_value(value);
         assert!(result.is_err());
+    }
+}
+
+/// F7.1 (FR-19): the device-management surface. Pins the exact wire strings —
+/// `crates/jarvisd/tests/devices_api.rs` drives these through a live router,
+/// which is the caller-side check; this is the contract-side one.
+mod devices {
+    use super::*;
+    use jarvis_contracts::devices::{DeviceDto, DeviceListResponse, RevokeDeviceRequest};
+
+    fn a_device() -> serde_json::Value {
+        json!({
+            "deviceId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "name": "kitchen screen",
+            "deviceClass": "room-node",
+            "scopes": ["display-agent", "voice-capture"],
+            "executesTools": false,
+            "createdAt": "2026-08-12T09:00:00Z",
+            "lastSeenAt": null,
+            "revokedAt": null,
+            "revokedReason": null
+        })
+    }
+
+    #[test]
+    fn device_dto_round_trips() {
+        let value = a_device();
+        let dto: DeviceDto =
+            serde_json::from_value(value.clone()).expect("DeviceDto must deserialize");
+        assert_eq!(serde_json::to_value(&dto).unwrap(), value);
+    }
+
+    #[test]
+    fn device_id_must_be_a_valid_ulid() {
+        let mut value = a_device();
+        value["deviceId"] = json!("not-a-ulid");
+        let result: Result<DeviceDto, _> = serde_json::from_value(value);
+        assert!(result.is_err(), "DeviceDto.deviceId must reject a non-ULID");
+    }
+
+    /// A device list is a management read, not a credential dump: the DTO has
+    /// no field that could carry a token or its hash, and this test fails if
+    /// one is ever added.
+    #[test]
+    fn device_dto_carries_no_credential_material() {
+        let dto: DeviceDto = serde_json::from_value(a_device()).expect("deserializes");
+        let wire = serde_json::to_value(&dto).unwrap();
+        let fields: Vec<&String> = wire.as_object().expect("object").keys().collect();
+        for forbidden in ["token", "tokenHash", "secret", "publicKey", "userId"] {
+            assert!(
+                !fields.iter().any(|f| f.as_str() == forbidden),
+                "DeviceDto must not carry `{forbidden}`: {fields:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_revoked_device_carries_its_timestamp_and_reason() {
+        let mut value = a_device();
+        value["revokedAt"] = json!("2026-08-12T10:00:00Z");
+        value["revokedReason"] = json!("sold the screen");
+        let dto: DeviceDto = serde_json::from_value(value.clone()).expect("deserializes");
+        assert_eq!(serde_json::to_value(&dto).unwrap(), value);
+    }
+
+    #[test]
+    fn device_list_round_trips_and_accepts_an_empty_list() {
+        let value = json!({ "devices": [] });
+        let dto: DeviceListResponse = serde_json::from_value(value.clone()).expect("deserializes");
+        assert_eq!(serde_json::to_value(&dto).unwrap(), value);
+    }
+
+    /// The reason is optional: revoking a lost device must not require an
+    /// essay, and an empty body is the common case.
+    #[test]
+    fn revoke_request_reason_is_optional() {
+        let empty: RevokeDeviceRequest =
+            serde_json::from_value(json!({})).expect("an empty body is valid");
+        assert_eq!(empty.reason, None);
+        let given: RevokeDeviceRequest =
+            serde_json::from_value(json!({ "reason": "stolen" })).expect("deserializes");
+        assert_eq!(given.reason.as_deref(), Some("stolen"));
     }
 }

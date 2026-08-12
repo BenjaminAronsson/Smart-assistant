@@ -30,6 +30,29 @@
 "Always allow" becomes a policy rule only through a separate settings flow — never
 accepted as incidental chat text.
 
+**Device revocation is R3-classified but deliberately not approval-gated (F7.1, FR-19).**
+`POST /api/v1/devices/{id}/revoke` changes access, which this table puts at R3 "strong
+confirmation". It ships scope-gated (`ui`), audited transactionally, and **immediate**,
+with no approval card. The reasoning, recorded here because a reader of the threat model
+would otherwise find a control that looks weakened for no stated reason:
+
+- §1's invariant is that *text* grants no authority. There is no model, tool result, or
+  external content anywhere on this path — the actor is an authenticated identity
+  operating its own settings surface, which is the same shape this section already
+  blesses for "always allow".
+- The approval card would render **on the device being revoked**. Putting it in front of
+  the lost-or-stolen-device control delays the one operation that cannot afford delay.
+
+What replaces R3's strong confirmation is the **last-owner guard**: revoking the final
+active `owner-ui` device is refused (`identity.last_owner_device`). That guard is honest
+about its limit — it prevents self-lockout *by accident*, not *by an adversary*. An
+attacker holding a stolen owner token can revoke the owner's **other** owner devices and
+keep its own; the guard is satisfied throughout, because the attacker's device is the
+survivor, and the owner is locked out until `jarvisd` restarts. Closing that would mean
+re-presenting the pairing ceremony when the *target* is an `owner-ui` device other than
+the caller's own — friction that also lands on the lost-laptop case this control exists
+for. **Open owner decision, carried to the M7 gate.**
+
 **Purchases (catalog J2).** A purchase executed via the browser worker is R3; its
 approval must show the total price and currency, the merchant, the item(s), and the
 payment surface being used — captured from the checkout page itself (screenshot region +

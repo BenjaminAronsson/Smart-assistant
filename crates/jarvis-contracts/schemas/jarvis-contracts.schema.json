@@ -643,6 +643,79 @@
       ],
       "type": "object"
     },
+    "DeviceDto": {
+      "description": "One paired device as the owner sees it.",
+      "properties": {
+        "createdAt": {
+          "description": "RFC 3339.",
+          "type": "string"
+        },
+        "deviceClass": {
+          "description": "`owner-ui`, `display-node`, `voice-node`, `room-node` (docs/05 §6.3).\nThe class is what decides the scopes below — a device never names its\nown authority.",
+          "type": "string"
+        },
+        "deviceId": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "executesTools": {
+          "description": "Whether this class may execute tools at all. Room satellites cannot;\nsurfacing it here keeps the device list honest about what a node is.",
+          "type": "boolean"
+        },
+        "lastSeenAt": {
+          "description": "RFC 3339; absent until the device has connected.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "revokedAt": {
+          "description": "RFC 3339; present exactly when the device is revoked.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revokedReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scopes": {
+          "description": "The scopes this class holds, sent explicitly so clients never infer\nthem (same rule as the pair response, docs/05 §6.1).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "deviceId",
+        "name",
+        "deviceClass",
+        "scopes",
+        "executesTools",
+        "createdAt"
+      ],
+      "type": "object"
+    },
+    "DeviceListResponse": {
+      "properties": {
+        "devices": {
+          "items": {
+            "$ref": "#/definitions/DeviceDto"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "devices"
+      ],
+      "type": "object"
+    },
     "DisplayDirective": {
       "description": "A directive the server sends to the agent on the `display` channel. The\n`type` discriminator is dotted-namespaced (`display.place_surface`), matching\nthe envelope convention; the agent routes on it.",
       "oneOf": [
@@ -987,6 +1060,11 @@
         {
           "const": "app.invalid_request",
           "description": "The bridge request named a target the domain refuses to carry (F6.5).\n400.",
+          "type": "string"
+        },
+        {
+          "const": "identity.last_owner_device",
+          "description": "Revoking this device would leave the owner with no `owner-ui` device\nand therefore no way to pair a new one without a `jarvisd` restart\n(F7.1, FR-19). 409 — the request was well-formed; the owner pairs a\nreplacement first. Never blocks revoking a *node*, only the last\nowner client.",
           "type": "string"
         }
       ]
@@ -2426,6 +2504,10 @@
     },
     "PairResponse": {
       "properties": {
+        "deviceClass": {
+          "description": "The class the server assigned (docs/05 §6.3) — `owner-ui` for the\nbootstrap device. Returned explicitly for the same reason `scopes` is:\na client is told its authority, it never infers it.",
+          "type": "string"
+        },
         "deviceId": {
           "$ref": "#/definitions/UlidString"
         },
@@ -2444,6 +2526,7 @@
       "required": [
         "deviceId",
         "deviceToken",
+        "deviceClass",
         "scopes"
       ],
       "type": "object"
@@ -2681,6 +2764,18 @@
           "type": "object"
         }
       ]
+    },
+    "RevokeDeviceRequest": {
+      "description": "Body of `POST /api/v1/devices/{id}/revoke`. The reason is recorded in the\naudit event and shown in the device list — revocation is a security event\nworth being able to explain later.",
+      "properties": {
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     },
     "RiskLevelDto": {
       "description": "Wire projection of [`jarvis_domain::policy::RiskLevel`] (docs/06 §3). An\napproval card only ever carries `R2`/`R3` — `R0`/`R1` auto-authorize and `R4`\nis rejected outright — but the projection is total (no `_`) so a new tier\nforces a decision here rather than silently mapping.",

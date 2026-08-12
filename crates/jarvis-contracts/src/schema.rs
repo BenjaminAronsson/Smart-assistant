@@ -35,6 +35,11 @@ pub fn export() -> Value {
     generator.subschema_for::<crate::health::HealthResponse>();
     generator.subschema_for::<crate::auth::PairRequest>();
     generator.subschema_for::<crate::auth::PairResponse>();
+    // Device management surface (F7.1, FR-19). Referenced by no event — each
+    // root must be registered here or it ships absent from the wire schema.
+    generator.subschema_for::<crate::devices::DeviceDto>();
+    generator.subschema_for::<crate::devices::DeviceListResponse>();
+    generator.subschema_for::<crate::devices::RevokeDeviceRequest>();
     generator.subschema_for::<crate::sessions::SessionDto>();
     generator.subschema_for::<crate::sessions::CreateSessionRequest>();
     generator.subschema_for::<crate::sessions::SessionListResponse>();

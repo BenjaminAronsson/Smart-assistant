@@ -11,6 +11,7 @@ pub mod auth;
 pub mod cards;
 pub mod config;
 pub mod deepdive;
+pub mod devices;
 pub mod display;
 pub mod light_targets;
 pub mod lists;

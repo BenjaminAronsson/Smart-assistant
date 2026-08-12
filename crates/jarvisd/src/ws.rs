@@ -21,13 +21,13 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use axum::Extension;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{CloseCode, CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::HeaderValue;
 use axum::response::Response;
 use futures_util::stream::{BoxStream, StreamExt, poll_fn};
 use jarvis_application::orchestrator::{RunEventSink, RunUpdate};
-use jarvis_application::ports::{DisplayDirectiveSink, RepositoryError};
+use jarvis_application::ports::{DisplayDirectiveSink, IdentityStore, RepositoryError};
 use jarvis_application::voice::{
     AudioFormat, ClauseSegmenter, SpeechSynthesizer, SpeechTranscriber, TranscriptEvent, VoiceError,
 };
@@ -499,6 +499,11 @@ impl RunEventSink for WsHub {
     }
 }
 
+/// Close code sent when a socket is dropped because its device was revoked
+/// (F7.1). 1008 "policy violation" — the connection was fine, the
+/// authorization behind it stopped being.
+const REVOKED_CLOSE_CODE: CloseCode = 1008;
+
 /// `?since=` cursor for the WS reconnect replay. Absent = live-only from now.
 #[derive(Debug, Deserialize)]
 pub struct WsParams {
@@ -523,6 +528,21 @@ pub struct WsState {
     /// tests that mount the socket without the run surface: the transcript is
     /// still broadcast, but nothing is started.
     pub runs: Option<crate::runs::RunApi>,
+    /// Revocations announced by `POST /devices/{id}/revoke` (F7.1). A socket
+    /// authorizes once, at upgrade; without this it would keep streaming to a
+    /// device the owner just revoked until the client happened to reconnect.
+    /// Defaults to a bus nobody publishes on, which is what tests that mount
+    /// the socket without the device surface want.
+    pub revocations: crate::devices::RevocationBus,
+    /// Read back once per socket, immediately after subscribing, to close the
+    /// **subscribe-after-authorize race**: a `broadcast` receiver only sees
+    /// values sent after `subscribe()`, and authorization happened earlier, in
+    /// `require_device`, before the upgrade completed. A revocation landing in
+    /// that window would otherwise be lost — and the socket would then hold
+    /// its cached authority for its whole lifetime (security-auditor, F7.1).
+    /// `None` in deployments that mount no device surface, where nothing can
+    /// revoke anything.
+    pub identity: Option<Arc<dyn IdentityStore>>,
 }
 
 struct ActiveVoiceStream {
@@ -700,10 +720,42 @@ fn start_voice_stream(
 /// and the `state.shutdown` branch never reached, so graceful drain never
 /// completed for that connection.
 async fn stop_voice_stream(active: &mut Option<ActiveVoiceStream>) {
+    stop_voice_stream_with(active, StreamStop::LetItSettle).await;
+}
+
+/// Whether a capture stream being torn down deserves the settle grace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamStop {
+    /// Graceful teardown: the utterance in flight is the owner's, and letting
+    /// the STT service settle it is what makes barge-in and shutdown clean.
+    LetItSettle,
+    /// The device's authority is **gone** (F7.1 revocation). A revoked
+    /// microphone's speech is not a turn worth completing: keeping the settle
+    /// grace would feed up to `VOICE_STREAM_SETTLE_GRACE` more of its audio to
+    /// the speech service, broadcast the resulting transcript, and delay the
+    /// close frame by the same amount. Cancel first, ask nothing.
+    Immediately,
+}
+
+async fn stop_voice_stream_with(active: &mut Option<ActiveVoiceStream>, stop: StreamStop) {
     let Some(mut stream) = active.take() else {
         return;
     };
     stream.audio_tx.take();
+    if stop == StreamStop::Immediately {
+        stream.cancel.cancel();
+        if tokio::time::timeout(VOICE_STREAM_CANCEL_GRACE, &mut stream.task)
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                stream_id = %stream.stream_id,
+                "revoked device's transcription task did not unwind; abandoning it"
+            );
+            stream.task.abort();
+        }
+        return;
+    }
     if tokio::time::timeout(VOICE_STREAM_SETTLE_GRACE, &mut stream.task)
         .await
         .is_err()
@@ -1038,6 +1090,36 @@ async fn handle_socket(
     // overlap between replay and live is deduped by the client on `seq` (the
     // outbox id is unique and monotonic).
     let mut rx = state.hub.subscribe();
+    // Subscribe, THEN verify. A `broadcast` receiver never sees values sent
+    // before `subscribe()`, and this device was authorized earlier — in
+    // `require_device`, before the upgrade completed. Subscribing first and
+    // re-reading the device second leaves no window: a revocation before the
+    // subscribe is caught by the read, one after it is caught by the bus.
+    let mut revocations = state.revocations.subscribe();
+    if let Some(identity) = &state.identity {
+        match identity.is_device_active(&device.device_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::info!(
+                    device_id = %device.device_id,
+                    "closing socket at upgrade: device was revoked during the handshake"
+                );
+                let _ = socket
+                    .send(Message::Close(Some(CloseFrame {
+                        code: REVOKED_CLOSE_CODE,
+                        reason: "device revoked".into(),
+                    })))
+                    .await;
+                return;
+            }
+            // Fail closed: unable to confirm the device is still authorized.
+            Err(e) => {
+                tracing::error!(error = %e, "closing socket: revocation re-check failed");
+                let _ = socket.send(Message::Close(None)).await;
+                return;
+            }
+        }
+    }
     let mut voice_stream: Option<ActiveVoiceStream> = None;
     let mut speech: Option<ActiveSpeech> = None;
     // Settled transcripts travel task → loop, because only the loop holds the
@@ -1067,6 +1149,55 @@ async fn handle_socket(
                 let _ = socket.send(Message::Close(None)).await;
                 return;
             }
+            // The owner revoked a device. Polled second only to shutdown: a
+            // socket that keeps streaming to a revoked device is the exact
+            // failure `POST /devices/{id}/revoke` exists to prevent, and
+            // "immediate" cannot mean "at the client's next reconnect".
+            revoked = revocations.recv() => match revoked {
+                Ok(id) if id == device.device_id => {
+                    tracing::info!(device_id = %id, "closing socket: device revoked");
+                    stop_voice_stream_with(&mut voice_stream, StreamStop::Immediately).await;
+                    let _ = cancel_speech(&mut socket, &state.hub, &mut speech).await;
+                    let _ = socket.send(Message::Close(Some(CloseFrame {
+                        code: REVOKED_CLOSE_CODE,
+                        reason: "device revoked".into(),
+                    }))).await;
+                    return;
+                }
+                // Someone else's device.
+                Ok(_) => {}
+                // We missed some announcements and cannot know whether ours
+                // was among them, so we assume it was (fail closed). The
+                // client reconnects; if it is still authorized, the reconnect
+                // succeeds and nothing was lost but a round trip.
+                Err(broadcast::error::RecvError::Lagged(missed)) => {
+                    tracing::warn!(missed, "revocation feed lagged — closing socket to re-authorize");
+                    stop_voice_stream_with(&mut voice_stream, StreamStop::Immediately).await;
+                    let _ = cancel_speech(&mut socket, &state.hub, &mut speech).await;
+                    let _ = socket.send(Message::Close(Some(CloseFrame {
+                        code: REVOKED_CLOSE_CODE,
+                        reason: "re-authorize".into(),
+                    }))).await;
+                    return;
+                }
+                // No sender left anywhere in the process: nothing can ever
+                // announce a revocation to this socket again. Unreachable
+                // while this task holds `state` (which owns the bus, and
+                // therefore a `Sender`) — but the invariant must not depend on
+                // that ownership detail surviving a refactor, so close rather
+                // than run on with revocation silently disabled. Also stops a
+                // permanently-ready arm from starving the ones below it.
+                Err(broadcast::error::RecvError::Closed) => {
+                    tracing::error!(
+                        "revocation bus closed — closing socket rather than serving it \
+                         with revocation disabled"
+                    );
+                    stop_voice_stream_with(&mut voice_stream, StreamStop::Immediately).await;
+                    let _ = cancel_speech(&mut socket, &state.hub, &mut speech).await;
+                    let _ = socket.send(Message::Close(None)).await;
+                    return;
+                }
+            },
             // A settled transcript. It becomes a run through `RunApi::start_turn`
             // — the same use case `POST /sessions/{id}/messages` calls — so it
             // gets M4's deterministic-grammar-first routing, the policy context

@@ -16,17 +16,16 @@
 //! squares, a lying directory entry, truncated/corrupt archives, auth, and the
 //! unconfigured case where the routes do not exist at all.
 
+mod identity_fixture;
+use identity_fixture::InMemoryIdentityStore;
 use std::io::Write as _;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
-use jarvis_application::ports::{IdentityStore, RepositoryError};
-use jarvis_domain::audit::AuditEvent;
-use jarvis_domain::identity::Device;
 use jarvisd::api::{AppState, Wiring, router_with};
 use jarvisd::auth::AuthState;
 use jarvisd::maps::MapApi;
@@ -225,41 +224,8 @@ async fn write_archive(tag: &str, bytes: &[u8]) -> PathBuf {
 
 // --- harness ------------------------------------------------------------
 
-#[derive(Default)]
-struct FakeIdentityStore {
-    devices: Mutex<Vec<Device>>,
-}
-
-#[async_trait::async_trait]
-impl IdentityStore for FakeIdentityStore {
-    async fn device_count(&self) -> Result<u64, RepositoryError> {
-        Ok(self.devices.lock().unwrap().len() as u64)
-    }
-    async fn pair_device(
-        &self,
-        _owner_name: &str,
-        device: &Device,
-        _audit: &AuditEvent,
-    ) -> Result<(), RepositoryError> {
-        self.devices.lock().unwrap().push(device.clone());
-        Ok(())
-    }
-    async fn find_active_device_by_token_hash(
-        &self,
-        token_hash: &str,
-    ) -> Result<Option<Device>, RepositoryError> {
-        Ok(self
-            .devices
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|d| d.token_hash == token_hash && d.is_active())
-            .cloned())
-    }
-}
-
 async fn app_with(maps: Option<MapApi>) -> (Router, String) {
-    let identity = Arc::new(FakeIdentityStore::default());
+    let identity = Arc::new(InMemoryIdentityStore::default());
     let auth = AuthState::bootstrap(identity).await;
     let code = auth.current_pairing_code().unwrap();
     let app = router_with(

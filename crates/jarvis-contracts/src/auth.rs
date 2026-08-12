@@ -20,6 +20,10 @@ pub struct PairResponse {
     pub device_id: DeviceId,
     /// Opaque 256-bit bearer token; the only time it crosses the wire.
     pub device_token: String,
+    /// The class the server assigned (docs/05 §6.3) — `owner-ui` for the
+    /// bootstrap device. Returned explicitly for the same reason `scopes` is:
+    /// a client is told its authority, it never infers it.
+    pub device_class: String,
     /// Device scopes, e.g. `ui`, `display-agent`, `voice-capture` (docs/05 §6).
     pub scopes: Vec<String>,
 }

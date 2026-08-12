@@ -540,7 +540,7 @@ mod tests {
 #[cfg(test)]
 mod scope_coverage_tests {
     use super::*;
-    use crate::auth::FIRST_DEVICE_SCOPES;
+    use jarvis_domain::identity::DeviceClass;
     use std::collections::BTreeSet;
 
     /// **M6 gate finding B1.** Every tool a real registry registers must have
@@ -559,7 +559,8 @@ mod scope_coverage_tests {
     /// is granted deliberately.
     #[test]
     fn every_registered_tools_scope_is_one_a_paired_device_actually_holds() {
-        let granted: BTreeSet<&str> = FIRST_DEVICE_SCOPES.iter().copied().collect();
+        let owner = DeviceClass::OwnerUi.scopes();
+        let granted: BTreeSet<&str> = owner.iter().map(String::as_str).collect();
         let mut registry = build_registry(Some(std::env::temp_dir())).expect("builds");
         // The web tools are conditionally registered too, and their descriptors
         // are what the real registration path installs — so drive that path
@@ -609,7 +610,97 @@ mod scope_coverage_tests {
         assert!(
             missing.is_empty(),
             "a paired device cannot execute these tools — grant the scope in \
-             jarvisd::auth::FIRST_DEVICE_SCOPES, deliberately: {missing:?}"
+             jarvis_domain::identity::OWNER_TOOL_SCOPES, deliberately: {missing:?}"
         );
+    }
+
+    /// **F7.1, the inverse of B1.** A room satellite must not be able to
+    /// execute anything. B1 was "the owner's device holds too little"; the
+    /// failure this milestone introduces the opportunity for is "a node holds
+    /// too much" — and it would be just as invisible, because no fixture
+    /// builds a node's context by accident.
+    ///
+    /// Driven from the real registry, so a tool registered later is covered
+    /// without anyone remembering to come back here.
+    #[test]
+    fn no_node_class_can_execute_any_registered_tool() {
+        let mut registry = build_registry(Some(std::env::temp_dir())).expect("builds");
+        register_web_tools(&mut registry, "unused-key".to_owned(), 1024).expect("registers");
+
+        let mut reachable: Vec<String> = Vec::new();
+        for class in [
+            DeviceClass::DisplayNode,
+            DeviceClass::VoiceNode,
+            DeviceClass::RoomNode,
+        ] {
+            let held: BTreeSet<String> = class.scopes().into_iter().collect();
+            for id in registry.tool_ids() {
+                let policy = registry
+                    .policy_of(id)
+                    .expect("a registered tool has policy");
+                // A tool is reachable for this class when the class holds
+                // every scope the tool requires — exactly `policy::evaluate`'s
+                // missing-scope arm, restated from the caller's side.
+                if policy
+                    .required_scopes
+                    .iter()
+                    .all(|scope| held.contains(scope.as_str()))
+                {
+                    reachable.push(format!("{class} can execute {id}"));
+                }
+            }
+        }
+        assert!(
+            reachable.is_empty(),
+            "a room satellite must present and capture, never act: {reachable:?}"
+        );
+    }
+
+    /// The same claim, made at the place that actually enforces it. The test
+    /// above reasons about scope sets; this one calls `policy::evaluate` with a
+    /// `PolicyContext` built exactly the way the gateway builds one from a
+    /// paired device (`Scope::new(..).ok()` over its effective scopes — see
+    /// `jarvisd::appbridge::context_of`). Restating the enforcer's rule in a
+    /// test is how a test and its enforcer drift apart while both look green.
+    ///
+    /// The HTTP half of the same property — that a node cannot reach the
+    /// owner's routes at all — lives in `tests/sessions_api.rs` and
+    /// `tests/devices_api.rs`, against the real router.
+    #[test]
+    fn a_node_is_denied_at_the_policy_engine_not_merely_by_arithmetic() {
+        use jarvis_application::policy::{DenyReason, PolicyContext, PolicyDecision, evaluate};
+        use jarvis_domain::policy::Scope;
+        use jarvis_domain::tools::{CanonicalValue, ToolProposal};
+
+        let mut registry = build_registry(Some(std::env::temp_dir())).expect("builds");
+        register_web_tools(&mut registry, "unused-key".to_owned(), 1024).expect("registers");
+
+        let node = DeviceClass::RoomNode;
+        let ctx = PolicyContext {
+            user_id: crate::auth::fresh_id(),
+            device_id: crate::auth::fresh_id(),
+            granted_scopes: node
+                .scopes()
+                .iter()
+                .filter_map(|s| Scope::new(s.as_str()).ok())
+                .collect(),
+        };
+        assert!(
+            ctx.granted_scopes.is_empty(),
+            "a node's class scopes are not tool scopes, so its policy context is empty"
+        );
+
+        for id in registry.tool_ids() {
+            let proposal = ToolProposal {
+                tool_id: id.clone(),
+                arguments: CanonicalValue::obj([]),
+            };
+            match evaluate(&proposal, &registry, &ctx) {
+                PolicyDecision::Reject {
+                    reason: DenyReason::MissingScope(_) | DenyReason::Prohibited,
+                } => {}
+                other => panic!("a room node got {other:?} for {id} — it must be denied"),
+            }
+        }
     }
 }

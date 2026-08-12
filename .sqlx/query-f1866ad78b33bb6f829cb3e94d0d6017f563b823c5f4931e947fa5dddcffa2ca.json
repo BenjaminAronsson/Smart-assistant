@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE identity.devices\n            SET revoked_at = $2, revoked_reason = $3\n            WHERE id = $1 AND revoked_at IS NULL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f1866ad78b33bb6f829cb3e94d0d6017f563b823c5f4931e947fa5dddcffa2ca"
+}

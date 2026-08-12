@@ -41,7 +41,11 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     let pool = jarvis_infra::db::connect_lazy(db_url.expose(), config.database.max_connections)?;
 
     let identity = Arc::new(jarvis_infra::identity::PgIdentityStore::new(pool.clone()));
-    let auth = jarvisd::auth::AuthState::bootstrap(identity).await;
+    let auth = jarvisd::auth::AuthState::bootstrap(identity)
+        .await
+        .with_audit(Arc::new(jarvis_infra::audit_sink::PgAuditLog::new(
+            pool.clone(),
+        )));
 
     // Persistence adapters behind the application ports.
     let session_store = Arc::new(jarvis_infra::sessions::PgSessionStore::new(pool.clone()));
@@ -423,6 +427,13 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         // socket's authenticated device context — never a second, weaker path
         // from "the microphone heard it" to a run (invariant #1).
         runs: Some(run_api.clone()),
+        // The SAME bus `POST /devices/{id}/revoke` publishes on (F7.1) — a
+        // second `RevocationBus::new()` here would compile, serve happily, and
+        // silently never close a revoked device's socket.
+        revocations: auth.revocations().clone(),
+        // Closes the subscribe-after-authorize race: the socket re-reads its
+        // own device once, after subscribing (F7.1).
+        identity: Some(auth.identity().clone()),
     };
 
     // Start the event-driven outbox dispatcher (LISTEN/NOTIFY, not polling) and

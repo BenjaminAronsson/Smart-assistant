@@ -6,6 +6,8 @@
 //! startup, `fire` being unreachable as a request verb, illegal transitions and
 //! stale decisions mapping to their own codes, and auth required.
 
+mod identity_fixture;
+use identity_fixture::InMemoryIdentityStore;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -15,12 +17,11 @@ use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use jarvis_application::orchestrator::Clock;
 use jarvis_application::ports::{
-    AlertError, AlertPlayer, AnnouncementOutcome, Announcer, DomainEventRecord, IdentityStore,
-    RepositoryError, TimerStore,
+    AlertError, AlertPlayer, AnnouncementOutcome, Announcer, DomainEventRecord, RepositoryError,
+    TimerStore,
 };
 use jarvis_application::timers::TimerService;
 use jarvis_domain::audit::AuditEvent;
-use jarvis_domain::identity::Device;
 use jarvis_domain::ids::TimerId;
 use jarvis_domain::timers::{Timer, TimerKind, TimerName, TimerState};
 use jarvisd::api::{AppState, Wiring, router_with};
@@ -37,39 +38,6 @@ fn at(secs: u64) -> SystemTime {
 }
 
 // --- fakes --------------------------------------------------------------
-
-#[derive(Default)]
-struct FakeIdentityStore {
-    devices: Mutex<Vec<Device>>,
-}
-
-#[async_trait::async_trait]
-impl IdentityStore for FakeIdentityStore {
-    async fn device_count(&self) -> Result<u64, RepositoryError> {
-        Ok(self.devices.lock().unwrap().len() as u64)
-    }
-    async fn pair_device(
-        &self,
-        _owner_name: &str,
-        device: &Device,
-        _audit: &AuditEvent,
-    ) -> Result<(), RepositoryError> {
-        self.devices.lock().unwrap().push(device.clone());
-        Ok(())
-    }
-    async fn find_active_device_by_token_hash(
-        &self,
-        token_hash: &str,
-    ) -> Result<Option<Device>, RepositoryError> {
-        Ok(self
-            .devices
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|d| d.token_hash == token_hash && d.is_active())
-            .cloned())
-    }
-}
 
 #[derive(Default)]
 struct FakeTimerStore {
@@ -211,7 +179,7 @@ impl Harness {
 }
 
 async fn harness(seed: Vec<Timer>) -> Harness {
-    let identity = Arc::new(FakeIdentityStore::default());
+    let identity = Arc::new(InMemoryIdentityStore::default());
     let auth = AuthState::bootstrap(identity).await;
     let code = auth.current_pairing_code().unwrap();
 
