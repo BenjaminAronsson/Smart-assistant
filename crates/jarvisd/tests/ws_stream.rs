@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use futures_util::StreamExt;
+use futures_util::{SinkExt as _, StreamExt};
 use http_body_util::BodyExt;
 use jarvis_application::testing::FakeModel;
 use jarvis_infra::events::PgEventLog;
@@ -93,6 +93,11 @@ async fn start(pool: PgPool, model: FakeModel) -> Harness {
         // upgrade must be exercised by the socket test, not stubbed out.
         identity: Some(identity.clone()),
         connected: Default::default(),
+        // The REAL audit sink, as `main.rs` wires it — a refusal that is only
+        // logged is not the durable record F7.6 claims to write.
+        audit: Some(Arc::new(jarvis_infra::audit_sink::PgAuditLog::new(
+            pool.clone(),
+        ))),
         revocations: auth.revocations().clone(),
         hub,
         events,
@@ -170,8 +175,26 @@ async fn start(pool: PgPool, model: FakeModel) -> Harness {
 /// Insert a paired room node directly, the way F7.2's pairing route will once
 /// it exists. Returns `(device_id, token)`.
 async fn seed_room_node(pool: &PgPool) -> (String, String) {
-    let device_id = "01ARZ3NDEKTSV4RRFFQ69G5FC7".to_owned();
-    let token = "kitchen-node-token".to_owned();
+    seed_node(
+        pool,
+        "01ARZ3NDEKTSV4RRFFQ69G5FC7",
+        "kitchen-node-token",
+        "room-node",
+        "kitchen screen",
+    )
+    .await
+}
+
+/// A paired node of any class, the way F7.2's pairing route creates one.
+async fn seed_node(
+    pool: &PgPool,
+    id: &str,
+    token: &str,
+    class: &str,
+    name: &str,
+) -> (String, String) {
+    let device_id = id.to_owned();
+    let token = token.to_owned();
     let hash = hex::encode(sha2::Sha256::digest(token.as_bytes()));
     let user_id: String = sqlx::query_scalar("SELECT id FROM identity.users LIMIT 1")
         .fetch_one(pool)
@@ -179,11 +202,13 @@ async fn seed_room_node(pool: &PgPool) -> (String, String) {
         .expect("the owner user exists after bootstrap pairing");
     sqlx::query(
         "INSERT INTO identity.devices (id, user_id, name, token_hash, scopes, device_class, created_at) \
-         VALUES ($1, $2, 'kitchen screen', $3, ARRAY['display-agent','voice-capture'], 'room-node', now())",
+         VALUES ($1, $2, $3, $4, ARRAY[]::text[], $5, now())",
     )
     .bind(&device_id)
     .bind(user_id)
+    .bind(name)
     .bind(&hash)
+    .bind(class)
     .execute(pool)
     .await
     .expect("seed node");
@@ -833,5 +858,150 @@ async fn connecting_records_the_device_as_seen(pool: PgPool) {
     assert!(
         node["lastSeenAt"].is_string(),
         "the device list shows presence: {node}"
+    );
+}
+
+/// **F7.6: capture is a capability.** A display-only node opening a microphone
+/// stream is either misconfigured or hostile; either way the daemon must not
+/// start feeding a speech service on its behalf, and the attempt is recorded.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_screen_only_node_cannot_open_a_voice_stream(pool: PgPool) {
+    let harness = start(pool.clone(), FakeModel::streaming(["hi"])).await;
+    let (_id, screen_token) = seed_node(
+        &pool,
+        "01ARZ3NDEKTSV4RRFFQ69G5FD1",
+        "screen-only-token",
+        "display-node",
+        "hall screen",
+    )
+    .await;
+
+    let url = format!("ws://{}/ws/v1", harness.addr);
+    let mut request = url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {screen_token}").parse().unwrap(),
+    );
+    let (mut socket, _) = connect_async(request).await.expect("a screen may connect");
+
+    socket
+        .send(WsMessage::Text(
+            serde_json::json!({
+                "type": "voice.stream.start",
+                "streamId": "s1",
+                "sampleRateHz": 16000,
+                "sampleWidthBytes": 2,
+                "channels": 1
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send");
+
+    // It gets an error, not a stream — and nothing it sends afterwards is
+    // transcribed.
+    let mut saw_error = false;
+    let deadline = tokio::time::sleep(Duration::from_secs(3));
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = &mut deadline => break,
+            frame = socket.next() => match frame {
+                Some(Ok(WsMessage::Text(text))) => {
+                    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    if value["type"] == "voice.error" {
+                        saw_error = true;
+                        break;
+                    }
+                    assert_ne!(
+                        value["type"], "voice.transcript",
+                        "a screen must never produce a transcript"
+                    );
+                }
+                Some(Ok(WsMessage::Close(_))) | None => break,
+                _ => {}
+            }
+        }
+    }
+    assert!(saw_error, "the refusal is visible to the client");
+
+    let denied: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit.audit_events WHERE event_type = 'voice.capture_denied'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count");
+    assert_eq!(denied, 1, "the attempt is durably recorded");
+}
+
+/// **F7.6's routing rule: the answer is spoken by the node that heard it.**
+/// Two voice-capable nodes are connected; one speaks. The other must hear
+/// nothing at all — not the transcript, not the reply.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn only_the_node_that_heard_the_request_hears_the_answer(pool: PgPool) {
+    let harness = start(pool.clone(), FakeModel::streaming(["hi"])).await;
+    let (_k, kitchen_token) = seed_room_node(&pool).await;
+    let (_b, bedroom_token) = seed_node(
+        &pool,
+        "01ARZ3NDEKTSV4RRFFQ69G5FD2",
+        "bedroom-node-token",
+        "room-node",
+        "bedroom screen",
+    )
+    .await;
+
+    async fn connect_as(
+        addr: std::net::SocketAddr,
+        token: &str,
+    ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
+    {
+        let url = format!("ws://{addr}/ws/v1");
+        let mut request = url.into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert("Authorization", format!("Bearer {token}").parse().unwrap());
+        connect_async(request).await.expect("ws upgrade").0
+    }
+    let mut kitchen = connect_as(harness.addr, &kitchen_token).await;
+    let mut bedroom = connect_as(harness.addr, &bedroom_token).await;
+
+    // The kitchen opens a stream; the daemon has no transcriber wired in this
+    // harness, so what matters is which socket the resulting events reach.
+    kitchen
+        .send(WsMessage::Text(
+            serde_json::json!({
+                "type": "voice.stream.start",
+                "streamId": "kitchen-1",
+                "sampleRateHz": 16000,
+                "sampleWidthBytes": 2,
+                "channels": 1
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send");
+
+    // Whatever the kitchen's stream produces, the bedroom sees none of it.
+    let mut bedroom_saw = Vec::new();
+    let deadline = tokio::time::sleep(Duration::from_secs(2));
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = &mut deadline => break,
+            frame = bedroom.next() => match frame {
+                Some(Ok(WsMessage::Text(text))) => {
+                    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    bedroom_saw.push(value["type"].as_str().unwrap_or_default().to_owned());
+                }
+                Some(Ok(WsMessage::Close(_))) | None => break,
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        bedroom_saw.is_empty(),
+        "a satellite must not hear another room: {bedroom_saw:?}"
     );
 }

@@ -245,7 +245,7 @@ not control.
       Read: `crates/jarvisd/src/display.rs`, `crates/jarvis-agent/src/handler.rs`.
       Deps: F7.4.
 
-- [ ] **F7.6 — Remote voice node: capture and playback over the paired socket
+- [x] **F7.6 — Remote voice node: capture and playback over the paired socket — DONE
       (exit evidence 3)** · *strong model*
       A `voice-node` streams PCM frames up its own socket and receives TTS frames back on
       it. The routing rule is the design decision: **the answer is spoken by the node that

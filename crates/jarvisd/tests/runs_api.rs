@@ -269,6 +269,7 @@ async fn app_with_token(
     let ws = WsState {
         identity: None,
         connected: Default::default(),
+        audit: None,
         revocations: Default::default(),
         hub: hub.clone(),
         events: Arc::new(EmptyEventReader),
