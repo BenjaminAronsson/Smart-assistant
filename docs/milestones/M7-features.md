@@ -87,8 +87,8 @@ sized to hold all three:
 
 | Item | Source | Where it lands |
 |---|---|---|
-| **CF-8** — the WS hub broadcasts every domain event (incl. `approval.requested` with its `exactEffect`, real arguments and a decision oracle) to **every** authenticated connection, and `replay_since` replays all outbox rows, with no per-user/session/device filter. Dormant only because the deployment is single-user loopback. | M2 gate / `M2-security-carryforward.md` (explicitly "**before M7**") | **F7.4** |
-| **`broadcast_voice_transcript` fans live microphone transcripts to every connected socket** — should become scope- or socket-targeted once `voice-capture` / `display-agent` differentiation lands. | M5 gate §6 ("carry to M7") | **F7.4** |
+| **CF-8 — CLOSED in F7.4.** The WS hub broadcast every domain event (incl. `approval.requested` with its `exactEffect`, real arguments and a decision oracle) to **every** authenticated connection, and `replay_since` replays all outbox rows, with no per-user/session/device filter. Dormant only because the deployment is single-user loopback. | M2 gate / `M2-security-carryforward.md` (explicitly "**before M7**") | **F7.4** |
+| **CLOSED in F7.4.** `broadcast_voice_transcript` fanned live microphone transcripts to every connected socket — should become scope- or socket-targeted once `voice-capture` / `display-agent` differentiation lands. | M5 gate §6 ("carry to M7") | **F7.4** |
 | **A second device inherits the owner's full tool scope set** — `FIRST_DEVICE_SCOPES` is correct for the owner's device and wrong for a room satellite. | M6 gate B1 resolution (option 1, deferring differentiation to M7) | **F7.1** |
 
 ---
@@ -212,7 +212,7 @@ not control.
       listener setup, `crates/jarvisd/src/config.rs`; skill `low-power` (a TLS stack is a
       resident-memory decision — measure it). Deps: F7.2 (fingerprint in the pair response).
 
-- [ ] **F7.4 — Per-connection event scoping + node presence (CF-8, NFR-13)**
+- [x] **F7.4 — Per-connection event scoping + node presence (CF-8, NFR-13)** — DONE (PR #33)
       · *strong model*
       The security heart of the milestone. Every WS delivery path becomes filtered by the
       connection's device: live fan-out, `replay_since`, and `broadcast_voice_transcript`.
