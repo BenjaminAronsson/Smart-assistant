@@ -168,6 +168,22 @@ impl IdentityStore for InMemoryIdentityStore {
         Ok(NodePairOutcome::Paired)
     }
 
+    async fn touch_last_seen(
+        &self,
+        device_id: &DeviceId,
+        at: SystemTime,
+    ) -> Result<(), RepositoryError> {
+        self.guard()?;
+        let mut devices = self.devices.lock().expect("not poisoned");
+        if let Some(device) = devices
+            .iter_mut()
+            .find(|d| &d.id == device_id && d.is_active())
+        {
+            device.last_seen_at = Some(at);
+        }
+        Ok(())
+    }
+
     async fn is_device_active(&self, device_id: &DeviceId) -> Result<bool, RepositoryError> {
         self.guard()?;
         Ok(self

@@ -179,6 +179,24 @@ impl IdentityStore for PgIdentityStore {
         Ok(NodePairOutcome::Paired)
     }
 
+    async fn touch_last_seen(
+        &self,
+        device_id: &DeviceId,
+        at: SystemTime,
+    ) -> Result<(), RepositoryError> {
+        // Never resurrects a revoked device's presence: a revoked row is not
+        // "here", it is gone.
+        sqlx::query!(
+            "UPDATE identity.devices SET last_seen_at = $2 WHERE id = $1 AND revoked_at IS NULL",
+            device_id.as_str(),
+            OffsetDateTime::from(at),
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?;
+        Ok(())
+    }
+
     async fn is_device_active(&self, device_id: &DeviceId) -> Result<bool, RepositoryError> {
         let active: Option<bool> = sqlx::query_scalar!(
             "SELECT revoked_at IS NULL FROM identity.devices WHERE id = $1",
