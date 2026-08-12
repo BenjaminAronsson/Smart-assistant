@@ -241,7 +241,21 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             .is_some()
             .then(|| jarvisd::tools::CastWiring {
                 profile: display_profile.clone(),
-                sink: hub.clone(),
+                // Addressed at the configured screen when the owner named one
+                // (M7 gate D-M7-2): `media.open_url` is R1 and carries a URL
+                // model output can influence, so with room nodes paired an
+                // unaddressed cast would light up every screen in the house.
+                sink: Arc::new(jarvisd::media::TargetedMediaWindow::new(
+                    hub.clone(),
+                    config.display.media_window_device.clone().map(|name| {
+                        config
+                            .display
+                            .node_aliases
+                            .get(&name)
+                            .cloned()
+                            .unwrap_or(name)
+                    }),
+                )),
                 audit: Arc::new(jarvis_infra::audit_sink::PgAuditLog::new(pool.clone())),
             });
         jarvisd::tools::register_media_tools(&mut registry, controller.clone(), max_volume, cast)?;

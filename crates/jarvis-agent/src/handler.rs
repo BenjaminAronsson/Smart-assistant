@@ -93,7 +93,13 @@ pub async fn apply(
                 .map_err(|e: CompositorError| HandleError::Compositor(e.to_string()))
         }
 
-        DisplayDirective::OpenMediaUrl { url, monitor } => {
+        DisplayDirective::OpenMediaUrl {
+            url,
+            monitor,
+            // Addressing is enforced server-side (M7): the agent only receives
+            // directives meant for it.
+            target_device_id: _,
+        } => {
             // This directive launches a process, so the agent re-validates
             // everything itself rather than trusting the sender (defense in
             // depth — jarvisd already checked, but the agent holds the OS
@@ -205,6 +211,7 @@ mod tests {
 
     fn open(url: &str, monitor: &str) -> DisplayDirective {
         DisplayDirective::OpenMediaUrl {
+            target_device_id: None,
             url: url.to_owned(),
             monitor: monitor.to_owned(),
         }

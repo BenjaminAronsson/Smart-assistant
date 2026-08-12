@@ -822,5 +822,12 @@ pub trait Announcer: Send + Sync {
 pub trait MediaWindowSink: Send + Sync {
     /// Dispatch "open this URL in the media window on this monitor". The caller
     /// has already validated the URL scheme and audited the request.
-    async fn open_url(&self, url: &str, monitor: &jarvis_domain::display::MonitorId) -> bool;
+    /// Open `url` in the media window on `monitor`, addressed to `target` — a
+    /// paired device id — or to every presenter when `None` (M7 gate D-M7-2).
+    async fn open_url(
+        &self,
+        url: &str,
+        monitor: &jarvis_domain::display::MonitorId,
+        target: Option<&str>,
+    ) -> bool;
 }

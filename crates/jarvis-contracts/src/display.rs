@@ -73,7 +73,18 @@ pub enum DisplayDirective {
     /// a single argv element — never through a shell (docs/02 §8: "it is not a
     /// shell").
     #[serde(rename = "display.open_media_url")]
-    OpenMediaUrl { url: String, monitor: String },
+    OpenMediaUrl {
+        url: String,
+        monitor: String,
+        /// Which screen this cast is for (M7 gate D-M7-2). Absent keeps the
+        /// pre-node behaviour — every presenter — which is safe with one
+        /// screen in the house and is not once there are several: the URL is
+        /// carried verbatim and `media.open_url` is **R1**, so it executes
+        /// without an approval and its value can be influenced by model output
+        /// derived from untrusted web content.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_device_id: Option<String>,
+    },
 }
 
 /// `POST /api/v1/artifacts/{id}/open` (FR-09/10): request that an artifact be

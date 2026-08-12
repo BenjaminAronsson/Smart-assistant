@@ -450,10 +450,16 @@ impl DisplayDirectiveSink for WsHub {
 /// it again before launching anything.
 #[async_trait]
 impl jarvis_application::ports::MediaWindowSink for WsHub {
-    async fn open_url(&self, url: &str, monitor: &jarvis_domain::display::MonitorId) -> bool {
+    async fn open_url(
+        &self,
+        url: &str,
+        monitor: &jarvis_domain::display::MonitorId,
+        target: Option<&str>,
+    ) -> bool {
         let directive = DisplayDirective::OpenMediaUrl {
             url: url.to_owned(),
             monitor: monitor.as_str().to_owned(),
+            target_device_id: target.map(ToOwned::to_owned),
         };
         let (event_type, payload) =
             split_tagged(serde_json::to_value(&directive).expect("directive serializes"));

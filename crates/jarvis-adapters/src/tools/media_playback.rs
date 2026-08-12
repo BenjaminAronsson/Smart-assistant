@@ -630,7 +630,10 @@ impl ToolExecutor for MediaOpenUrlTool {
             ToolError::ExecutionFailed("that cast could not be recorded".to_owned())
         })?;
 
-        let delivered = self.sink.open_url(&url, &placement.monitor).await;
+        // The tool has no device vocabulary — casting names a *screen* only in
+        // the deployment's terms — so the target is supplied by the host at the
+        // sink boundary (`jarvisd::media_target`, M7 gate D-M7-2).
+        let delivered = self.sink.open_url(&url, &placement.monitor, None).await;
         Ok(ToolResult {
             // The URL verbatim (docs/02 §11a) — never a paraphrase of where it
             // points.
@@ -1219,7 +1222,12 @@ mod tests {
 
     #[async_trait]
     impl jarvis_application::ports::MediaWindowSink for FakeWindowSink {
-        async fn open_url(&self, url: &str, monitor: &jarvis_domain::display::MonitorId) -> bool {
+        async fn open_url(
+            &self,
+            url: &str,
+            monitor: &jarvis_domain::display::MonitorId,
+            _target: Option<&str>,
+        ) -> bool {
             self.opened
                 .lock()
                 .unwrap()
