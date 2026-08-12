@@ -417,6 +417,13 @@ pub struct DisplayConfig {
     /// `[integrations.spotify].device_aliases` (docs/02 §11).
     #[serde(default)]
     pub node_aliases: std::collections::BTreeMap<String, String>,
+    /// Which paired device shows cast-a-link's media window (M7 gate D-M7-2).
+    /// Unset keeps the pre-node behaviour — every presenter — which is safe
+    /// with a single screen and is not once room nodes exist, because
+    /// `media.open_url` is R1 and its URL can be influenced by untrusted
+    /// content. A device id, or a room name from `node_aliases`.
+    #[serde(default)]
+    pub media_window_device: Option<String>,
 }
 
 /// `[storage]` (docs/04 §1, ADR-008). Root of the content-addressed artifact

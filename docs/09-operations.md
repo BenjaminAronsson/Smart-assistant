@@ -266,6 +266,17 @@ openssl x509 -in /etc/jarvis/tls/cert.pem -noout -fingerprint -sha256
 Rotating the certificate **breaks every paired node's pin**; they re-pair. Plan a rotation
 the way you would plan re-pairing the house.
 
+**Cast-a-link with more than one screen.** `media.open_url` is R1 — it executes without an
+approval — and carries a URL verbatim that model output can influence. With room nodes
+paired, name the screen it belongs on, or the media window opens on all of them:
+
+```toml
+[display]
+media_window_device = "kitchen"   # a room alias from node_aliases, or a device id
+```
+
+Unset keeps the single-screen behaviour every earlier milestone shipped.
+
 **The health endpoint follows the bind.** `GET /api/v1/diagnostics/health` is
 unauthenticated only while the listener is loopback (docs/05 §6.2). On any other bind it
 moves behind authentication automatically — off loopback it is an unauthenticated readout

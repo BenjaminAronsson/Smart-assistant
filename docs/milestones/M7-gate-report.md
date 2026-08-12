@@ -107,15 +107,19 @@ revocation bus into `RunEngine` — a contained change, but a new seam through t
 orchestrator, which is not something to add during a gate. → *Recommend ACCEPT as a tracked
 deviation, scheduled into M8.*
 
-**D-M7-2 — untargeted display directives still fan out to every presenter, and
-`MediaWindowSink::open_url` has no targeting at all.** Untargeted `place_surface` reaching
-all presenters is deliberate backward compatibility (tested). But cast-a-link's `open_url`
-has no target parameter, so its URL — **R1, auto-executing within scope** — reaches every
-paired `display-agent` holder, and that URL can be influenced by model output derived from
-untrusted web content. Before M7 there was one screen; now there can be several.
-→ *Recommend ACCEPT as a tracked deviation with a note that it is the first thing to fix in
-M8*, or say the word and it becomes a one-feature follow-up now: give `open_url` the same
-`Option<&str>` target and default untargeted directives to the local agent.
+**D-M7-2 — ~~untargeted display directives fan out to every presenter~~ — CLOSED at the
+gate for the part that mattered.** `MediaWindowSink::open_url` had no target parameter at
+all, so cast-a-link's URL — **R1, auto-executing, and influenceable by model output derived
+from untrusted web content** — reached every paired `display-agent` holder. It now takes a
+target, and `[display].media_window_device` (a device id or a room alias) pins the media
+window to one screen; unset keeps the pre-node behaviour exactly, which is what a
+single-screen house has run for six milestones.
+
+What remains is the deliberate part: an **untargeted `place_surface` still reaches every
+presenter**, which is tested backward compatibility rather than an oversight, and whose
+payload carries only surface/app-id/monitor (the artifact document route stays `ui`-gated).
+→ *Recommend ACCEPT as documented behaviour; revisit if a deployment ever wants untargeted
+placements pinned too.*
 
 **D-M7-3 — exit evidence 3 shows routing, not a spoken round trip.** No Wyoming service
 runs in golden 11: capture acceptance, refusal-and-audit for a screen-only node, and
@@ -196,6 +200,5 @@ returned a 503 once, failing a PR that was otherwise green. A re-run passed.
 
 On approval: tag `m7-complete`, tick the docs/08 §1 M7 row, and move ADR-031 to
 **Accepted**. The next milestone is **M8 (product hardening)** — with D-M7-1 (cancel a
-revoked device's runs) and D-M7-2 (`open_url` targeting) as its first two items, or as a
-small follow-up slice before it. The FR-17 automations slice, parked at M6 and again at the
+revoked device's in-flight runs) as its first item. The FR-17 automations slice, parked at M6 and again at the
 start of M7, is still unscheduled.

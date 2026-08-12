@@ -458,3 +458,119 @@ impl jarvis_application::ports::MediaStateSink for MediaBroadcaster {
             .broadcast_media_state(MediaStateDto::from_snapshot(snapshot, self.max_volume));
     }
 }
+
+/// Addresses cast-a-link at one screen (M7 gate D-M7-2).
+///
+/// `media.open_url` is **R1** — it executes without an approval — and it
+/// carries a URL verbatim that model output derived from untrusted web content
+/// can influence. With one screen in the house, broadcasting it to every
+/// presenter was harmless. With paired room nodes it is not: an unaddressed
+/// cast lights up every screen.
+///
+/// The tool cannot name a device (it speaks in monitors, not devices), so the
+/// host supplies the target here, from `[display].media_window_device`. Unset
+/// keeps the pre-node behaviour exactly.
+pub struct TargetedMediaWindow {
+    inner: std::sync::Arc<dyn jarvis_application::ports::MediaWindowSink>,
+    device_id: Option<String>,
+}
+
+impl TargetedMediaWindow {
+    pub fn new(
+        inner: std::sync::Arc<dyn jarvis_application::ports::MediaWindowSink>,
+        device_id: Option<String>,
+    ) -> Self {
+        Self { inner, device_id }
+    }
+}
+
+#[async_trait::async_trait]
+impl jarvis_application::ports::MediaWindowSink for TargetedMediaWindow {
+    async fn open_url(
+        &self,
+        url: &str,
+        monitor: &jarvis_domain::display::MonitorId,
+        target: Option<&str>,
+    ) -> bool {
+        // A target the caller named wins; otherwise the configured screen, if
+        // the owner named one.
+        let target = target.or(self.device_id.as_deref());
+        self.inner.open_url(url, monitor, target).await
+    }
+}
+
+#[cfg(test)]
+mod media_target_tests {
+    use super::*;
+    use jarvis_application::ports::MediaWindowSink;
+    use jarvis_domain::display::MonitorId;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Recorder {
+        targets: Mutex<Vec<Option<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl MediaWindowSink for Recorder {
+        async fn open_url(&self, _url: &str, _monitor: &MonitorId, target: Option<&str>) -> bool {
+            self.targets
+                .lock()
+                .expect("not poisoned")
+                .push(target.map(ToOwned::to_owned));
+            true
+        }
+    }
+
+    /// **M7 gate D-M7-2.** `media.open_url` is R1 — it executes without an
+    /// approval — and carries a URL verbatim that model output derived from
+    /// untrusted web content can influence. With room nodes paired, an
+    /// unaddressed cast reaches every screen in the house, so the host pins it
+    /// to the configured one.
+    #[tokio::test]
+    async fn a_configured_screen_addresses_the_cast() {
+        let recorder = std::sync::Arc::new(Recorder::default());
+        let monitor = MonitorId::new("DP-1").expect("monitor");
+
+        let targeted = TargetedMediaWindow::new(
+            recorder.clone(),
+            Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned()),
+        );
+        targeted
+            .open_url("https://example.com/clip", &monitor, None)
+            .await;
+        assert_eq!(
+            recorder.targets.lock().expect("not poisoned").last(),
+            Some(&Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned())),
+            "the configured screen is addressed"
+        );
+
+        // A caller that names a target wins over the configured default.
+        targeted
+            .open_url("https://example.com/clip", &monitor, Some("other-device"))
+            .await;
+        assert_eq!(
+            recorder.targets.lock().expect("not poisoned").last(),
+            Some(&Some("other-device".to_owned()))
+        );
+    }
+
+    /// Unset keeps the pre-node behaviour exactly — one screen in the house is
+    /// the deployment this project shipped for six milestones.
+    #[tokio::test]
+    async fn without_configuration_the_cast_is_unaddressed_as_before() {
+        let recorder = std::sync::Arc::new(Recorder::default());
+        let targeted = TargetedMediaWindow::new(recorder.clone(), None);
+        targeted
+            .open_url(
+                "https://example.com/clip",
+                &MonitorId::new("DP-1").expect("monitor"),
+                None,
+            )
+            .await;
+        assert_eq!(
+            recorder.targets.lock().expect("not poisoned").last(),
+            Some(&None)
+        );
+    }
+}

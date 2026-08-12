@@ -158,6 +158,15 @@ export type DisplayDirective =
     }
   | {
       monitor: string;
+      /**
+       * Which screen this cast is for (M7 gate D-M7-2). Absent keeps the
+       * pre-node behaviour — every presenter — which is safe with one
+       * screen in the house and is not once there are several: the URL is
+       * carried verbatim and `media.open_url` is **R1**, so it executes
+       * without an approval and its value can be influenced by model output
+       * derived from untrusted web content.
+       */
+      targetDeviceId?: string | null;
       type: "display.open_media_url";
       url: string;
       [k: string]: unknown;

@@ -757,6 +757,13 @@
             "monitor": {
               "type": "string"
             },
+            "targetDeviceId": {
+              "description": "Which screen this cast is for (M7 gate D-M7-2). Absent keeps the\npre-node behaviour — every presenter — which is safe with one\nscreen in the house and is not once there are several: the URL is\ncarried verbatim and `media.open_url` is **R1**, so it executes\nwithout an approval and its value can be influenced by model output\nderived from untrusted web content.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "const": "display.open_media_url",
               "type": "string"
