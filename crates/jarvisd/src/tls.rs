@@ -14,15 +14,27 @@
 //! anything other than the bytes on the wire would pin the wrong thing.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use rustls_pki_types::pem::PemObject as _;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use sha2::{Digest, Sha256};
 
+/// How long a client gets to complete the TLS handshake. Generous for a slow
+/// satellite on wifi, finite for a socket that will never speak.
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Ceiling on connections served at once. A household has a handful of
+/// devices; this is a resource bound, not a capacity plan.
+const MAX_CONCURRENT_CONNECTIONS: usize = 256;
+
+/// Pause after a failed `accept` so a persistent error cannot spin the loop.
+const ACCEPT_ERROR_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// A loaded server certificate and the fingerprint a node pins.
 #[derive(Clone)]
 pub struct ServerTls {
-    pub config: std::sync::Arc<rustls::ServerConfig>,
+    pub config: Arc<rustls::ServerConfig>,
     /// Lowercase hex sha256 of the leaf certificate's DER bytes — the same
     /// value `openssl x509 -fingerprint -sha256` prints, minus the colons.
     pub fingerprint: String,
@@ -82,7 +94,7 @@ impl ServerTls {
 
         Ok(Self {
             fingerprint: fingerprint_of(leaf.as_ref()),
-            config: std::sync::Arc::new(config),
+            config: Arc::new(config),
         })
     }
 }
@@ -110,6 +122,12 @@ pub async fn serve(
 
     let acceptor = tokio_rustls::TlsAcceptor::from(tls.config.clone());
     let connections = tokio_util::task::TaskTracker::new();
+    // Bounds for a LAN-facing listener (M7 gate S-4, docs/06 §5 "denial of
+    // wallet/resources"). On loopback none of this mattered; off loopback a
+    // client that opens a socket and never sends a ClientHello would otherwise
+    // hold a task and a file descriptor indefinitely, and there would be no
+    // ceiling on how many could do it at once.
+    let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
 
     loop {
         let (stream, peer) = tokio::select! {
@@ -120,7 +138,10 @@ pub async fn serve(
                 // One failed accept (fd exhaustion, a client vanishing between
                 // SYN and accept) must not take the listener down.
                 Err(e) => {
+                    // A persistent failure (EMFILE, say) would otherwise spin
+                    // this loop at full speed while logging every turn.
                     tracing::warn!(error = %e, "accept failed");
+                    tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                     continue;
                 }
             },
@@ -129,19 +150,33 @@ pub async fn serve(
         // frames and Nagle costs ~40 ms per exchange (F5.2, NFR-04).
         let _ = stream.set_nodelay(true);
 
+        // Refuse rather than queue when saturated: a connection we cannot
+        // serve should be closed now, while the client can still see it.
+        let Ok(slot) = Arc::clone(&slots).try_acquire_owned() else {
+            tracing::warn!(%peer, "refusing connection: at capacity");
+            drop(stream);
+            continue;
+        };
+
         let acceptor = acceptor.clone();
         let app = app.clone();
         let cancel = cancel.clone();
         connections.spawn(async move {
-            let tls_stream = match acceptor.accept(stream).await {
-                Ok(tls_stream) => tls_stream,
-                // A failed handshake is normal traffic on an open port —
-                // scanners, plaintext clients, a node with a stale pin.
-                Err(e) => {
-                    tracing::debug!(%peer, error = %e, "TLS handshake failed");
-                    return;
-                }
-            };
+            let _slot = slot;
+            let tls_stream =
+                match tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
+                    Ok(Ok(tls_stream)) => tls_stream,
+                    // A failed handshake is normal traffic on an open port —
+                    // scanners, plaintext clients, a node with a stale pin.
+                    Ok(Err(e)) => {
+                        tracing::debug!(%peer, error = %e, "TLS handshake failed");
+                        return;
+                    }
+                    Err(_) => {
+                        tracing::debug!(%peer, "TLS handshake timed out");
+                        return;
+                    }
+                };
             let service = hyper::service::service_fn(move |request| app.clone().oneshot(request));
             let builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
             let connection =

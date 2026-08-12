@@ -39,13 +39,6 @@ rand = "0.9"
 ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
 # base64 for the wire encoding of keys, challenges and signatures (ADR-031).
 base64 = "0.22"
-# Real certificates for the TLS listener tests (F7.3) — generated per run, never
-# committed: a checked-in key is a checked-in key even when it is "only a test".
-# Golden 11 talks to the daemon the way a node does: real HTTP over real TLS,
-# pinning the server certificate rather than disabling verification.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-manual-roots"] }
-rcgen = "0.14"
-tempfile = "3"
 # TLS for LAN/remote nodes (F7.3, docs/06 §7). rustls only — no OpenSSL, no
 # system trust store: the certificate is self-signed and pinned by fingerprint
 # at pairing (ADR-031), so there is no chain to validate.
@@ -78,6 +71,14 @@ opentelemetry_sdk = { version = "0.30", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.30", features = ["grpc-tonic"] }
 
 [dev-dependencies]
+# Test-only, and kept out of `[dependencies]` deliberately (M7 gate S-3): none
+# of these three is referenced anywhere in `src/`, and a full HTTP client plus
+# an X.509 generator in the daemon's tree is advisory surface for no runtime
+# purpose. Golden 11 needs reqwest to talk TLS the way a node does; rcgen mints
+# a certificate per run so no key is ever committed.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-manual-roots"] }
+rcgen = "0.14"
+tempfile = "3"
 # Node keypairs for the pairing tests. `ed25519-dalek` 2 generates against
 # rand_core 0.6 while the workspace runs rand 0.9, so the test build pulls the
 # older core explicitly rather than downgrading the daemon's RNG.
