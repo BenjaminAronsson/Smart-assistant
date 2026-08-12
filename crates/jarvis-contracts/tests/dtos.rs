@@ -132,6 +132,9 @@ mod auth {
         let value = json!({
             "deviceId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             "deviceToken": "opaque-256-bit-token",
+            // F7.1: the server states the class it assigned, for the same
+            // reason it states the scopes — a client is told its authority.
+            "deviceClass": "owner-ui",
             "scopes": ["ui", "display-agent"]
         });
         let resp: PairResponse =
@@ -161,6 +164,7 @@ mod auth {
         let value = json!({
             "deviceId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             "deviceToken": "opaque-256-bit-token",
+            "deviceClass": "display-node",
             "scopes": []
         });
         let resp: PairResponse = serde_json::from_value(value.clone()).unwrap();

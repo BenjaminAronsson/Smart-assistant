@@ -1,11 +1,18 @@
 //! Postgres-backed `IdentityStore` (docs/05 §6, docs/04 §3). Token VALUES
 //! never reach this module — callers hash first; the identity schema stores
 //! hashes only.
+//!
+//! Authority is read from `device_class`, never from the stored `scopes`
+//! column (F7.1): the column is the pairing-time snapshot kept for audit, and
+//! reading it back would mean a tampered row could widen what a device may do.
 
-use jarvis_application::ports::{IdentityStore, RepositoryError};
+use jarvis_application::ports::{IdentityStore, RepositoryError, RevocationOutcome};
 use jarvis_domain::audit::AuditEvent;
-use jarvis_domain::identity::Device;
+use jarvis_domain::identity::{Device, DeviceClass};
+use jarvis_domain::ids::DeviceId;
 use sqlx::PgPool;
+use std::str::FromStr;
+use std::time::SystemTime;
 use time::OffsetDateTime;
 
 pub struct PgIdentityStore {
@@ -49,14 +56,18 @@ impl IdentityStore for PgIdentityStore {
 
         sqlx::query!(
             r#"
-            INSERT INTO identity.devices (id, user_id, name, token_hash, scopes, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO identity.devices
+                (id, user_id, name, token_hash, scopes, device_class, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             "#,
             device.id.as_str(),
             device.user_id.as_str(),
             device.name,
             device.token_hash,
-            &device.scopes,
+            // Snapshot only — `device_class` on the next line is what
+            // authorization reads back (see the module docs).
+            &device.effective_scopes(),
+            device.class.as_str(),
             OffsetDateTime::from(device.created_at),
         )
         .execute(&mut *tx)
@@ -77,7 +88,8 @@ impl IdentityStore for PgIdentityStore {
     ) -> Result<Option<Device>, RepositoryError> {
         let row = sqlx::query!(
             r#"
-            SELECT id, user_id, name, token_hash, scopes, created_at, revoked_at
+            SELECT id, user_id, name, token_hash, device_class, created_at,
+                   last_seen_at, revoked_at, revoked_reason
             FROM identity.devices
             WHERE token_hash = $1 AND revoked_at IS NULL
             "#,
@@ -89,23 +101,142 @@ impl IdentityStore for PgIdentityStore {
 
         row.map(|r| {
             Ok(Device {
-                id: r
-                    .id
-                    .parse()
-                    .map_err(|e| RepositoryError::Storage(format!("stored device id: {e}")))?,
-                user_id: r
-                    .user_id
-                    .parse()
-                    .map_err(|e| RepositoryError::Storage(format!("stored user id: {e}")))?,
+                id: parse_id(&r.id, "device id")?,
+                user_id: parse_id(&r.user_id, "user id")?,
                 name: r.name,
                 token_hash: r.token_hash,
-                scopes: r.scopes,
+                class: parse_class(&r.device_class)?,
                 created_at: r.created_at.into(),
+                last_seen_at: r.last_seen_at.map(Into::into),
                 revoked_at: r.revoked_at.map(Into::into),
+                revoked_reason: r.revoked_reason,
             })
         })
         .transpose()
     }
+
+    async fn list_devices(&self) -> Result<Vec<Device>, RepositoryError> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT id, user_id, name, token_hash, device_class, created_at,
+                   last_seen_at, revoked_at, revoked_reason
+            FROM identity.devices
+            ORDER BY created_at, id
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+
+        rows.into_iter()
+            .map(|r| {
+                Ok(Device {
+                    id: parse_id(&r.id, "device id")?,
+                    user_id: parse_id(&r.user_id, "user id")?,
+                    name: r.name,
+                    token_hash: r.token_hash,
+                    class: parse_class(&r.device_class)?,
+                    created_at: r.created_at.into(),
+                    last_seen_at: r.last_seen_at.map(Into::into),
+                    revoked_at: r.revoked_at.map(Into::into),
+                    revoked_reason: r.revoked_reason,
+                })
+            })
+            .collect()
+    }
+
+    async fn revoke_device(
+        &self,
+        device_id: &DeviceId,
+        reason: Option<&str>,
+        revoked_at: SystemTime,
+        audit: &AuditEvent,
+    ) -> Result<RevocationOutcome, RepositoryError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+
+        // Lock every active owner device FIRST, in a deterministic order, so
+        // two concurrent revocations serialize on an overlapping row set
+        // instead of each observing the other as "still there" and both
+        // committing. Locking only the target row would let the last two
+        // owner devices be revoked simultaneously.
+        let active_owner_ids: Vec<String> = sqlx::query_scalar!(
+            r#"
+            SELECT id FROM identity.devices
+            WHERE device_class = $1 AND revoked_at IS NULL
+            ORDER BY id
+            FOR UPDATE
+            "#,
+            DeviceClass::OwnerUi.as_str(),
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(storage)?;
+
+        let Some(target) = sqlx::query!(
+            r#"
+            SELECT device_class, revoked_at FROM identity.devices
+            WHERE id = $1
+            FOR UPDATE
+            "#,
+            device_id.as_str(),
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?
+        else {
+            return Ok(RevocationOutcome::NotFound);
+        };
+
+        if target.revoked_at.is_some() {
+            return Ok(RevocationOutcome::AlreadyRevoked);
+        }
+
+        // Fail closed on an unparseable class: a row we cannot classify is not
+        // one we can reason about the lockout guard for.
+        if parse_class(&target.device_class)? == DeviceClass::OwnerUi
+            && active_owner_ids
+                .iter()
+                .all(|id| id.as_str() == device_id.as_str())
+        {
+            return Ok(RevocationOutcome::LastOwnerDevice);
+        }
+
+        sqlx::query!(
+            r#"
+            UPDATE identity.devices
+            SET revoked_at = $2, revoked_reason = $3
+            WHERE id = $1 AND revoked_at IS NULL
+            "#,
+            device_id.as_str(),
+            OffsetDateTime::from(revoked_at),
+            reason,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+
+        // Same transaction as the identity change (invariant 6).
+        crate::audit::append(&mut tx, audit)
+            .await
+            .map_err(|e| RepositoryError::Storage(e.to_string()))?;
+
+        tx.commit().await.map_err(storage)?;
+        Ok(RevocationOutcome::Revoked)
+    }
+}
+
+fn parse_id<T: FromStr>(raw: &str, what: &str) -> Result<T, RepositoryError>
+where
+    T::Err: std::fmt::Display,
+{
+    raw.parse()
+        .map_err(|e| RepositoryError::Storage(format!("stored {what}: {e}")))
+}
+
+/// An unrecognized stored class authenticates nothing — it is never defaulted
+/// to the owner class (that is precisely the failure this feature removes).
+fn parse_class(raw: &str) -> Result<DeviceClass, RepositoryError> {
+    DeviceClass::from_str(raw).map_err(|e| RepositoryError::Storage(e.to_string()))
 }
 
 fn storage(e: sqlx::Error) -> RepositoryError {

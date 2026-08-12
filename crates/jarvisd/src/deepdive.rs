@@ -1046,6 +1046,7 @@ mod tests {
 
     fn a_device() -> DeviceContext {
         DeviceContext {
+            class: jarvis_domain::identity::DeviceClass::OwnerUi,
             device_id: crate::auth::fresh_id(),
             user_id: crate::auth::fresh_id(),
             scopes: Vec::new(),

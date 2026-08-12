@@ -5,6 +5,8 @@
 //! blob, auth, and reopen-through-a-fresh-app-instance (the API half of exit
 //! evidence #1; the persistence half is jarvis-infra's restart test).
 
+mod identity_fixture;
+use identity_fixture::InMemoryIdentityStore;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -12,15 +14,12 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
-use jarvis_application::ports::{
-    ArtifactStore, BlobStore, IdentityStore, MAX_SERVED_BLOB_BYTES, RepositoryError,
-};
+use jarvis_application::ports::{ArtifactStore, BlobStore, MAX_SERVED_BLOB_BYTES, RepositoryError};
 use jarvis_domain::artifact::{
     ArtifactContent, ArtifactKind, ArtifactManifest, ArtifactSource, ArtifactVersion,
     BuildProvenance, Capability, MediaType,
 };
 use jarvis_domain::audit::AuditEvent;
-use jarvis_domain::identity::Device;
 use jarvis_domain::ids::{ArtifactId, RunId};
 use jarvis_domain::location::Sensitivity;
 use jarvis_infra::artifact_cas::FileBlobStore;
@@ -34,39 +33,6 @@ const ARTIFACT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const RUN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB1";
 
 // --- fakes --------------------------------------------------------------
-
-#[derive(Default)]
-struct FakeIdentityStore {
-    devices: Mutex<Vec<Device>>,
-}
-
-#[async_trait::async_trait]
-impl IdentityStore for FakeIdentityStore {
-    async fn device_count(&self) -> Result<u64, RepositoryError> {
-        Ok(self.devices.lock().unwrap().len() as u64)
-    }
-    async fn pair_device(
-        &self,
-        _owner_name: &str,
-        device: &Device,
-        _audit: &AuditEvent,
-    ) -> Result<(), RepositoryError> {
-        self.devices.lock().unwrap().push(device.clone());
-        Ok(())
-    }
-    async fn find_active_device_by_token_hash(
-        &self,
-        token_hash: &str,
-    ) -> Result<Option<Device>, RepositoryError> {
-        Ok(self
-            .devices
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|d| d.token_hash == token_hash && d.is_active())
-            .cloned())
-    }
-}
 
 /// In-memory manifest store mirroring PgArtifactStore's contract (its DB-backed
 /// tests live in jarvis-infra). Shared via Arc so a second app instance can read
@@ -143,7 +109,7 @@ fn temp_root() -> PathBuf {
 }
 
 async fn app(store: Arc<FakeArtifactStore>, blobs: Arc<FileBlobStore>) -> (Router, String) {
-    let identity = Arc::new(FakeIdentityStore::default());
+    let identity = Arc::new(InMemoryIdentityStore::default());
     let auth = AuthState::bootstrap(identity).await;
     let code = auth.current_pairing_code().unwrap();
     let app = router_with(

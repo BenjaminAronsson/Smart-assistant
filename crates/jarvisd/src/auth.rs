@@ -14,7 +14,7 @@ use jarvis_application::ports::IdentityStore;
 use jarvis_contracts::auth::{PairRequest, PairResponse};
 use jarvis_contracts::errors::ErrorCode;
 use jarvis_domain::audit::AuditEvent;
-use jarvis_domain::identity::Device;
+use jarvis_domain::identity::{Device, DeviceClass};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, RwLock};
@@ -22,49 +22,20 @@ use std::time::SystemTime;
 
 use crate::problem::problem;
 
-/// Scopes granted to the first paired device (docs/05 §6.3).
-///
-/// **Two vocabularies live in this list**, and conflating them was a real bug
-/// (M6 gate finding B1, owner decision 2026-08-11):
-///
-/// * *device-class* scopes — `ui` today; `display-agent` and `voice-capture`
-///   arrive with those clients;
-/// * *tool* scopes — what every `ToolPolicy::required_scopes` actually names.
-///   `policy::evaluate` rejects on the missing-scope arm **before** any risk
-///   logic, so a device holding only `ui` could execute nothing at all: not a
-///   generated app's read, not a light, not a timer. Through M3–M5 every golden
-///   and acceptance suite constructed `PolicyContext` directly and was green
-///   while the real paired device was denied — the fixture-vs-caller class, and
-///   the reason `a_paired_device_can_execute_an_allowlisted_tool` now exists.
+/// The class the bootstrap pairing code mints (docs/05 §6.1/§6.3).
 ///
 /// The first paired device is **the owner's device** on a single-owner,
-/// loopback-first system (docs/05 §6): the pairing code is the trust ceremony,
-/// and what gates a consequential action is its **risk tier** — approval and an
-/// `ExecutionGrant` for R2+ — never the length of this list. Per-device scope
-/// differentiation is M7's multi-device work, which is also when a *second*
-/// device stops inheriting this set.
+/// loopback-first system: the pairing code is the trust ceremony, and what
+/// gates a consequential action is its **risk tier** — approval and an
+/// `ExecutionGrant` for R2+ — never the length of a scope list (M6 gate
+/// finding B1, owner decision 2026-08-11).
 ///
-/// Adding a tool with a new scope means adding it here, deliberately. That is
-/// the intended cost: a scope nobody granted is a tool nobody can run.
-pub(crate) const FIRST_DEVICE_SCOPES: &[&str] = &[
-    // Device class.
-    "ui",
-    // Tool scopes, in the order the tools were introduced.
-    "files:read",
-    "demo:light",
-    "mcp:echo",
-    "web:search",
-    "web:fetch",
-    "browser:act",
-    "coding:patch",
-    "home:read",
-    "home:control",
-    "home:write",
-    "media:control",
-    "media:search",
-    "message:send",
-    "app:build",
-];
+/// F7.1 is where the promise that comment made comes due: the scope list
+/// itself now lives in `jarvis_domain::identity::DeviceClass`, a *second*
+/// device no longer inherits this set, and the two scope vocabularies are
+/// typed apart. Node pairing (a class other than `OwnerUi`) arrives with
+/// F7.2's challenge-response route.
+pub(crate) const BOOTSTRAP_DEVICE_CLASS: DeviceClass = DeviceClass::OwnerUi;
 
 /// Wrong guesses tolerated before the window closes (restart reopens it).
 /// A 6-digit code is ~20 bits; loopback-only, but a local brute force must
@@ -78,6 +49,8 @@ pub struct AuthState {
     /// window open (all further devices need `jarvisd pair --new`, post-M0).
     pairing_code: Arc<RwLock<Option<String>>>,
     failed_attempts: Arc<RwLock<u32>>,
+    /// Announces revocations to live sockets (F7.1). Shared with `WsState`.
+    revocations: crate::devices::RevocationBus,
 }
 
 impl AuthState {
@@ -105,7 +78,18 @@ impl AuthState {
             identity,
             pairing_code: Arc::new(RwLock::new(code)),
             failed_attempts: Arc::new(RwLock::new(0)),
+            revocations: crate::devices::RevocationBus::new(),
         }
+    }
+
+    pub fn identity(&self) -> &Arc<dyn IdentityStore> {
+        &self.identity
+    }
+
+    /// The bus `/ws/v1` subscribes to so a revoked device's socket closes
+    /// without waiting for its next request (F7.1).
+    pub fn revocations(&self) -> &crate::devices::RevocationBus {
+        &self.revocations
     }
 
     pub fn current_pairing_code(&self) -> Option<String> {
@@ -154,7 +138,18 @@ impl AuthState {
 pub struct DeviceContext {
     pub device_id: jarvis_domain::ids::DeviceId,
     pub user_id: jarvis_domain::ids::UserId,
+    /// What kind of client this is — the source of `scopes` below, carried so
+    /// routes can reason about the *class* (may it present? may it capture?)
+    /// without pattern-matching on scope strings.
+    pub class: DeviceClass,
+    /// Derived from `class`, never read back from storage (F7.1).
     pub scopes: Vec<String>,
+}
+
+impl DeviceContext {
+    pub fn holds(&self, scope: &str) -> bool {
+        self.scopes.iter().any(|s| s == scope)
+    }
 }
 
 /// POST /api/v1/auth/pair — exchange the one-time code for a device token.
@@ -188,9 +183,11 @@ pub async fn pair(
         user_id: fresh_id(),
         name: request.device_name.clone(),
         token_hash: sha256_hex(token.as_bytes()),
-        scopes: FIRST_DEVICE_SCOPES.iter().map(|s| s.to_string()).collect(),
+        class: BOOTSTRAP_DEVICE_CLASS,
         created_at: now,
+        last_seen_at: None,
         revoked_at: None,
+        revoked_reason: None,
     };
     let audit = AuditEvent {
         occurred_at: now,
@@ -200,7 +197,8 @@ pub async fn pair(
         correlation_id: None,
         payload_json: serde_json::json!({
             "deviceName": device.name,
-            "scopes": device.scopes,
+            "deviceClass": device.class.as_str(),
+            "scopes": device.effective_scopes(),
         })
         .to_string(),
     };
@@ -219,9 +217,10 @@ pub async fn pair(
         })?;
 
     Ok(Json(PairResponse {
-        device_id: device.id,
+        device_id: device.id.clone(),
         device_token: token,
-        scopes: device.scopes,
+        device_class: device.class.as_str().to_owned(),
+        scopes: device.effective_scopes(),
     }))
 }
 
@@ -265,9 +264,11 @@ pub async fn require_device(
     {
         Ok(Some(device)) => {
             request.extensions_mut().insert(DeviceContext {
-                device_id: device.id,
-                user_id: device.user_id,
-                scopes: device.scopes,
+                device_id: device.id.clone(),
+                user_id: device.user_id.clone(),
+                class: device.class,
+                // From the class, so a tampered `scopes` row grants nothing.
+                scopes: device.effective_scopes(),
             });
             next.run(request).await
         }

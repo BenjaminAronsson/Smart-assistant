@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id FROM identity.devices\n            WHERE device_class = $1 AND revoked_at IS NULL\n            ORDER BY id\n            FOR UPDATE\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c26bdcf3479a198227d708aad3ef4c6f1941b0543a54c2ece3dbd4ac45154b3e"
+}

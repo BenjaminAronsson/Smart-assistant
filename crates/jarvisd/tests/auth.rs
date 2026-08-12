@@ -7,71 +7,14 @@ use axum::middleware::from_fn_with_state;
 use axum::routing::{get, post};
 use axum::{Extension, Router};
 use http_body_util::BodyExt;
-use jarvis_application::ports::{IdentityStore, RepositoryError};
-use jarvis_domain::audit::AuditEvent;
-use jarvis_domain::identity::Device;
 use jarvisd::auth::{AuthState, DeviceContext, pair, require_device};
-use std::sync::{Arc, Mutex};
+mod identity_fixture;
+use identity_fixture::InMemoryIdentityStore;
+use std::sync::Arc;
 use tower::ServiceExt;
 
-#[derive(Default)]
-struct FakeIdentityStore {
-    devices: Mutex<Vec<Device>>,
-    audits: Mutex<Vec<AuditEvent>>,
-    fail: bool,
-}
-
-impl FakeIdentityStore {
-    fn failing() -> Self {
-        Self {
-            fail: true,
-            ..Self::default()
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl IdentityStore for FakeIdentityStore {
-    async fn device_count(&self) -> Result<u64, RepositoryError> {
-        if self.fail {
-            return Err(RepositoryError::Storage("unreachable".into()));
-        }
-        Ok(self.devices.lock().unwrap().len() as u64)
-    }
-
-    async fn pair_device(
-        &self,
-        _owner_name: &str,
-        device: &Device,
-        audit: &AuditEvent,
-    ) -> Result<(), RepositoryError> {
-        if self.fail {
-            return Err(RepositoryError::Storage("unreachable".into()));
-        }
-        self.devices.lock().unwrap().push(device.clone());
-        self.audits.lock().unwrap().push(audit.clone());
-        Ok(())
-    }
-
-    async fn find_active_device_by_token_hash(
-        &self,
-        token_hash: &str,
-    ) -> Result<Option<Device>, RepositoryError> {
-        if self.fail {
-            return Err(RepositoryError::Storage("unreachable".into()));
-        }
-        Ok(self
-            .devices
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|d| d.token_hash == token_hash && d.is_active())
-            .cloned())
-    }
-}
-
-async fn bootstrapped() -> (Arc<FakeIdentityStore>, AuthState, String) {
-    let store = Arc::new(FakeIdentityStore::default());
+async fn bootstrapped() -> (Arc<InMemoryIdentityStore>, AuthState, String) {
+    let store = Arc::new(InMemoryIdentityStore::default());
     let auth = AuthState::bootstrap(store.clone()).await;
     let code = auth
         .current_pairing_code()
@@ -123,12 +66,12 @@ async fn pairing_succeeds_once_and_stores_only_the_hash() {
     );
 
     // invariant 5: the store holds a hash, never the token value.
-    let devices = store.devices.lock().unwrap();
+    let devices = store.devices();
     assert_eq!(devices.len(), 1);
     assert_ne!(devices[0].token_hash, token);
     assert_eq!(devices[0].token_hash.len(), 64);
     // Audit written through the same port call (invariant 6 wiring).
-    assert_eq!(store.audits.lock().unwrap()[0].event_type, "device.paired");
+    assert_eq!(store.audits()[0].event_type, "device.paired");
     // Window consumed.
     assert_eq!(auth.current_pairing_code(), None);
 }
@@ -177,7 +120,7 @@ async fn bootstrap_with_devices_present_opens_no_window() {
 
 #[tokio::test]
 async fn bootstrap_with_unreachable_store_defers_without_failing() {
-    let auth = AuthState::bootstrap(Arc::new(FakeIdentityStore::failing())).await;
+    let auth = AuthState::bootstrap(Arc::new(InMemoryIdentityStore::failing())).await;
     assert_eq!(auth.current_pairing_code(), None);
 }
 
@@ -236,7 +179,7 @@ async fn valid_token_reaches_the_handler_with_device_context() {
     assert_eq!(response, format!("device={device_id}"));
 
     // Revocation fails closed on the next request (docs/05 §6).
-    store.devices.lock().unwrap()[0].revoked_at = Some(std::time::SystemTime::now());
+    assert!(store.revoke_behind_the_port(&store.devices()[0].id, std::time::SystemTime::now()));
     let (revoked, _) = get_protected(&router, Some(&token)).await;
     assert_eq!(revoked, StatusCode::UNAUTHORIZED);
 }
@@ -264,12 +207,12 @@ async fn stored_hash_is_exactly_sha256_of_the_returned_token() {
     let (_, body) = do_pair(&pair_router(auth), &code, "laptop").await;
     let token = body["deviceToken"].as_str().unwrap();
     let expected = hex::encode(sha2::Sha256::digest(token.as_bytes()));
-    assert_eq!(store.devices.lock().unwrap()[0].token_hash, expected);
+    assert_eq!(store.devices()[0].token_hash, expected);
 }
 
 #[tokio::test]
 async fn identity_outage_in_middleware_is_503_not_401() {
-    let auth = AuthState::bootstrap(Arc::new(FakeIdentityStore::failing())).await;
+    let auth = AuthState::bootstrap(Arc::new(InMemoryIdentityStore::failing())).await;
     let router = protected_router(auth);
     let (status, body) = get_protected(&router, Some("whatever")).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);

@@ -208,6 +208,35 @@ pub trait IdentityStore: Send + Sync {
         &self,
         token_hash: &str,
     ) -> Result<Option<jarvis_domain::identity::Device>, RepositoryError>;
+    /// Every paired device, revoked ones included — the owner's device list
+    /// (docs/05 §6.4) has to show what was revoked, not silently forget it.
+    async fn list_devices(&self) -> Result<Vec<jarvis_domain::identity::Device>, RepositoryError>;
+    /// Revoke one device, writing `audit` in the same transaction
+    /// (invariant 6). Idempotent: revoking an already-revoked device reports
+    /// [`RevocationOutcome::AlreadyRevoked`] and writes no second audit row.
+    ///
+    /// The last-owner-device guard is evaluated **inside** the transaction —
+    /// two concurrent revocations must not be able to remove the owner's last
+    /// way in between them.
+    async fn revoke_device(
+        &self,
+        device_id: &jarvis_domain::ids::DeviceId,
+        reason: Option<&str>,
+        revoked_at: std::time::SystemTime,
+        audit: &AuditEvent,
+    ) -> Result<RevocationOutcome, RepositoryError>;
+}
+
+/// What a revocation attempt did (docs/05 §6.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevocationOutcome {
+    Revoked,
+    /// Already revoked — the caller's intent already holds.
+    AlreadyRevoked,
+    NotFound,
+    /// Refused: this is the last active `owner-ui` device, and revoking it
+    /// would leave nothing able to pair a replacement.
+    LastOwnerDevice,
 }
 
 /// A run plus its persistence timestamps — the read model behind

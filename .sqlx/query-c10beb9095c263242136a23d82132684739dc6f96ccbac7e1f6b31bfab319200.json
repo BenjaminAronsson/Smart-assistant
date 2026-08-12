@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, user_id, name, token_hash, scopes, created_at, revoked_at\n            FROM identity.devices\n            WHERE token_hash = $1 AND revoked_at IS NULL\n            ",
+  "query": "\n            SELECT id, user_id, name, token_hash, device_class, created_at,\n                   last_seen_at, revoked_at, revoked_reason\n            FROM identity.devices\n            WHERE token_hash = $1 AND revoked_at IS NULL\n            ",
   "describe": {
     "columns": [
       {
@@ -25,8 +25,8 @@
       },
       {
         "ordinal": 4,
-        "name": "scopes",
-        "type_info": "TextArray"
+        "name": "device_class",
+        "type_info": "Text"
       },
       {
         "ordinal": 5,
@@ -35,8 +35,18 @@
       },
       {
         "ordinal": 6,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
         "name": "revoked_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "revoked_reason",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -51,8 +61,10 @@
       false,
       false,
       false,
+      true,
+      true,
       true
     ]
   },
-  "hash": "1bb6e3cf87b1fc77329359b6ee4ccd4aaaa3ecd973f18951cbf60cfe498165ba"
+  "hash": "c10beb9095c263242136a23d82132684739dc6f96ccbac7e1f6b31bfab319200"
 }

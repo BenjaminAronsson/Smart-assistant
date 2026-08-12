@@ -5,49 +5,17 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
-use jarvis_application::ports::{CreateOutcome, IdentityStore, RepositoryError, SessionStore};
+use jarvis_application::ports::{CreateOutcome, RepositoryError, SessionStore};
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::conversations::Session;
-use jarvis_domain::identity::Device;
 use jarvis_domain::ids::SessionId;
 use jarvisd::api::{AppState, Wiring, router_with};
 use jarvisd::auth::AuthState;
 use jarvisd::sessions::SessionApi;
+mod identity_fixture;
+use identity_fixture::InMemoryIdentityStore;
 use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
-
-#[derive(Default)]
-struct FakeIdentityStore {
-    devices: Mutex<Vec<Device>>,
-}
-
-#[async_trait::async_trait]
-impl IdentityStore for FakeIdentityStore {
-    async fn device_count(&self) -> Result<u64, RepositoryError> {
-        Ok(self.devices.lock().unwrap().len() as u64)
-    }
-    async fn pair_device(
-        &self,
-        _owner_name: &str,
-        device: &Device,
-        _audit: &AuditEvent,
-    ) -> Result<(), RepositoryError> {
-        self.devices.lock().unwrap().push(device.clone());
-        Ok(())
-    }
-    async fn find_active_device_by_token_hash(
-        &self,
-        token_hash: &str,
-    ) -> Result<Option<Device>, RepositoryError> {
-        Ok(self
-            .devices
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|d| d.token_hash == token_hash && d.is_active())
-            .cloned())
-    }
-}
 
 /// In-memory SessionStore mirroring the contract of PgSessionStore
 /// (which has its own DB-backed tests in jarvis-infra).
@@ -105,7 +73,7 @@ impl SessionStore for FakeSessionStore {
 }
 
 async fn app_with_token() -> (Router, Arc<FakeSessionStore>, String) {
-    let identity = Arc::new(FakeIdentityStore::default());
+    let identity = Arc::new(InMemoryIdentityStore::default());
     let auth = AuthState::bootstrap(identity).await;
     let code = auth.current_pairing_code().unwrap();
     let store = Arc::new(FakeSessionStore::default());

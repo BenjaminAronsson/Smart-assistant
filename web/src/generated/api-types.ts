@@ -328,7 +328,8 @@ export type ErrorCode =
   | "deepdive.nothing_to_promote"
   | "app.undeclared_capability"
   | "app.token_rejected"
-  | "app.invalid_request";
+  | "app.invalid_request"
+  | "identity.last_owner_device";
 /**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "ServiceStatus".
@@ -1065,6 +1066,54 @@ export interface DeepDiveFindingsResponse {
    */
   refused?: string[];
   sources: number;
+  [k: string]: unknown;
+}
+/**
+ * One paired device as the owner sees it.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "DeviceDto".
+ */
+export interface DeviceDto {
+  /**
+   * RFC 3339.
+   */
+  createdAt: string;
+  /**
+   * `owner-ui`, `display-node`, `voice-node`, `room-node` (docs/05 §6.3).
+   * The class is what decides the scopes below — a device never names its
+   * own authority.
+   */
+  deviceClass: string;
+  deviceId: UlidString;
+  /**
+   * Whether this class may execute tools at all. Room satellites cannot;
+   * surfacing it here keeps the device list honest about what a node is.
+   */
+  executesTools: boolean;
+  /**
+   * RFC 3339; absent until the device has connected.
+   */
+  lastSeenAt?: string | null;
+  name: string;
+  /**
+   * RFC 3339; present exactly when the device is revoked.
+   */
+  revokedAt?: string | null;
+  revokedReason?: string | null;
+  /**
+   * The scopes this class holds, sent explicitly so clients never infer
+   * them (same rule as the pair response, docs/05 §6.1).
+   */
+  scopes: string[];
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "DeviceListResponse".
+ */
+export interface DeviceListResponse {
+  devices: DeviceDto[];
   [k: string]: unknown;
 }
 /**
@@ -1838,6 +1887,12 @@ export interface PairRequest {
  * via the `definition` "PairResponse".
  */
 export interface PairResponse {
+  /**
+   * The class the server assigned (docs/05 §6.3) — `owner-ui` for the
+   * bootstrap device. Returned explicitly for the same reason `scopes` is:
+   * a client is told its authority, it never infers it.
+   */
+  deviceClass: string;
   deviceId: UlidString;
   /**
    * Opaque 256-bit bearer token; the only time it crosses the wire.
@@ -1931,6 +1986,18 @@ export interface PromoteNotesResponse {
  */
 export interface ProvidersResponse {
   providers: ProviderDto[];
+  [k: string]: unknown;
+}
+/**
+ * Body of `POST /api/v1/devices/{id}/revoke`. The reason is recorded in the
+ * audit event and shown in the device list — revocation is a security event
+ * worth being able to explain later.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "RevokeDeviceRequest".
+ */
+export interface RevokeDeviceRequest {
+  reason?: string | null;
   [k: string]: unknown;
 }
 /**

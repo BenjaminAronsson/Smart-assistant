@@ -6,22 +6,21 @@
 //! monitor rejected, unknown artifact 404, audit-before-dispatch (fail-closed if
 //! audit fails), auth required, and the dispatched directive's contents.
 
+mod identity_fixture;
+use identity_fixture::InMemoryIdentityStore;
 use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
-use jarvis_application::ports::{
-    ArtifactStore, AuditLog, DisplayDirectiveSink, IdentityStore, RepositoryError,
-};
+use jarvis_application::ports::{ArtifactStore, AuditLog, DisplayDirectiveSink, RepositoryError};
 use jarvis_domain::artifact::{
     ArtifactContent, ArtifactKind, ArtifactManifest, ArtifactSource, ArtifactVersion,
     BuildProvenance, MediaType,
 };
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::display::{DisplayProfile, MonitorId, Surface, SurfacePlacement};
-use jarvis_domain::identity::Device;
 use jarvis_domain::ids::{ArtifactId, RunId};
 use jarvis_domain::location::Sensitivity;
 use jarvisd::api::{AppState, Wiring, router_with};
@@ -33,39 +32,6 @@ const ARTIFACT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const RUN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FB1";
 
 // --- fakes --------------------------------------------------------------
-
-#[derive(Default)]
-struct FakeIdentityStore {
-    devices: Mutex<Vec<Device>>,
-}
-
-#[async_trait::async_trait]
-impl IdentityStore for FakeIdentityStore {
-    async fn device_count(&self) -> Result<u64, RepositoryError> {
-        Ok(self.devices.lock().unwrap().len() as u64)
-    }
-    async fn pair_device(
-        &self,
-        _owner_name: &str,
-        device: &Device,
-        _audit: &AuditEvent,
-    ) -> Result<(), RepositoryError> {
-        self.devices.lock().unwrap().push(device.clone());
-        Ok(())
-    }
-    async fn find_active_device_by_token_hash(
-        &self,
-        token_hash: &str,
-    ) -> Result<Option<Device>, RepositoryError> {
-        Ok(self
-            .devices
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|d| d.token_hash == token_hash && d.is_active())
-            .cloned())
-    }
-}
 
 #[derive(Default)]
 struct FakeArtifactStore {
@@ -164,7 +130,7 @@ struct Harness {
 }
 
 async fn harness(profile: DisplayProfile, audit: FakeAuditLog, connected: bool) -> Harness {
-    let identity = Arc::new(FakeIdentityStore::default());
+    let identity = Arc::new(InMemoryIdentityStore::default());
     let auth = AuthState::bootstrap(identity).await;
     let code = auth.current_pairing_code().unwrap();
 

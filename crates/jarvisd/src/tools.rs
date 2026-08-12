@@ -540,7 +540,7 @@ mod tests {
 #[cfg(test)]
 mod scope_coverage_tests {
     use super::*;
-    use crate::auth::FIRST_DEVICE_SCOPES;
+    use jarvis_domain::identity::DeviceClass;
     use std::collections::BTreeSet;
 
     /// **M6 gate finding B1.** Every tool a real registry registers must have
@@ -559,7 +559,8 @@ mod scope_coverage_tests {
     /// is granted deliberately.
     #[test]
     fn every_registered_tools_scope_is_one_a_paired_device_actually_holds() {
-        let granted: BTreeSet<&str> = FIRST_DEVICE_SCOPES.iter().copied().collect();
+        let owner = DeviceClass::OwnerUi.scopes();
+        let granted: BTreeSet<&str> = owner.iter().map(String::as_str).collect();
         let mut registry = build_registry(Some(std::env::temp_dir())).expect("builds");
         // The web tools are conditionally registered too, and their descriptors
         // are what the real registration path installs — so drive that path
@@ -609,7 +610,49 @@ mod scope_coverage_tests {
         assert!(
             missing.is_empty(),
             "a paired device cannot execute these tools — grant the scope in \
-             jarvisd::auth::FIRST_DEVICE_SCOPES, deliberately: {missing:?}"
+             jarvis_domain::identity::OWNER_TOOL_SCOPES, deliberately: {missing:?}"
+        );
+    }
+
+    /// **F7.1, the inverse of B1.** A room satellite must not be able to
+    /// execute anything. B1 was "the owner's device holds too little"; the
+    /// failure this milestone introduces the opportunity for is "a node holds
+    /// too much" — and it would be just as invisible, because no fixture
+    /// builds a node's context by accident.
+    ///
+    /// Driven from the real registry, so a tool registered later is covered
+    /// without anyone remembering to come back here.
+    #[test]
+    fn no_node_class_can_execute_any_registered_tool() {
+        let mut registry = build_registry(Some(std::env::temp_dir())).expect("builds");
+        register_web_tools(&mut registry, "unused-key".to_owned(), 1024).expect("registers");
+
+        let mut reachable: Vec<String> = Vec::new();
+        for class in [
+            DeviceClass::DisplayNode,
+            DeviceClass::VoiceNode,
+            DeviceClass::RoomNode,
+        ] {
+            let held: BTreeSet<String> = class.scopes().into_iter().collect();
+            for id in registry.tool_ids() {
+                let policy = registry
+                    .policy_of(id)
+                    .expect("a registered tool has policy");
+                // A tool is reachable for this class when the class holds
+                // every scope the tool requires — exactly `policy::evaluate`'s
+                // missing-scope arm, restated from the caller's side.
+                if policy
+                    .required_scopes
+                    .iter()
+                    .all(|scope| held.contains(scope.as_str()))
+                {
+                    reachable.push(format!("{class} can execute {id}"));
+                }
+            }
+        }
+        assert!(
+            reachable.is_empty(),
+            "a room satellite must present and capture, never act: {reachable:?}"
         );
     }
 }

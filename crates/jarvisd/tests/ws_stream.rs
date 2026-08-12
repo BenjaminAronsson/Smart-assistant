@@ -20,6 +20,7 @@ use jarvisd::api::{AppState, RunWiring, Wiring, router_with};
 use jarvisd::auth::AuthState;
 use jarvisd::runs::{PassthroughAssembler, RunApi, RunEngine, SystemClock};
 use jarvisd::ws::{WsHub, WsState};
+use sha2::Digest;
 use sqlx::PgPool;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -84,6 +85,10 @@ async fn start(pool: PgPool, model: FakeModel) -> Harness {
         None,
     );
     let ws = WsState {
+        // The SAME bus `POST /devices/{id}/revoke` publishes on, exactly as
+        // `main.rs` wires it (F7.1). A `Default::default()` here would make
+        // every revocation test pass against a bus nobody publishes to.
+        revocations: auth.revocations().clone(),
         hub,
         events,
         shutdown: shutdown.clone(),
@@ -155,6 +160,29 @@ async fn start(pool: PgPool, model: FakeModel) -> Harness {
         token,
         shutdown,
     }
+}
+
+/// Insert a paired room node directly, the way F7.2's pairing route will once
+/// it exists. Returns `(device_id, token)`.
+async fn seed_room_node(pool: &PgPool) -> (String, String) {
+    let device_id = "01ARZ3NDEKTSV4RRFFQ69G5FC7".to_owned();
+    let token = "kitchen-node-token".to_owned();
+    let hash = hex::encode(sha2::Sha256::digest(token.as_bytes()));
+    let user_id: String = sqlx::query_scalar("SELECT id FROM identity.users LIMIT 1")
+        .fetch_one(pool)
+        .await
+        .expect("the owner user exists after bootstrap pairing");
+    sqlx::query(
+        "INSERT INTO identity.devices (id, user_id, name, token_hash, scopes, device_class, created_at) \
+         VALUES ($1, $2, 'kitchen screen', $3, ARRAY['display-agent','voice-capture'], 'room-node', now())",
+    )
+    .bind(&device_id)
+    .bind(user_id)
+    .bind(&hash)
+    .execute(pool)
+    .await
+    .expect("seed node");
+    (device_id, token)
 }
 
 /// Connect a WS client (optionally replaying with `?since`) and return the
@@ -456,4 +484,100 @@ async fn the_subprotocol_fallback_does_not_authenticate_a_plain_rest_request(poo
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// **F7.1 exit-evidence rehearsal (FR-19): revocation works, and it works
+/// *now*.** A paired room node holds a live socket; the owner revokes it; the
+/// socket must close without the node doing anything, and its token must be
+/// dead on the next request.
+///
+/// Authorization happens once, at upgrade. Before this feature a revoked
+/// device kept its stream until it happened to reconnect — which for a
+/// wall-mounted screen is "never".
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn revoking_a_node_closes_its_live_socket(pool: PgPool) {
+    let harness = start(pool.clone(), FakeModel::streaming(["hi"])).await;
+    let (node_id, node_token) = seed_room_node(&pool).await;
+
+    // The node connects with its own token — not the owner's.
+    let url = format!("ws://{}/ws/v1", harness.addr);
+    let mut request = url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {node_token}").parse().unwrap(),
+    );
+    let (mut socket, response) = connect_async(request).await.expect("node ws upgrade");
+    assert_eq!(response.status(), 101, "the node is a paired device");
+
+    // The owner is connected too, from before the revocation — a revocation
+    // must cut exactly one socket, not every socket on the bus.
+    let owner_url = format!("ws://{}/ws/v1", harness.addr);
+    let mut owner_request = owner_url.into_client_request().unwrap();
+    owner_request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {}", harness.token).parse().unwrap(),
+    );
+    let (mut owner_socket, _) = connect_async(owner_request)
+        .await
+        .expect("owner ws upgrade");
+
+    // The owner revokes it over the real route.
+    let revoke = harness
+        .app
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/v1/devices/{node_id}/revoke"))
+                .header(header::AUTHORIZATION, format!("Bearer {}", harness.token))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"reason":"sold the screen"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revoke.status(), StatusCode::OK);
+
+    // The socket closes on its own, promptly, with no further client action.
+    let closed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match socket.next().await {
+                Some(Ok(WsMessage::Close(frame))) => return frame,
+                None => return None,
+                _ => continue,
+            }
+        }
+    })
+    .await
+    .expect("the revoked socket closes without waiting for a reconnect");
+    if let Some(frame) = closed {
+        assert_eq!(u16::from(frame.code), 1008, "policy-violation close code");
+    }
+
+    // And the token is dead for REST too.
+    let after = harness
+        .app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/devices")
+                .header(header::AUTHORIZATION, format!("Bearer {node_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(after.status(), StatusCode::UNAUTHORIZED);
+
+    // The owner's socket, opened before the revocation, is untouched by it.
+    let owner_closed = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            match owner_socket.next().await {
+                Some(Ok(WsMessage::Close(_))) | None => return true,
+                _ => continue,
+            }
+        }
+    })
+    .await;
+    assert!(
+        owner_closed.is_err(),
+        "revoking the node must not close the owner's socket"
+    );
 }

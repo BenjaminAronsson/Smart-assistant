@@ -123,6 +123,13 @@ pub enum ErrorCode {
     /// 400.
     #[serde(rename = "app.invalid_request")]
     AppInvalidRequest,
+    /// Revoking this device would leave the owner with no `owner-ui` device
+    /// and therefore no way to pair a new one without a `jarvisd` restart
+    /// (F7.1, FR-19). 409 — the request was well-formed; the owner pairs a
+    /// replacement first. Never blocks revoking a *node*, only the last
+    /// owner client.
+    #[serde(rename = "identity.last_owner_device")]
+    IdentityLastOwnerDevice,
 }
 
 /// RFC 9457 problem details body plus the stable machine `code` (docs/05 §2).

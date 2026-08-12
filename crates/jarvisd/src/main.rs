@@ -423,6 +423,10 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         // socket's authenticated device context — never a second, weaker path
         // from "the microphone heard it" to a run (invariant #1).
         runs: Some(run_api.clone()),
+        // The SAME bus `POST /devices/{id}/revoke` publishes on (F7.1) — a
+        // second `RevocationBus::new()` here would compile, serve happily, and
+        // silently never close a revoked device's socket.
+        revocations: auth.revocations().clone(),
     };
 
     // Start the event-driven outbox dispatcher (LISTEN/NOTIFY, not polling) and

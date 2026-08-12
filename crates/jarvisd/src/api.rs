@@ -175,6 +175,18 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
         // One protected sub-router merges every authenticated surface (each
         // keeps its own typed state); the bearer middleware wraps them once.
         let mut protected = Router::new();
+        // Device management (F7.1, FR-19). Authenticated like everything else
+        // here, and additionally `ui`-scoped inside the handlers — a paired
+        // room satellite must not be able to enumerate or revoke its siblings.
+        protected = protected.merge(
+            Router::new()
+                .route("/api/v1/devices", get(crate::devices::list))
+                .route(
+                    "/api/v1/devices/{id}/revoke",
+                    axum::routing::post(crate::devices::revoke),
+                )
+                .with_state(auth.clone()),
+        );
         if let Some(api) = sessions {
             protected = protected.merge(
                 Router::new()
