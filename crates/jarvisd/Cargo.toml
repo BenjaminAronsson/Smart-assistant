@@ -41,6 +41,9 @@ ed25519-dalek = { version = "2", default-features = false, features = ["std", "z
 base64 = "0.22"
 # Real certificates for the TLS listener tests (F7.3) — generated per run, never
 # committed: a checked-in key is a checked-in key even when it is "only a test".
+# Golden 11 talks to the daemon the way a node does: real HTTP over real TLS,
+# pinning the server certificate rather than disabling verification.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-manual-roots"] }
 rcgen = "0.14"
 tempfile = "3"
 # TLS for LAN/remote nodes (F7.3, docs/06 §7). rustls only — no OpenSSL, no
@@ -92,7 +95,9 @@ jarvis-application = { workspace = true, features = ["fixtures"] }
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "macros", "migrate", "time"] }
 # WebSocket client for the real-socket streaming test (matches the version axum
 # already pulls in for its `ws` feature, so no duplicate build).
-tokio-tungstenite = "0.29"
+# `rustls-tls-webpki-roots` is what exposes `Connector::Rustls`, so golden 11
+# can hand the client a config that trusts exactly the daemon's certificate.
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 # Golden 7 spawns the real `tools/coding-worker` child process; the `process`
 # feature unifies into the test build only (the binary spawns no children).
 tokio = { version = "1", features = ["process", "io-util"] }

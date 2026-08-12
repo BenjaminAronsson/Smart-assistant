@@ -34,6 +34,8 @@ fn main() -> anyhow::Result<()> {
 /// the docs/12 §9 checklist. Trace 9 and the M5 acceptance scenarios (F5.8)
 /// need live Postgres and nothing else — every speech engine, home and media
 /// service they touch is a fixture: see `docs/milestones/M5-acceptance.md`.
+/// Trace 11 (F7.8) needs live Postgres only: it mints its own certificate and
+/// serves the production router over TLS in-process.
 /// Trace 8 and the M6 acceptance scenario (F6.6/F6.7) need live Postgres and
 /// `node`; the acceptance scenario additionally needs the locked template's
 /// dependencies (`npm --prefix tools/app-builder run install-templates`) and
@@ -331,7 +333,19 @@ fn golden() -> anyhow::Result<()> {
         )?;
     }
 
-    println!("✓ Golden traces 1–7, 9 + M3a/M3b/M5 acceptance scenarios passed");
+    // Trace 11 — M7 exit evidence (F7.8, FR-19). Needs live Postgres; it
+    // generates its own certificate per run and serves the production router
+    // over a real TLS listener, so no fixture stands in for the pairing route,
+    // the handshake, or the scope set the node receives.
+    println!("Running golden 11 (M7: a second node pairs, is placed, speaks, is revoked)...");
+    run_scenario(
+        &["test", "-p", "jarvisd", "--test", "golden11_node"],
+        None,
+        1,
+        "golden 11: node pairs over TLS → surface → voice → revoked",
+    )?;
+
+    println!("✓ Golden traces 1–7, 9, 11 + M3a/M3b/M5 acceptance scenarios passed");
     println!("  - Orchestrator: simple/complex question, degraded mode recovery");
     println!("  - Policy: R0/R1 auto tool path, result sanitization, denial");
     println!("  - Approval: R2 approve/deny/edit, grant mint/validate, adversarial text");
