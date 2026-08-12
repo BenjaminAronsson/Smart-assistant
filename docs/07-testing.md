@@ -40,6 +40,9 @@ before scope expands (roadmap §M1):
 9. Voice response interrupted; TTS, model, and tool cancellation all correct.
 10. Host restarts during tool execution; run reconciles via idempotency, no duplicate
     mutation.
+11. A second node pairs over TLS with its own key, is sent a surface addressed to it,
+    opens a voice capture stream, and is cut off mid-flow when the owner revokes it
+    (M7, FR-19).
 
 ## 3. Definition of done (per feature)
 

@@ -276,7 +276,7 @@ not control.
       Refs: NFR-13, docs/05 §3, docs/02 §12. Read: `ws.rs` replay/cursor code, F7.4's
       filter, `crates/jarvis-agent/src/client.rs`. Deps: F7.4, F7.5.
 
-- [ ] **F7.8 — Second-node reference client + golden 11 + M7 acceptance scenarios**
+- [x] **F7.8 — Second-node reference client + golden 11 + M7 acceptance scenarios** — DONE
       · *Sonnet*
       `jarvis-agent --node` : the reference satellite. It generates its keypair, pairs
       through the **real** route with a **real** pairing code against a **real** TLS
