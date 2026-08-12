@@ -416,6 +416,9 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         approval_gate.clone(),
         Some(deepdive.clone()),
     );
+    // One pairing state for the process: the routes that open a window and the
+    // routes that consume it must share it (F7.2).
+    let pairing = jarvisd::pairing::PairingState::new();
     let ws_state = WsState {
         hub: hub.clone(),
         events: event_log,
@@ -568,6 +571,8 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     let app = jarvisd::api::router_with(
         state,
         jarvisd::api::Wiring {
+            // The same instance the pairing routes were built from (F7.2).
+            pairing: pairing.clone(),
             sessions: Some(sessions),
             runs: Some(RunWiring {
                 runs: run_api,

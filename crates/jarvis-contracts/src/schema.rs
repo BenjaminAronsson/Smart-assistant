@@ -40,6 +40,12 @@ pub fn export() -> Value {
     generator.subschema_for::<crate::devices::DeviceDto>();
     generator.subschema_for::<crate::devices::DeviceListResponse>();
     generator.subschema_for::<crate::devices::RevokeDeviceRequest>();
+    // Node pairing (F7.2, FR-19, ADR-031) — three request/response roots, none
+    // referenced by an event.
+    generator.subschema_for::<crate::pairing::PairingWindowDto>();
+    generator.subschema_for::<crate::pairing::NodePairStartRequest>();
+    generator.subschema_for::<crate::pairing::NodePairChallengeDto>();
+    generator.subschema_for::<crate::pairing::NodePairCompleteRequest>();
     generator.subschema_for::<crate::sessions::SessionDto>();
     generator.subschema_for::<crate::sessions::CreateSessionRequest>();
     generator.subschema_for::<crate::sessions::SessionListResponse>();

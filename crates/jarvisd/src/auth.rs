@@ -239,6 +239,9 @@ pub async fn pair(
         user_id: fresh_id(),
         name: device_name.to_owned(),
         token_hash: sha256_hex(token.as_bytes()),
+        // The bootstrap device is code-paired over loopback and holds no
+        // keypair; node keys arrive with F7.2's challenge-response route.
+        public_key: None,
         class: BOOTSTRAP_DEVICE_CLASS,
         created_at: now,
         last_seen_at: None,

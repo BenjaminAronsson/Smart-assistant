@@ -6,7 +6,9 @@
 //! column (F7.1): the column is the pairing-time snapshot kept for audit, and
 //! reading it back would mean a tampered row could widen what a device may do.
 
-use jarvis_application::ports::{IdentityStore, RepositoryError, RevocationOutcome};
+use jarvis_application::ports::{
+    IdentityStore, NodePairOutcome, RepositoryError, RevocationOutcome,
+};
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::identity::{Device, DeviceClass};
 use jarvis_domain::ids::DeviceId;
@@ -57,8 +59,8 @@ impl IdentityStore for PgIdentityStore {
         sqlx::query!(
             r#"
             INSERT INTO identity.devices
-                (id, user_id, name, token_hash, scopes, device_class, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                (id, user_id, name, token_hash, scopes, device_class, public_key, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             "#,
             device.id.as_str(),
             device.user_id.as_str(),
@@ -68,6 +70,7 @@ impl IdentityStore for PgIdentityStore {
             // authorization reads back (see the module docs).
             &device.effective_scopes(),
             device.class.as_str(),
+            device.public_key,
             OffsetDateTime::from(device.created_at),
         )
         .execute(&mut *tx)
@@ -88,7 +91,7 @@ impl IdentityStore for PgIdentityStore {
     ) -> Result<Option<Device>, RepositoryError> {
         let row = sqlx::query!(
             r#"
-            SELECT id, user_id, name, token_hash, device_class, created_at,
+            SELECT id, user_id, name, token_hash, device_class, public_key, created_at,
                    last_seen_at, revoked_at, revoked_reason
             FROM identity.devices
             WHERE token_hash = $1 AND revoked_at IS NULL
@@ -105,6 +108,7 @@ impl IdentityStore for PgIdentityStore {
                 user_id: parse_id(&r.user_id, "user id")?,
                 name: r.name,
                 token_hash: r.token_hash,
+                public_key: r.public_key,
                 class: parse_class(&r.device_class)?,
                 created_at: r.created_at.into(),
                 last_seen_at: r.last_seen_at.map(Into::into),
@@ -113,6 +117,66 @@ impl IdentityStore for PgIdentityStore {
             })
         })
         .transpose()
+    }
+
+    async fn pair_node_device(
+        &self,
+        device: &Device,
+        audit: &AuditEvent,
+    ) -> Result<NodePairOutcome, RepositoryError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+
+        // Attach to the owner who already exists. Deliberately keyed off an
+        // ACTIVE owner device rather than `identity.users`: a house whose only
+        // owner device has been revoked should not accept new satellites.
+        let owner_user_id: Option<String> = sqlx::query_scalar!(
+            r#"
+            SELECT user_id FROM identity.devices
+            WHERE device_class = $1 AND revoked_at IS NULL
+            ORDER BY created_at, id
+            LIMIT 1
+            "#,
+            DeviceClass::OwnerUi.as_str(),
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?;
+        let Some(owner_user_id) = owner_user_id else {
+            tx.rollback().await.map_err(storage)?;
+            return Ok(NodePairOutcome::NoOwner);
+        };
+
+        let insert = sqlx::query!(
+            r#"
+            INSERT INTO identity.devices
+                (id, user_id, name, token_hash, scopes, device_class, public_key, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT DO NOTHING
+            "#,
+            device.id.as_str(),
+            owner_user_id,
+            device.name,
+            device.token_hash,
+            &device.effective_scopes(),
+            device.class.as_str(),
+            device.public_key,
+            OffsetDateTime::from(device.created_at),
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+        if insert.rows_affected() == 0 {
+            // The partial unique index on `public_key` is the only conflict
+            // reachable here (ids are freshly minted ULIDs).
+            tx.rollback().await.map_err(storage)?;
+            return Ok(NodePairOutcome::KeyAlreadyPaired);
+        }
+
+        crate::audit::append(&mut tx, audit)
+            .await
+            .map_err(|e| RepositoryError::Storage(e.to_string()))?;
+        tx.commit().await.map_err(storage)?;
+        Ok(NodePairOutcome::Paired)
     }
 
     async fn is_device_active(&self, device_id: &DeviceId) -> Result<bool, RepositoryError> {
@@ -131,7 +195,7 @@ impl IdentityStore for PgIdentityStore {
     async fn list_devices(&self) -> Result<Vec<Device>, RepositoryError> {
         let rows = sqlx::query!(
             r#"
-            SELECT id, user_id, name, token_hash, device_class, created_at,
+            SELECT id, user_id, name, token_hash, device_class, public_key, created_at,
                    last_seen_at, revoked_at, revoked_reason
             FROM identity.devices
             ORDER BY created_at, id
@@ -148,6 +212,7 @@ impl IdentityStore for PgIdentityStore {
                     user_id: parse_id(&r.user_id, "user id")?,
                     name: r.name,
                     token_hash: r.token_hash,
+                    public_key: r.public_key,
                     class: parse_class(&r.device_class)?,
                     created_at: r.created_at.into(),
                     last_seen_at: r.last_seen_at.map(Into::into),

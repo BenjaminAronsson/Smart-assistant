@@ -139,6 +139,10 @@ pub struct Wiring {
     pub deepdive: Option<crate::deepdive::DeepDiveApi>,
     pub memories: Option<crate::memories::MemoryApi>,
     pub web_assets: Option<std::path::PathBuf>,
+    /// The node-pairing window + challenge map (F7.2). Defaulted so a test
+    /// that does not pair nodes needs no ceremony; `main` passes the same
+    /// instance the daemon lives with.
+    pub pairing: crate::pairing::PairingState,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -163,6 +167,7 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
         deepdive,
         memories,
         web_assets,
+        pairing,
     } = wiring;
     // Health and pair are unauthenticated by design but loopback-only:
     // config validation rejects non-loopback binds until M7 (docs/06 §7).
@@ -172,6 +177,25 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
             "/api/v1/auth/pair",
             axum::routing::post(crate::auth::pair).with_state(auth.clone()),
         );
+        // Node pairing (F7.2, ADR-031). The two node-facing steps are
+        // UNAUTHENTICATED by necessity — a node has no token until it has
+        // paired — and are bounded instead by the owner-opened window, its
+        // lockout, the in-flight challenge cap, and a signature over a
+        // single-use nonce. The window opener itself is owner-only and lives
+        // on the protected router below.
+        let pairing_api = crate::pairing::PairingApi {
+            auth: auth.clone(),
+            pairing: pairing.clone(),
+        };
+        router = router
+            .route(
+                "/api/v1/devices/pair",
+                axum::routing::post(crate::pairing::start).with_state(pairing_api.clone()),
+            )
+            .route(
+                "/api/v1/devices/pair/complete",
+                axum::routing::post(crate::pairing::complete).with_state(pairing_api.clone()),
+            );
         // One protected sub-router merges every authenticated surface (each
         // keeps its own typed state); the bearer middleware wraps them once.
         //
@@ -184,6 +208,14 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
         // Device management (F7.1, FR-19). Authenticated like everything else
         // here, and additionally `ui`-scoped inside the handlers — a paired
         // room satellite must not be able to enumerate or revoke its siblings.
+        protected = protected.merge(
+            Router::new()
+                .route(
+                    "/api/v1/devices/pairing-window",
+                    axum::routing::post(crate::pairing::open_window),
+                )
+                .with_state(pairing_api),
+        );
         protected = protected.merge(
             Router::new()
                 .route("/api/v1/devices", get(crate::devices::list))

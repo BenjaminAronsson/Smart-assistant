@@ -831,3 +831,62 @@ generated from two unrelated requests would be same-origin *with each other*.
 - Revisit trigger: if a generated app ever legitimately needs persistent storage, a real
   network origin, or to be opened as a top-level window, this decision is void — those are
   a different product, and each would need its own origin story.
+
+---
+
+## ADR-031 — Node identity: Ed25519 challenge-response pairing with key-bound tokens over pinned TLS, not mTLS {#adr-031}
+
+**Status.** **Proposed (M7 F7.2, 12 August 2026).** Owner chose this shape when approving the
+M7 feature list (scope decision 2, `docs/milestones/M7-features.md`); this ADR records the
+reasoning and is accepted at the M7 gate. Builds on F7.1's `DeviceClass` (authority comes from
+the class, not from anything the device says about itself).
+
+**Context.** docs/06 §5 names the control for remote-node impersonation as "challenge-response
+pairing, per-device keys, **mTLS or signed tokens**, revocation, capability scopes", and
+docs/05 §6.5 calls the LAN/remote upgrade "the M7 upgrade path". The "or" is the decision.
+
+What exists: a one-time 6-digit pairing code consumed over loopback, an opaque 256-bit bearer
+token stored sha256-hashed, and (F7.1) per-class scopes plus immediate revocation that also
+closes the device's live socket. What is missing is any way for a *second* machine to prove it
+is the device that paired, over a network where the bearer token could be observed or replayed.
+
+**Decision.**
+1. **Every node has an Ed25519 keypair it generates locally.** The private key never leaves the
+   node (keyring where available, else a 0600 file); the public key is what pairing registers.
+2. **Pairing is challenge-response.** `POST /api/v1/devices/pair` takes `{publicKey, deviceName,
+   requestedClass, pairingCode}` against an owner-opened, TTL-bounded window; the server returns
+   a single-use challenge bound to that public key; the node signs it; the server verifies
+   against the presented key before persisting anything. A node **requests** a class and the
+   server **assigns** one — a request for `owner-ui` is refused, never upgraded.
+3. **The issued credential stays an opaque bearer token, bound to the key.** The token's row
+   records the public key that earned it, so revoking a key revokes the token and re-pairing is
+   the only way back.
+4. **Transport is server TLS with a fingerprint the node pins at pairing time** (F7.3). The
+   fingerprint travels in the pairing response, over the loopback/owner-mediated channel where
+   the pairing code was already trusted, which is what makes the pinning meaningful.
+
+**Rejected: mTLS.** It is the stronger-sounding option and the wrong shape for a single-owner
+house. It needs a CA, per-device certificate issuance, renewal before expiry, and a revocation
+channel (CRL or short-lived certs re-issued by… a pairing flow) — an entire PKI lifecycle to
+authenticate what a key the node has already proven possession of authenticates directly. Its
+one real advantage over the chosen design, authenticating the *transport* rather than the
+*request*, is not worth a second credential lifecycle that can silently expire a kitchen screen.
+
+**Rejected: bearer token alone over TLS.** What ships today. It is fine on loopback and thin on
+a LAN: a token read once from a backup, a log, or a compromised node is replayable forever by
+anything that has it, with no possession proof at reconnect.
+
+5. **The pairing window is opened over the owner's authenticated API**
+   (`POST /api/v1/devices/pairing-window`, `ui` scope), not by `jarvisd pair --new` as
+   docs/05 §6.1 sketched. A separate CLI process cannot mutate the running daemon's
+   in-flight state, so a `pair --new` subcommand would have to persist the window in the
+   database — giving an offline secret a durable home for no gain. The owner is already
+   authenticated at a keyboard when they pair a satellite; that is the ceremony.
+
+**Consequences.**
+- Revocation stays the single control point (F7.1) — key + token die together.
+- A node that loses its key cannot recover; it re-pairs. Correct: an unrecoverable key is
+  indistinguishable from a stolen one.
+- Signed-request authentication per call is **not** adopted now; the token remains the
+  per-request credential. If a future node crosses a network the owner does not control, that
+  is the increment to make, and this ADR does not foreclose it.
