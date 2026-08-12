@@ -655,4 +655,52 @@ mod scope_coverage_tests {
             "a room satellite must present and capture, never act: {reachable:?}"
         );
     }
+
+    /// The same claim, made at the place that actually enforces it. The test
+    /// above reasons about scope sets; this one calls `policy::evaluate` with a
+    /// `PolicyContext` built exactly the way the gateway builds one from a
+    /// paired device (`Scope::new(..).ok()` over its effective scopes — see
+    /// `jarvisd::appbridge::context_of`). Restating the enforcer's rule in a
+    /// test is how a test and its enforcer drift apart while both look green.
+    ///
+    /// The HTTP half of the same property — that a node cannot reach the
+    /// owner's routes at all — lives in `tests/sessions_api.rs` and
+    /// `tests/devices_api.rs`, against the real router.
+    #[test]
+    fn a_node_is_denied_at_the_policy_engine_not_merely_by_arithmetic() {
+        use jarvis_application::policy::{DenyReason, PolicyContext, PolicyDecision, evaluate};
+        use jarvis_domain::policy::Scope;
+        use jarvis_domain::tools::{CanonicalValue, ToolProposal};
+
+        let mut registry = build_registry(Some(std::env::temp_dir())).expect("builds");
+        register_web_tools(&mut registry, "unused-key".to_owned(), 1024).expect("registers");
+
+        let node = DeviceClass::RoomNode;
+        let ctx = PolicyContext {
+            user_id: crate::auth::fresh_id(),
+            device_id: crate::auth::fresh_id(),
+            granted_scopes: node
+                .scopes()
+                .iter()
+                .filter_map(|s| Scope::new(s.as_str()).ok())
+                .collect(),
+        };
+        assert!(
+            ctx.granted_scopes.is_empty(),
+            "a node's class scopes are not tool scopes, so its policy context is empty"
+        );
+
+        for id in registry.tool_ids() {
+            let proposal = ToolProposal {
+                tool_id: id.clone(),
+                arguments: CanonicalValue::obj([]),
+            };
+            match evaluate(&proposal, &registry, &ctx) {
+                PolicyDecision::Reject {
+                    reason: DenyReason::MissingScope(_) | DenyReason::Prohibited,
+                } => {}
+                other => panic!("a room node got {other:?} for {id} — it must be denied"),
+            }
+        }
+    }
 }

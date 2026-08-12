@@ -171,6 +171,13 @@ newtyped IDs, and explicit cancellation throughout.
 - Tool schemas are versioned; historical runs preserve the schema version they used.
 - Breaking change ⇒ new `v` and a compatibility shim window; the owner controls all
   clients (A-07), so windows can be short but never zero.
+- **Adding a required field to a *response* DTO is additive; adding one to a *request*
+  DTO is breaking.** Old readers ignore unknown fields, and the reverse skew (new client
+  against old server) cannot occur in this topology — server and clients live in one repo
+  and deploy together (A-07). A request DTO has no such asymmetry: an older client that
+  cannot send the field is refused. Precedent: `PairResponse.deviceClass` (F7.1), made
+  required rather than defaulted because a default would be a silently wrong
+  *authority-relevant* value. A future change may cite this only for responses.
 
 ## 6. Authentication model (v1)
 

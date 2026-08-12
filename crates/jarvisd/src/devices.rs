@@ -175,11 +175,24 @@ pub async fn revoke(
         RevocationOutcome::Revoked => {
             // Close whatever this device has open. Durability lives in the
             // committed `revoked_at`; this is what makes it *immediate*.
-            let told = auth.revocations().publish(&target);
-            tracing::info!(target = %target, sockets_closed = told, "device revoked");
+            let notified = auth.revocations().publish(&target);
+            // `send` reports total live subscribers, not sockets closed — an
+            // operator reading "closed=3" after revoking one tablet would
+            // draw exactly the wrong conclusion.
+            tracing::info!(target = %target, subscribers_notified = notified, "device revoked");
         }
         RevocationOutcome::AlreadyRevoked => {
-            tracing::info!(target = %target, "device already revoked — idempotent");
+            // Publish anyway. Retrying a revoke is the operator's natural move
+            // when a device still looks connected, and it must not be a no-op:
+            // the first publish can have missed a socket that was mid-upgrade,
+            // and `revoked_at` may have been set out of band. The bus is a
+            // notification — re-announcing is idempotent and free.
+            let notified = auth.revocations().publish(&target);
+            tracing::info!(
+                target = %target,
+                subscribers_notified = notified,
+                "device already revoked — re-announced"
+            );
         }
         RevocationOutcome::NotFound => {
             return Err(problem(
@@ -190,6 +203,18 @@ pub async fn revoke(
             ));
         }
         RevocationOutcome::LastOwnerDevice => {
+            auth.record_refusal(AuditEvent {
+                occurred_at: now,
+                actor: format!("device:{}", caller.device_id),
+                event_type: "device.revoke_denied".into(),
+                target: format!("device:{target}"),
+                correlation_id: None,
+                payload_json: serde_json::json!({
+                    "reason": "last owner device",
+                })
+                .to_string(),
+            })
+            .await;
             return Err(problem(
                 StatusCode::CONFLICT,
                 ErrorCode::IdentityLastOwnerDevice,
@@ -244,14 +269,81 @@ fn ui_scope_required(caller: &DeviceContext) -> Response {
     tracing::warn!(
         device_id = %caller.device_id,
         class = %caller.class,
-        "device management refused: device lacks the `ui` scope"
+        "owner-only surface refused: device lacks the `ui` scope"
     );
     problem(
         StatusCode::FORBIDDEN,
         ErrorCode::AuthScopeMissing,
-        "device management requires the `ui` scope",
+        "this surface requires the `ui` scope",
         None,
     )
+}
+
+/// Deny-by-default class gate for every authenticated route **except**
+/// `/ws/v1` (F7.1, security-auditor BLOCKING-2).
+///
+/// Before this, the class only gated the two device routes, and everything
+/// else in the protected router was authenticated-only. That is fine while
+/// `owner-ui` is the only class that can exist — and becomes a real hole the
+/// moment F7.2 mints a node, because the protected router also carries
+/// `POST /runs/{id}/approvals/{approval_id}`: a kitchen screen could supply
+/// the human decision that mints an R2/R3 `ExecutionGrant`, and the grant
+/// would look perfectly bound while the gate had been passed by a device
+/// holding no tool scopes at all. Media, timers, lists, memories, artifacts
+/// and message submission sit on the same router.
+///
+/// So the default is `ui`, i.e. the owner. Node-reachable surfaces are
+/// carved out **explicitly**, one at a time, as the features that need them
+/// land: `/ws/v1` today (a node must be able to connect at all; what it may
+/// see on that socket is F7.4's per-connection filter), display placement in
+/// F7.5, voice in F7.6.
+///
+/// Fails closed twice over: no `DeviceContext` extension — which would mean
+/// this layer was mounted outside `require_device` — is a 401, not a pass.
+pub async fn require_owner_ui(
+    State(auth): State<AuthState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let Some(caller) = request.extensions().get::<DeviceContext>().cloned() else {
+        tracing::error!(
+            "owner-only surface reached with no device context — check middleware order"
+        );
+        return problem(
+            StatusCode::UNAUTHORIZED,
+            ErrorCode::AuthInvalidToken,
+            "missing, invalid, or revoked device token",
+            None,
+        );
+    };
+    if !holds_ui(&caller) {
+        // A node probing an owner surface is exactly the docs/06 §5
+        // "remote node impersonation" signal worth keeping durably.
+        auth.record_refusal(refusal_audit(
+            &caller,
+            "device.management_denied",
+            request.uri().path(),
+        ))
+        .await;
+        return ui_scope_required(&caller);
+    }
+    next.run(request).await
+}
+
+/// An append-only record of an authority operation that was refused (F7.1).
+fn refusal_audit(caller: &DeviceContext, event_type: &str, target: &str) -> AuditEvent {
+    AuditEvent {
+        occurred_at: SystemTime::now(),
+        actor: format!("device:{}", caller.device_id),
+        event_type: event_type.to_owned(),
+        target: target.to_owned(),
+        correlation_id: None,
+        payload_json: serde_json::json!({
+            "deviceClass": caller.class.as_str(),
+            "reason": "device lacks the `ui` scope",
+        })
+        .to_string(),
+    }
 }
 
 fn to_dto(device: &Device) -> DeviceDto {

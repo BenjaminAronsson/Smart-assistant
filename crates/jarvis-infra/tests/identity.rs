@@ -265,3 +265,131 @@ async fn a_reason_without_a_revocation_is_rejected_by_the_schema(pool: PgPool) {
         .await;
     assert!(result.is_err(), "check constraint holds");
 }
+
+/// **The guard actually takes the lock it depends on (security-auditor S4).**
+///
+/// The safety of the last-owner rule rests on reading the active-owner set
+/// `FOR UPDATE`, so two revocations serialise instead of both observing "there
+/// is another owner" and both committing. Racing two calls with `tokio::join!`
+/// does NOT prove that — it passes with the locking removed, because the
+/// dangerous interleaving is not schedulable on demand.
+///
+/// So prove the mechanism directly: hold the owner rows locked in this test's
+/// own transaction, then revoke a **node** — whose own row this test has not
+/// touched. If the port reads the owner set without locking it, that call
+/// sails through; if it locks, it blocks until we roll back. Mutation-checked:
+/// deleting `FOR UPDATE` from the query fails this test.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn the_last_owner_guard_locks_the_owner_set_before_deciding(pool: PgPool) {
+    let store = seed(&pool).await;
+    let node: DeviceId = NODE.parse().expect("ulid");
+
+    let mut holder = pool.begin().await.expect("begin");
+    sqlx::query(
+        "SELECT id FROM identity.devices \
+         WHERE device_class = 'owner-ui' AND revoked_at IS NULL ORDER BY id FOR UPDATE",
+    )
+    .fetch_all(&mut *holder)
+    .await
+    .expect("hold the owner set");
+
+    let blocked = tokio::time::timeout(
+        Duration::from_millis(750),
+        store.revoke_device(&node, None, ts(40), &audit("device.revoked", &node)),
+    )
+    .await;
+    assert!(
+        blocked.is_err(),
+        "revoke_device decided without waiting for the owner-set lock"
+    );
+
+    holder.rollback().await.expect("release");
+
+    // And once released, the same call succeeds — the block was the lock, not
+    // a broken query.
+    assert_eq!(
+        store
+            .revoke_device(&node, None, ts(41), &audit("device.revoked", &node))
+            .await
+            .expect("query"),
+        RevocationOutcome::Revoked
+    );
+}
+
+/// Two revocations of the last two owner devices, issued together: exactly one
+/// must win and an owner device must still be standing. Weaker than the lock
+/// probe above — the dangerous interleaving is not schedulable on demand, so
+/// this passes even with the locking removed — but it exercises the real pair
+/// of calls end to end.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn two_concurrent_revocations_cannot_orphan_the_owner(pool: PgPool) {
+    let store = std::sync::Arc::new(PgIdentityStore::new(pool.clone()));
+    let first = device(
+        OWNER,
+        OWNER_USER,
+        "laptop",
+        DeviceClass::OwnerUi,
+        "hash-owner",
+    );
+    store
+        .pair_device("owner", &first, &audit("device.paired", &first.id))
+        .await
+        .expect("pairs");
+    const SECOND: &str = "01ARZ3NDEKTSV4RRFFQ69G5FA4";
+    sqlx::query(
+        "INSERT INTO identity.devices (id, user_id, name, token_hash, scopes, device_class, created_at) \
+         VALUES ($1, $2, 'desktop', 'hash-owner-2', ARRAY['ui'], 'owner-ui', now())",
+    )
+    .bind(SECOND)
+    .bind(OWNER_USER)
+    .execute(&pool)
+    .await
+    .expect("seed second owner");
+
+    let a: DeviceId = OWNER.parse().expect("ulid");
+    let b: DeviceId = SECOND.parse().expect("ulid");
+    let (left, right) = tokio::join!(
+        {
+            let store = store.clone();
+            let a = a.clone();
+            async move {
+                store
+                    .revoke_device(&a, Some("race a"), ts(30), &audit("device.revoked", &a))
+                    .await
+            }
+        },
+        {
+            let store = store.clone();
+            let b = b.clone();
+            async move {
+                store
+                    .revoke_device(&b, Some("race b"), ts(31), &audit("device.revoked", &b))
+                    .await
+            }
+        }
+    );
+
+    let outcomes = [left.expect("query a"), right.expect("query b")];
+    let revoked = outcomes
+        .iter()
+        .filter(|o| **o == RevocationOutcome::Revoked)
+        .count();
+    let refused = outcomes
+        .iter()
+        .filter(|o| **o == RevocationOutcome::LastOwnerDevice)
+        .count();
+    assert_eq!(
+        (revoked, refused),
+        (1, 1),
+        "exactly one revocation must win: {outcomes:?}"
+    );
+
+    // The invariant that actually matters: an owner device is still standing.
+    let survivors: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM identity.devices WHERE device_class = 'owner-ui' AND revoked_at IS NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count");
+    assert_eq!(survivors, 1, "the owner must never be locked out");
+}

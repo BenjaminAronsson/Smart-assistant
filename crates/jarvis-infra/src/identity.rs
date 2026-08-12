@@ -115,6 +115,19 @@ impl IdentityStore for PgIdentityStore {
         .transpose()
     }
 
+    async fn is_device_active(&self, device_id: &DeviceId) -> Result<bool, RepositoryError> {
+        let active: Option<bool> = sqlx::query_scalar!(
+            "SELECT revoked_at IS NULL FROM identity.devices WHERE id = $1",
+            device_id.as_str(),
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?
+        .flatten();
+        // Unknown device ⇒ not active (fail closed).
+        Ok(active.unwrap_or(false))
+    }
+
     async fn list_devices(&self) -> Result<Vec<Device>, RepositoryError> {
         let rows = sqlx::query!(
             r#"
@@ -159,6 +172,14 @@ impl IdentityStore for PgIdentityStore {
         // instead of each observing the other as "still there" and both
         // committing. Locking only the target row would let the last two
         // owner devices be revoked simultaneously.
+        // A pathological lock wait must become a 503, not an axum handler
+        // parked forever behind another transaction (this port carries no
+        // CancellationToken).
+        sqlx::query("SET LOCAL lock_timeout = '5s'")
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+
         let active_owner_ids: Vec<String> = sqlx::query_scalar!(
             r#"
             SELECT id FROM identity.devices
@@ -184,21 +205,37 @@ impl IdentityStore for PgIdentityStore {
         .await
         .map_err(storage)?
         else {
+            // Release the `FOR UPDATE` locks now rather than whenever the
+            // connection is next serviced — every revocation in the process
+            // serialises on them.
+            tx.rollback().await.map_err(storage)?;
             return Ok(RevocationOutcome::NotFound);
         };
 
         if target.revoked_at.is_some() {
+            tx.rollback().await.map_err(storage)?;
             return Ok(RevocationOutcome::AlreadyRevoked);
         }
 
         // Fail closed on an unparseable class: a row we cannot classify is not
         // one we can reason about the lockout guard for.
-        if parse_class(&target.device_class)? == DeviceClass::OwnerUi
-            && active_owner_ids
+        let target_class = match parse_class(&target.device_class) {
+            Ok(class) => class,
+            Err(e) => {
+                tx.rollback().await.map_err(storage)?;
+                return Err(e);
+            }
+        };
+        if target_class == DeviceClass::OwnerUi {
+            let active_owners: Vec<DeviceId> = active_owner_ids
                 .iter()
-                .all(|id| id.as_str() == device_id.as_str())
-        {
-            return Ok(RevocationOutcome::LastOwnerDevice);
+                .map(|id| parse_id(id, "device id"))
+                .collect::<Result<_, _>>()?;
+            // One rule, one implementation — shared with the in-memory double.
+            if jarvis_domain::identity::revoking_would_orphan_the_owner(&active_owners, device_id) {
+                tx.rollback().await.map_err(storage)?;
+                return Ok(RevocationOutcome::LastOwnerDevice);
+            }
         }
 
         sqlx::query!(

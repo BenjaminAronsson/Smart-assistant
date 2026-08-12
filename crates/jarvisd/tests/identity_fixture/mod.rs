@@ -62,6 +62,14 @@ impl InMemoryIdentityStore {
         self
     }
 
+    /// Seed a device *after* construction. Distinct from [`Self::with_device`]
+    /// because bootstrap only opens a pairing window when the store is empty:
+    /// a test that needs both a paired owner and a node must pair first and
+    /// add the node second.
+    pub fn add_device(&self, device: Device) {
+        self.devices.lock().expect("not poisoned").push(device);
+    }
+
     pub fn devices(&self) -> Vec<Device> {
         self.devices.lock().expect("not poisoned").clone()
     }
@@ -125,9 +133,26 @@ impl IdentityStore for InMemoryIdentityStore {
             .cloned())
     }
 
+    async fn is_device_active(&self, device_id: &DeviceId) -> Result<bool, RepositoryError> {
+        self.guard()?;
+        Ok(self
+            .devices
+            .lock()
+            .expect("not poisoned")
+            .iter()
+            .any(|d| &d.id == device_id && d.is_active()))
+    }
+
     async fn list_devices(&self) -> Result<Vec<Device>, RepositoryError> {
         self.guard()?;
-        Ok(self.devices.lock().expect("not poisoned").clone())
+        let mut devices = self.devices.lock().expect("not poisoned").clone();
+        // Same order as `ORDER BY created_at, id` in Postgres. Insertion order
+        // would agree with it only by luck: `device()` stamps every fixture
+        // device with the same `created_at`, so the tiebreak is the ULID, whose
+        // low bits are random within a millisecond — the double and production
+        // would disagree *nondeterministically* (rust-reviewer, F7.1).
+        devices.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        Ok(devices)
     }
 
     async fn revoke_device(
@@ -145,12 +170,17 @@ impl IdentityStore for InMemoryIdentityStore {
         if !devices[index].is_active() {
             return Ok(RevocationOutcome::AlreadyRevoked);
         }
-        if devices[index].class == DeviceClass::OwnerUi
-            && !devices
+        if devices[index].class == DeviceClass::OwnerUi {
+            // The SAME predicate the Postgres store uses — the point of this
+            // double is that its behaviour cannot drift from production's.
+            let active_owners: Vec<_> = devices
                 .iter()
-                .any(|d| d.class == DeviceClass::OwnerUi && d.is_active() && &d.id != device_id)
-        {
-            return Ok(RevocationOutcome::LastOwnerDevice);
+                .filter(|d| d.class == DeviceClass::OwnerUi && d.is_active())
+                .map(|d| d.id.clone())
+                .collect();
+            if jarvis_domain::identity::revoking_would_orphan_the_owner(&active_owners, device_id) {
+                return Ok(RevocationOutcome::LastOwnerDevice);
+            }
         }
         devices[index].revoked_at = Some(revoked_at);
         devices[index].revoked_reason = reason.map(ToOwned::to_owned);

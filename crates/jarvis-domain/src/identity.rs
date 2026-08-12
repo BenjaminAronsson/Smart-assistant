@@ -226,6 +226,21 @@ impl Device {
     }
 }
 
+/// Would revoking `target` leave the owner with no active `owner-ui` device,
+/// and therefore no way to pair a replacement short of restarting `jarvisd`?
+///
+/// `active_owners` is every currently-active `owner-ui` device — the caller is
+/// responsible for reading that set atomically with the revocation (the
+/// Postgres store locks it `FOR UPDATE`).
+///
+/// This lives in the domain because it is one rule with two implementations —
+/// the Postgres store and the in-memory double — and two hand-written
+/// expressions of one invariant is the divergence surface the double exists to
+/// remove (rust-reviewer, F7.1).
+pub fn revoking_would_orphan_the_owner(active_owners: &[DeviceId], target: &DeviceId) -> bool {
+    active_owners.iter().all(|id| id == target)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,6 +347,30 @@ mod tests {
                 "`{bogus}` parsed as a device class"
             );
         }
+    }
+
+    #[test]
+    fn the_orphan_guard_answers_the_three_cases_that_matter() {
+        let a: DeviceId = "01ARZ3NDEKTSV4RRFFQ69G5FA1".parse().expect("ulid");
+        let b: DeviceId = "01ARZ3NDEKTSV4RRFFQ69G5FA2".parse().expect("ulid");
+
+        // The only owner device: refuse.
+        assert!(revoking_would_orphan_the_owner(
+            std::slice::from_ref(&a),
+            &a
+        ));
+        // One of two: allow.
+        assert!(!revoking_would_orphan_the_owner(
+            &[a.clone(), b.clone()],
+            &a
+        ));
+        // Revoking something that is not an owner device at all (so it is not
+        // in the set) never orphans anyone — but an EMPTY owner set must not
+        // read as "fine": there is nothing to protect and nothing to pair
+        // with, so the caller is expected to reach here only with the target
+        // included. Pinned so the vacuous-truth of `all()` is a decision, not
+        // an accident.
+        assert!(revoking_would_orphan_the_owner(&[], &a));
     }
 
     #[test]

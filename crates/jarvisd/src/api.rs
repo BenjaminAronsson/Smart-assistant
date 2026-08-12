@@ -174,7 +174,13 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
         );
         // One protected sub-router merges every authenticated surface (each
         // keeps its own typed state); the bearer middleware wraps them once.
+        //
+        // `protected` additionally requires the `ui` class scope — the owner's
+        // surface, deny-by-default (F7.1). `node_reachable` is the explicit
+        // carve-out: routes a paired satellite must reach, each added
+        // deliberately by the feature that needs it.
         let mut protected = Router::new();
+        let mut node_reachable = Router::new();
         // Device management (F7.1, FR-19). Authenticated like everything else
         // here, and additionally `ui`-scoped inside the handlers — a paired
         // room satellite must not be able to enumerate or revoke its siblings.
@@ -199,34 +205,37 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
             );
         }
         if let Some(RunWiring { runs, ws }) = runs {
-            protected = protected
-                .merge(
-                    Router::new()
-                        .route(
-                            "/api/v1/sessions/{id}/messages",
-                            axum::routing::post(crate::runs::submit_message),
-                        )
-                        .route(
-                            "/api/v1/sessions/{id}/timeline",
-                            get(crate::runs::get_timeline),
-                        )
-                        .route("/api/v1/runs/{id}", get(crate::runs::get_run))
-                        .route(
-                            "/api/v1/runs/{id}/cancel",
-                            axum::routing::post(crate::runs::cancel_run),
-                        )
-                        .route(
-                            "/api/v1/runs/{id}/approvals/{approval_id}",
-                            axum::routing::post(crate::runs::resolve_approval),
-                        )
-                        .route("/api/v1/providers", get(crate::runs::get_providers))
-                        .with_state(runs),
-                )
-                .merge(
-                    Router::new()
-                        .route("/ws/v1", get(crate::ws::ws_upgrade))
-                        .with_state(ws),
-                );
+            protected = protected.merge(
+                Router::new()
+                    .route(
+                        "/api/v1/sessions/{id}/messages",
+                        axum::routing::post(crate::runs::submit_message),
+                    )
+                    .route(
+                        "/api/v1/sessions/{id}/timeline",
+                        get(crate::runs::get_timeline),
+                    )
+                    .route("/api/v1/runs/{id}", get(crate::runs::get_run))
+                    .route(
+                        "/api/v1/runs/{id}/cancel",
+                        axum::routing::post(crate::runs::cancel_run),
+                    )
+                    .route(
+                        "/api/v1/runs/{id}/approvals/{approval_id}",
+                        axum::routing::post(crate::runs::resolve_approval),
+                    )
+                    .route("/api/v1/providers", get(crate::runs::get_providers))
+                    .with_state(runs),
+            );
+            // A node's whole purpose is this socket, so it is the one
+            // authenticated route not gated on `ui`. What a given class may
+            // *receive* on it is F7.4's per-connection filter; what it may
+            // *send* is already scope-checked per frame.
+            node_reachable = node_reachable.merge(
+                Router::new()
+                    .route("/ws/v1", get(crate::ws::ws_upgrade))
+                    .with_state(ws),
+            );
         }
         if let Some(api) = artifacts {
             protected = protected.merge(
@@ -362,7 +371,17 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
                     .with_state(api),
             );
         }
-        router = router.merge(protected.layer(axum::middleware::from_fn_with_state(
+        // Order matters and is load-bearing: `require_device` must be the
+        // OUTER layer, because the class gate reads the `DeviceContext` it
+        // inserts. Applying the `ui` gate to `protected` before merging the
+        // node-reachable routes is what keeps `/ws/v1` out of it.
+        let authenticated = protected
+            .layer(axum::middleware::from_fn_with_state(
+                auth.clone(),
+                crate::devices::require_owner_ui,
+            ))
+            .merge(node_reachable);
+        router = router.merge(authenticated.layer(axum::middleware::from_fn_with_state(
             auth.clone(),
             crate::auth::require_device,
         )));

@@ -267,6 +267,7 @@ async fn app_with_token(
         Some(deepdive.clone()),
     );
     let ws = WsState {
+        identity: None,
         revocations: Default::default(),
         hub: hub.clone(),
         events: Arc::new(EmptyEventReader),

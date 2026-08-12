@@ -73,8 +73,17 @@ impl SessionStore for FakeSessionStore {
 }
 
 async fn app_with_token() -> (Router, Arc<FakeSessionStore>, String) {
+    let (app, store, token, _) = app_with_tokens().await;
+    (app, store, token)
+}
+
+/// Same harness, plus a paired **room node** — so the class gate can be
+/// asserted on a surface that is genuinely mounted (F7.1). The device-surface
+/// test's matrix runs against a default `Wiring`, where most owner routes are
+/// simply absent; here `/api/v1/sessions` really exists.
+async fn app_with_tokens() -> (Router, Arc<FakeSessionStore>, String, String) {
     let identity = Arc::new(InMemoryIdentityStore::default());
-    let auth = AuthState::bootstrap(identity).await;
+    let auth = AuthState::bootstrap(identity.clone()).await;
     let code = auth.current_pairing_code().unwrap();
     let store = Arc::new(FakeSessionStore::default());
     let app = router_with(
@@ -100,7 +109,20 @@ async fn app_with_token() -> (Router, Arc<FakeSessionStore>, String) {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let token = body["deviceToken"].as_str().unwrap().to_owned();
-    (app, store, token)
+
+    // The node joins after the owner has paired — bootstrap only opens its
+    // window on an empty store, and F7.2's pairing route does not exist yet.
+    let node_token = "kitchen-node-token".to_owned();
+    let node_hash = {
+        use sha2::Digest as _;
+        hex::encode(sha2::Sha256::digest(node_token.as_bytes()))
+    };
+    identity.add_device(identity_fixture::device(
+        "kitchen screen",
+        jarvis_domain::identity::DeviceClass::RoomNode,
+        &node_hash,
+    ));
+    (app, store, token, node_token)
 }
 
 async fn request(app: &Router, request: Request<Body>) -> (StatusCode, serde_json::Value) {
@@ -250,4 +272,54 @@ async fn idempotency_key_reuse_with_different_payload_is_409() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["code"], "idempotency.conflict");
+}
+
+/// A paired room node is authenticated and still must not reach a mounted
+/// owner surface (F7.1 class gate, security-auditor BLOCKING-2). Asserted
+/// here rather than only in `devices_api.rs`, because this harness actually
+/// mounts `/api/v1/sessions` — a 403 here cannot be a 404 in disguise.
+#[tokio::test]
+async fn a_room_node_cannot_reach_the_session_surface() {
+    let (app, store, owner_token, node_token) = app_with_tokens().await;
+
+    let (status, body) = request(
+        &app,
+        Request::get("/api/v1/sessions")
+            .header(header::AUTHORIZATION, format!("Bearer {node_token}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "mounted, and refused by class"
+    );
+    assert_eq!(body["code"], "auth.scope_missing");
+
+    let (status, _) = request(
+        &app,
+        Request::post("/api/v1/sessions")
+            .header(header::AUTHORIZATION, format!("Bearer {node_token}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{}"))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        store.sessions.lock().unwrap().is_empty(),
+        "nothing was created"
+    );
+
+    // The owner reaches the same route.
+    let (status, _) = request(
+        &app,
+        Request::get("/api/v1/sessions")
+            .header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
 }

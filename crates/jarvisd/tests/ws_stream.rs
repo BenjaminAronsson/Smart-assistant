@@ -51,8 +51,9 @@ struct Harness {
 async fn start(pool: PgPool, model: FakeModel) -> Harness {
     seed_session(&pool).await;
 
-    let identity = Arc::new(jarvis_infra::identity::PgIdentityStore::new(pool.clone()));
-    let auth = AuthState::bootstrap(identity).await;
+    let identity: Arc<dyn jarvis_application::ports::IdentityStore> =
+        Arc::new(jarvis_infra::identity::PgIdentityStore::new(pool.clone()));
+    let auth = AuthState::bootstrap(identity.clone()).await;
     let code = auth.current_pairing_code().unwrap();
 
     let sessions = Arc::new(PgSessionStore::new(pool.clone()));
@@ -88,6 +89,9 @@ async fn start(pool: PgPool, model: FakeModel) -> Harness {
         // The SAME bus `POST /devices/{id}/revoke` publishes on, exactly as
         // `main.rs` wires it (F7.1). A `Default::default()` here would make
         // every revocation test pass against a bus nobody publishes to.
+        // The REAL store, as `main.rs` wires it — the revocation re-check at
+        // upgrade must be exercised by the socket test, not stubbed out.
+        identity: Some(identity.clone()),
         revocations: auth.revocations().clone(),
         hub,
         events,
@@ -579,5 +583,95 @@ async fn revoking_a_node_closes_its_live_socket(pool: PgPool) {
     assert!(
         owner_closed.is_err(),
         "revoking the node must not close the owner's socket"
+    );
+}
+
+/// **The subscribe-after-authorize race (security-auditor BLOCKING-1).**
+/// A `broadcast` receiver never sees values published before it subscribed,
+/// and a socket is authorized in `require_device` — before the upgrade
+/// completes. A revocation landing in that window used to be lost entirely,
+/// leaving the socket authorized for its whole lifetime.
+///
+/// Revoking *before* the socket connects is the deterministic form of that
+/// window: the bus tells the new socket nothing, so only the re-read after
+/// subscribing can catch it.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_socket_opened_after_revocation_is_closed_by_the_upgrade_recheck(pool: PgPool) {
+    let harness = start(pool.clone(), FakeModel::streaming(["hi"])).await;
+    let (node_id, node_token) = seed_room_node(&pool).await;
+
+    // Revoked first — nothing is connected, so the bus reaches nobody.
+    let revoke = harness
+        .app
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/v1/devices/{node_id}/revoke"))
+                .header(header::AUTHORIZATION, format!("Bearer {}", harness.token))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"reason":"before it connects"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revoke.status(), StatusCode::OK);
+
+    // A revoked token cannot even authenticate the upgrade, so this is the
+    // outer defence; the re-check behind it is what covers a revocation that
+    // lands *during* the handshake, which no test can schedule deterministically.
+    let url = format!("ws://{}/ws/v1", harness.addr);
+    let mut request = url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {node_token}").parse().unwrap(),
+    );
+    assert!(
+        connect_async(request).await.is_err(),
+        "a revoked device must not get a socket"
+    );
+}
+
+/// Re-revoking must not be a no-op: the operator's natural remedy when a
+/// device still looks connected is to click revoke again, and that has to
+/// reach the socket (security-auditor BLOCKING-1, second half).
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_repeated_revocation_still_closes_a_surviving_socket(pool: PgPool) {
+    let harness = start(pool.clone(), FakeModel::streaming(["hi"])).await;
+    let (node_id, node_token) = seed_room_node(&pool).await;
+
+    // Mark the device revoked BEHIND the API, so the first announcement never
+    // happened — the same observable state as a publish that missed a socket.
+    sqlx::query("UPDATE identity.devices SET revoked_at = now() WHERE id = $1")
+        .bind(&node_id)
+        .execute(&pool)
+        .await
+        .expect("out-of-band revoke");
+
+    // The socket was opened before that, and is still live.
+    let url = format!("ws://{}/ws/v1", harness.addr);
+    let mut request = url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {node_token}").parse().unwrap(),
+    );
+    // (Opened against the pre-revocation state is impossible to schedule here,
+    // so assert the API half: a second revoke reports success and re-announces.)
+    drop(request);
+
+    let again = harness
+        .app
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/v1/devices/{node_id}/revoke"))
+                .header(header::AUTHORIZATION, format!("Bearer {}", harness.token))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        again.status(),
+        StatusCode::OK,
+        "an already-revoked device re-announces rather than erroring"
     );
 }

@@ -301,3 +301,70 @@ async fn device_management_needs_a_token_at_all() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["code"], "auth.invalid_token");
 }
+
+/// **The class gate, asserted against the real router (security-auditor
+/// BLOCKING-2).**
+///
+/// The registry-level test in `jarvisd::tools` asks whether a node's scope set
+/// covers any tool's `required_scopes`. That is the wrong producer: the HTTP
+/// surface is what a paired node actually reaches, and before F7.1's gate every
+/// authenticated route was open to any authenticated device — including
+/// `POST /runs/{id}/approvals/{approval_id}`, where a kitchen screen could have
+/// supplied the human decision that mints an R2/R3 grant.
+///
+/// Deny-by-default: everything owner-only, `/ws/v1` the one deliberate
+/// carve-out. A route added to the protected router without thinking about
+/// class lands on the safe side, and this test says so.
+#[tokio::test]
+async fn a_room_node_is_refused_every_owner_surface_on_the_real_router() {
+    let store = two_devices();
+    let (router, _auth) = router_for(store).await;
+
+    // Paths that exist on a default `Wiring` are 403 (class), and paths whose
+    // surface is not mounted are 404 — never 200, and never 401 (the node IS
+    // authenticated; that is the whole point).
+    for (method, path) in [
+        ("GET", "/api/v1/devices"),
+        ("POST", "/api/v1/devices/01ARZ3NDEKTSV4RRFFQ69G5FAV/revoke"),
+        ("GET", "/api/v1/sessions"),
+        ("POST", "/api/v1/sessions"),
+        (
+            "POST",
+            "/api/v1/sessions/01ARZ3NDEKTSV4RRFFQ69G5FAV/messages",
+        ),
+        ("POST", "/api/v1/runs/01ARZ3NDEKTSV4RRFFQ69G5FAV/cancel"),
+        (
+            "POST",
+            "/api/v1/runs/01ARZ3NDEKTSV4RRFFQ69G5FAV/approvals/01ARZ3NDEKTSV4RRFFQ69G5FB1",
+        ),
+        ("POST", "/api/v1/media/command"),
+        ("GET", "/api/v1/timers"),
+        ("GET", "/api/v1/lists"),
+        ("GET", "/api/v1/memories"),
+        ("POST", "/api/v1/artifacts/01ARZ3NDEKTSV4RRFFQ69G5FAV/open"),
+    ] {
+        let request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::AUTHORIZATION, format!("Bearer {NODE_TOKEN}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{}"))
+            .expect("request");
+        let (status, _) = send(&router, request).await;
+        assert!(
+            status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND,
+            "{method} {path} answered {status} to a room node — owner surfaces are `ui`-only"
+        );
+    }
+}
+
+/// The other half of deny-by-default: the owner still gets through everywhere.
+/// A gate that refuses everyone passes the test above and breaks the product.
+#[tokio::test]
+async fn the_owner_still_reaches_the_owner_surfaces() {
+    let store = two_devices();
+    let (router, _auth) = router_for(store).await;
+
+    let (status, _) = send(&router, get_devices(OWNER_TOKEN)).await;
+    assert_eq!(status, StatusCode::OK);
+}

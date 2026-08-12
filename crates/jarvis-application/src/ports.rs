@@ -211,6 +211,15 @@ pub trait IdentityStore: Send + Sync {
     /// Every paired device, revoked ones included — the owner's device list
     /// (docs/05 §6.4) has to show what was revoked, not silently forget it.
     async fn list_devices(&self) -> Result<Vec<jarvis_domain::identity::Device>, RepositoryError>;
+    /// Is this device still active? The WebSocket upgrade re-asks after
+    /// subscribing to the revocation bus, because a socket authorizes once and
+    /// then holds that authority for its lifetime: without this read, a
+    /// revocation landing between authorization and subscription is lost
+    /// entirely. Unknown device ⇒ `false` (fail closed).
+    async fn is_device_active(
+        &self,
+        device_id: &jarvis_domain::ids::DeviceId,
+    ) -> Result<bool, RepositoryError>;
     /// Revoke one device, writing `audit` in the same transaction
     /// (invariant 6). Idempotent: revoking an already-revoked device reports
     /// [`RevocationOutcome::AlreadyRevoked`] and writes no second audit row.

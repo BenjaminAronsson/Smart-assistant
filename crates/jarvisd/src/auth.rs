@@ -42,6 +42,11 @@ pub(crate) const BOOTSTRAP_DEVICE_CLASS: DeviceClass = DeviceClass::OwnerUi;
 /// not get 10^6 attempts (docs/06 §5 adversarial thinking).
 const MAX_FAILED_PAIR_ATTEMPTS: u32 = 5;
 
+/// Longest device name accepted at pairing. Owner-authored, stored, rendered
+/// in the device list, and preserved in an audit row — so it is bounded, like
+/// the revocation reason it sits beside (F7.1).
+const MAX_DEVICE_NAME_CHARS: usize = 80;
+
 #[derive(Clone)]
 pub struct AuthState {
     identity: Arc<dyn IdentityStore>,
@@ -51,6 +56,12 @@ pub struct AuthState {
     failed_attempts: Arc<RwLock<u32>>,
     /// Announces revocations to live sockets (F7.1). Shared with `WsState`.
     revocations: crate::devices::RevocationBus,
+    /// Where refused authority operations are recorded (F7.1). A rejection is
+    /// itself a durable security event — the in-tree precedent is
+    /// `jarvis_infra::grants`, which writes one in the same transaction as the
+    /// refusal. `None` in tests that mount no audit sink; the refusal is then
+    /// logged only, and the route still refuses.
+    audit: Option<Arc<dyn jarvis_application::ports::AuditLog>>,
 }
 
 impl AuthState {
@@ -79,6 +90,31 @@ impl AuthState {
             pairing_code: Arc::new(RwLock::new(code)),
             failed_attempts: Arc::new(RwLock::new(0)),
             revocations: crate::devices::RevocationBus::new(),
+            audit: None,
+        }
+    }
+
+    /// Attach the durable sink for refused authority operations (F7.1).
+    pub fn with_audit(mut self, audit: Arc<dyn jarvis_application::ports::AuditLog>) -> Self {
+        self.audit = Some(audit);
+        self
+    }
+
+    /// Record a refusal. Best-effort by construction: the refusal has already
+    /// happened and must not be undone by an audit failure, so a write error
+    /// is logged loudly rather than turned into a 500 that would tell a prober
+    /// its request was interesting.
+    pub(crate) async fn record_refusal(&self, audit: AuditEvent) {
+        let Some(sink) = &self.audit else {
+            tracing::warn!(
+                event_type = %audit.event_type,
+                target = %audit.target,
+                "refusal not durably audited — no audit sink wired"
+            );
+            return;
+        };
+        if let Err(e) = sink.record(&audit).await {
+            tracing::error!(error = %e, event_type = %audit.event_type, "refusal audit failed");
         }
     }
 
@@ -157,11 +193,31 @@ pub async fn pair(
     State(auth): State<AuthState>,
     Json(request): Json<PairRequest>,
 ) -> Result<Json<PairResponse>, Response> {
-    if request.device_name.trim().is_empty() {
+    let device_name = request.device_name.trim();
+    if device_name.is_empty() {
         return Err(problem(
             StatusCode::BAD_REQUEST,
             ErrorCode::ValidationFailed,
             "deviceName must not be empty",
+            None,
+        ));
+    }
+    // Bounded and control-character-free, like every other stored free text
+    // (F7.1: the device list is what renders this, and an audit row is what
+    // keeps it forever).
+    if device_name.chars().count() > MAX_DEVICE_NAME_CHARS {
+        return Err(problem(
+            StatusCode::BAD_REQUEST,
+            ErrorCode::ValidationFailed,
+            "deviceName is too long",
+            Some(format!("at most {MAX_DEVICE_NAME_CHARS} characters")),
+        ));
+    }
+    if device_name.chars().any(char::is_control) {
+        return Err(problem(
+            StatusCode::BAD_REQUEST,
+            ErrorCode::ValidationFailed,
+            "deviceName must not contain control characters",
             None,
         ));
     }
@@ -181,7 +237,7 @@ pub async fn pair(
     let device = Device {
         id: fresh_id(),
         user_id: fresh_id(),
-        name: request.device_name.clone(),
+        name: device_name.to_owned(),
         token_hash: sha256_hex(token.as_bytes()),
         class: BOOTSTRAP_DEVICE_CLASS,
         created_at: now,
