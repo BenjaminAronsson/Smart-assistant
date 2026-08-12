@@ -667,6 +667,8 @@ pub struct WsState {
     /// for a microphone it was never granted is exactly the docs/06 §5
     /// "remote node impersonation" signal worth keeping.
     pub audit: Option<Arc<dyn jarvis_application::ports::AuditLog>>,
+    /// What each node should be showing (F7.7), re-asserted when it connects.
+    pub surfaces: crate::devices::SurfaceState,
 }
 
 struct ActiveVoiceStream {
@@ -1264,6 +1266,14 @@ async fn handle_socket(
     // Presence lasts exactly as long as this task: the guard deregisters on
     // every exit path, including the ones that return early.
     let _presence = state.connected.mark_present(device.device_id.clone());
+    // Re-assert this node's surface (F7.7). Sent through the hub, so F7.5's
+    // targeting filter delivers it to exactly this device: what the node ends
+    // up showing is current state, not a replayed backlog of commands.
+    if let Some(placement) = state.surfaces.current(&device.device_id) {
+        state
+            .hub
+            .broadcast_display(&placement, Some(device.device_id.as_str()));
+    }
     let mut speech: Option<ActiveSpeech> = None;
     // Settled transcripts travel task → loop, because only the loop holds the
     // authenticated device identity a run must be attributed to.

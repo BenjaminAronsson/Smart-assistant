@@ -134,6 +134,9 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         aliases: config.display.node_aliases.clone(),
         identity: identity_for_display,
         connected: connected.clone(),
+        // The SAME instance the sockets re-assert from and revocation clears
+        // (F7.7); a second one here would remember placements nobody restores.
+        surfaces: auth.surfaces().clone(),
     });
 
     // Two shutdown tokens so the outbox dispatcher outlives the runs it must
@@ -445,6 +448,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     let public_health = config.bind_addr().ip().is_loopback();
     let ws_state = WsState {
         connected: connected.clone(),
+        surfaces: auth.surfaces().clone(),
         audit: Some(Arc::new(jarvis_infra::audit_sink::PgAuditLog::new(
             pool.clone(),
         ))),

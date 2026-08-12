@@ -49,6 +49,9 @@ pub struct NodeTargets {
     pub aliases: std::collections::BTreeMap<String, String>,
     pub identity: Arc<dyn jarvis_application::ports::IdentityStore>,
     pub connected: crate::devices::ConnectedDevices,
+    /// What each node should be showing, re-asserted when it reconnects
+    /// (F7.7).
+    pub surfaces: crate::devices::SurfaceState,
 }
 
 impl DisplayApi {
@@ -178,6 +181,15 @@ pub async fn open_artifact(
         .sink
         .dispatch(&placement, target_device_id.as_deref())
         .await;
+
+    // Remember what this node should be showing. Directives are transient by
+    // design, so without this a node that reconnects comes back blank and
+    // stays blank — the placement it missed is never coming again (F7.7).
+    if let (Some(nodes), Some(target)) = (&api.nodes, target_device_id.as_deref())
+        && let Ok(device_id) = target.parse::<jarvis_domain::ids::DeviceId>()
+    {
+        nodes.surfaces.remember(device_id, placement.clone());
+    }
 
     Ok(Json(OpenArtifactResponse {
         artifact_id: id,

@@ -262,7 +262,7 @@ not control.
       Refs: docs/05 §1 (binary frames), docs/02 §9, NFR-04. Read: `jarvis-adapters::wyoming`,
       the M5 voice path in `jarvisd::ws`; skill `ws-contracts`. Deps: F7.4, F7.5.
 
-- [ ] **F7.7 — Node reconnect and resync (NFR-13, docs/01 §6 "reconnect tests")**
+- [x] **F7.7 — Node reconnect and resync (NFR-13, docs/01 §6 "reconnect tests")** — DONE
       · *Sonnet*
       What a satellite does after a gap. Durable domain events replay from the node's
       cursor **through F7.4's filter**; ephemeral state (the current surface, the current
