@@ -285,3 +285,131 @@ async fn spawn_recording_daemon() -> (std::net::SocketAddr, Arc<Mutex<Vec<String
 
     (address, received)
 }
+
+/// Fires on any frame loud enough — i.e. exactly the detector that would loop
+/// forever on its own speaker if nothing suppressed it.
+struct FiresOnAnythingLoud;
+
+impl WakeWordDetector for FiresOnAnythingLoud {
+    fn accept(&mut self, frame: &[u8]) -> bool {
+        jarvis_agent::aec::frame_energy(frame) > 0.05
+    }
+    fn word(&self) -> &str {
+        "jarvis"
+    }
+}
+
+/// F8.4's headline claim: **playback does not self-trigger the wake word.**
+///
+/// The daemon speaks; the node's microphone hears its own speaker at full
+/// volume (simulated by feeding loud capture frames throughout); the detector
+/// is one that fires on any loud audio. Without suppression this is an infinite
+/// loop — the node wakes itself, streams, gets an answer, and wakes itself
+/// again. Nothing may be streamed.
+#[tokio::test]
+async fn the_nodes_own_playback_does_not_trigger_its_wake_word() {
+    let (address, received) = spawn_recording_daemon_that_speaks().await;
+    let speaker = FakeSpeaker::default();
+    let (frames_tx, frames_rx) = tokio::sync::mpsc::channel(64);
+    let gate = WakeGate::new(Box::new(FiresOnAnythingLoud) as Box<dyn WakeWordDetector>);
+    let mut audio = NodeAudio::new(NodeVoice::new(speaker), frames_rx).with_gate(gate);
+    // No echo cancellation: the degraded case, where suppression is the only
+    // defence there is.
+    audio.aec.set_enabled(false);
+
+    tokio::spawn(async move {
+        // Let playback genuinely start first. The claim under test is that the
+        // node does not trigger on *its own speaker*, which presupposes the
+        // speaker is running — audio captured before anything has played is
+        // not echo, and firing on it would be correct behaviour.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let loud: Vec<u8> = (0..320).flat_map(|_| 12000_i16.to_le_bytes()).collect();
+        for _ in 0..100 {
+            if frames_tx.send(loud.clone()).await.is_err() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+    });
+
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        let _ = tx.send(true);
+    });
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        client::run(&credentials(address), &NoCompositor, Some(audio), rx),
+    )
+    .await
+    .expect("must shut down cleanly")
+    .expect("run");
+
+    let messages = received.lock().expect("lock").clone();
+    assert!(
+        !messages.iter().any(|m| m.contains("voice.stream.start")),
+        "the node must not wake itself on its own playback; it sent {messages:?}"
+    );
+    assert!(
+        !messages.iter().any(|m| m.starts_with("binary:")),
+        "and it must stream nothing"
+    );
+}
+
+/// Records what the node sends, and speaks continuously so the node is in the
+/// "assistant is talking" state throughout.
+async fn spawn_recording_daemon_that_speaks() -> (std::net::SocketAddr, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("addr");
+    let received = Arc::new(Mutex::new(Vec::new()));
+
+    let seen = received.clone();
+    tokio::spawn(async move {
+        let Ok((socket, _)) = listener.accept().await else {
+            return;
+        };
+        let Ok(stream) = tokio_tungstenite::accept_async(socket).await else {
+            return;
+        };
+        use futures_util::StreamExt as _;
+        let (mut sink, mut source) = stream.split();
+
+        let start = serde_json::json!({
+            "v": 1, "seq": 1, "channel": "voice",
+            "type": "voice.speak.start",
+            "occurredAt": "2026-08-13T00:00:00Z",
+            "payload": {
+                "utteranceId": "u1", "sampleRateHz": 16000,
+                "sampleWidthBytes": 2, "channels": 1
+            }
+        });
+        let _ = sink.send(Message::Text(start.to_string().into())).await;
+
+        // Keep speaking for the duration of the test.
+        tokio::spawn(async move {
+            let loud: Vec<u8> = (0..320).flat_map(|_| 12000_i16.to_le_bytes()).collect();
+            for _ in 0..200 {
+                if sink
+                    .send(Message::Binary(loud.clone().into()))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+        });
+
+        while let Some(Ok(message)) = source.next().await {
+            let record = match message {
+                Message::Text(text) => text.to_string(),
+                Message::Binary(bytes) => format!("binary:{}", bytes.len()),
+                _ => continue,
+            };
+            seen.lock().expect("lock").push(record);
+        }
+    });
+
+    (address, received)
+}
