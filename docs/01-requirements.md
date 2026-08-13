@@ -36,7 +36,7 @@ Priorities: **M** must, **S** should, **C** could (v1 horizon).
 | FR-10 | M | Place/focus Jarvis windows on named monitors/workspaces through a desktop agent. |
 | FR-11 | M | Support a Claude Code CLI model profile as sole reasoning provider; additional profiles (API, local) pluggable behind the same port. |
 | FR-12 | M | Degrade gracefully to deterministic mode when Claude quota, auth, or network is unavailable: UI/history/R0 tools/rule-based home intents keep working; LLM-needing runs queue with a visible waiting state. |
-| FR-13 | S | Push-to-talk speech input with partial transcripts, streaming speech output, barge-in. |
+| FR-13 | M | **Hands-free voice (amended at the M8 decomposition, 13 August 2026).** Local wake-word invocation **on the device** — audio never leaves a satellite until the word fires — with VAD-gated capture, partial transcripts, streaming speech output, barge-in with on-device echo cancellation, and the answer returned to the room that spoke. **Push-to-talk is retained as an equal path**, not a fallback: NFR-11 requires non-voice alternatives, and PTT is the accessibility route. Raised from Should to Must — hands-free invocation is what makes this a voice assistant rather than a dictation control, and M5–M7 shipped every part of the pipeline except the way in. |
 | FR-14 | S | Read Home Assistant state and execute allowlisted services/intents. |
 | FR-15 | S | Run browser tasks in an isolated profile with screenshots and step audit. |
 | FR-16 | S | Store explicit user facts and task summaries as reviewable memory items. |
@@ -151,7 +151,7 @@ on low-power hosts (`09` §6). CPU is ~0% idle; the only sustained burst is STT
 | FR-04/05/07 | Tools, policy, approvals, audit (`06`) | M2 | R0/R2/adversarial tool tests |
 | FR-08 | Artifacts (`02` §6, `04` §4) | M3 | Version/create/reopen/restart E2E |
 | FR-09/10 | Angular shell + desktop agent (`02` §8) | M1/M3 | Multi-surface + Hyprland contract tests |
-| FR-13 | Voice pipeline (`02` §9) | M5 | Latency/barge-in golden trace |
+| FR-13 | Voice pipeline (`02` §9) | M5 (turn) / **M8a (hands-free)** | Latency/barge-in golden trace; wake-word false-accept budget; "nothing streams before detection" asserted at the socket; answer returns to the originating room |
 | FR-14 | Home Assistant adapter (`02` §10) | M5 | Allowlist/entity-resolution tests |
 | FR-15 | Browser worker (`02` §8) | M3 | Isolated profile + injection tests |
 | FR-16 | Memory (`02` §7) | M4 | Provenance/forget/retrieval tests |
