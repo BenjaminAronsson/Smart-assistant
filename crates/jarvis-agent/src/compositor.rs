@@ -356,3 +356,32 @@ impl std::fmt::Display for CompositorError {
 }
 
 impl std::error::Error for CompositorError {}
+
+/// The compositor a screenless node has: none.
+///
+/// A `voice-node` is a microphone and a speaker (docs/05 §6.3) — it has no
+/// display authority and nothing to place a window on. Rather than make the
+/// client loop generic over "maybe a compositor", the absence is itself a
+/// `Compositor` that refuses every request. Any display directive reaching a
+/// voice node is a routing bug on the daemon side, and this turns it into a
+/// logged refusal instead of a panic or, worse, a silent success.
+pub struct NoCompositor;
+
+impl Compositor for NoCompositor {
+    async fn list_monitors(&self) -> Result<Vec<Monitor>, CompositorError> {
+        // Not an error: this node genuinely has zero monitors.
+        Ok(Vec::new())
+    }
+
+    async fn place_window(&self, _app_id: &str, _monitor: &str) -> Result<(), CompositorError> {
+        Err(CompositorError::ipc(
+            "this node has no screen (voice-node): refusing to place a window".to_owned(),
+        ))
+    }
+
+    async fn open_media_window(&self, _url: &str) -> Result<(), CompositorError> {
+        Err(CompositorError::ipc(
+            "this node has no screen (voice-node): refusing to open a media window".to_owned(),
+        ))
+    }
+}
