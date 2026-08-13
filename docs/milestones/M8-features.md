@@ -16,7 +16,10 @@ later sub-gate's feature forward without an approved change to this list (docs/1
    surface and deployment story, which come forward into M8c.
 4. **Three sub-gates**, so a stumble in automations cannot hold the hands-free evidence
    hostage. Each gets its own `/gate` and its own report.
-5. **ElevenLabs deferred, not rejected.** A `SpeechSynthesizer` adapter is genuinely cheap
+5. **ElevenLabs — deferred at approval, then pulled into scope by owner direction the same
+   day as F8.11 (M8c).** The conditions below are unchanged and became F8.11's acceptance
+   criteria. Original text follows.
+   A `SpeechSynthesizer` adapter is genuinely cheap
    (one port, two methods, streaming already matches, barge-in already threaded) — but the
    decision waits until Piper has been heard in a real kitchen after F8.9. If it lands it
    needs an ADR (new external dependency + a new egress path), opt-in config as the consent
@@ -203,13 +206,37 @@ proves it end to end.
       config validation refuses the half-configured states people actually hit.
       Refs: docs/09, docs/08 §6 (STT size). Deps: F8.2.
 
+- [ ] **F8.11 — ElevenLabs speech synthesis, opt-in (ADR-033)** · *strong model*
+      **Added to the list by owner direction 2026-08-13**, superseding "deferred, not
+      rejected" in decision 5 above. The deferral's *conditions* stand in full and are this
+      feature's acceptance criteria — the owner pulled the timing forward, not the
+      safeguards. `SpeechSynthesizer` is a two-method port (`id`, `synthesize`) that only
+      `wyoming.rs` implements, so this is an added adapter behind the existing seam, not a
+      change to the voice path.
+      Must have, all of them: **ADR-033** (new external dependency + a new egress path);
+      **opt-in config** as the consent gate, off by default; a **local fallback** so alarms
+      and timers still ring with the network down or the quota spent; **sensitivity-aware
+      routing** so message bodies and calendar entries are never spoken by a third party
+      (`Sensitivity` + `DataEgress::External` already exist — this is routing, not new
+      machinery); and a **character budget** with the spend observable.
+      Excluded, and these are not owner-timing calls but invariant ones: **not** the wake
+      word (must be local and offline — F8.3), **not** STT (voice is the most sensitive
+      stream; the zero-LLM paths must work offline), and **never** their Agents platform,
+      which takes over the loop and breaks invariants 1–2.
+      Tests: opt-in off → Wyoming, no egress; sensitive text → local synthesis even when
+      opt-in is on; the adapter unreachable → the alarm still rings locally; budget
+      exhausted → falls back rather than failing the turn; the API key is a keyring
+      reference and never appears in a prompt, log, or CLI arg (invariant 5).
+      Refs: docs/06 §5, ADR-021's spirit, `wyoming.rs` as the shape to follow.
+      Deps: F8.2 (node playback), F8.9 (Piper heard first, so the comparison is real).
+
 - [ ] **F8.10 — Golden 12 + M8 acceptance: the house answers** · *Sonnet*
       The exit evidence, executable. **With no browser open:** the wake word fires in the
       kitchen, a question is answered aloud there, a timer set by voice rings in that room,
       an automation fires on its own, and a revoked node goes quiet mid-sentence. Plus the
       **first real NFR-04 measurement** (D-M5-3, open since M5) on the reference hardware,
       because until now nobody has measured the round trip end to end.
-      Refs: docs/07 §2, docs/01 §4.1. Deps: F8.1–F8.9.
+      Refs: docs/07 §2, docs/01 §4.1. Deps: F8.1–F8.9, F8.11.
 
 ---
 
