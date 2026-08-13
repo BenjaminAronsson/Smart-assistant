@@ -59,6 +59,10 @@ pub struct AuthState {
     /// What each node should be showing (F7.7). Shared with `WsState` and the
     /// placement route; revocation clears the revoked device's entry.
     surfaces: crate::devices::SurfaceState,
+    /// Cancels a revoked device's in-flight runs (M7 gate D-M7-1). `None` in
+    /// deployments wired without the run surface, where there is nothing to
+    /// cancel.
+    runs: Option<Arc<crate::runs::RunEngine>>,
     /// Where refused authority operations are recorded (F7.1). A rejection is
     /// itself a durable security event — the in-tree precedent is
     /// `jarvis_infra::grants`, which writes one in the same transaction as the
@@ -94,6 +98,7 @@ impl AuthState {
             failed_attempts: Arc::new(RwLock::new(0)),
             revocations: crate::devices::RevocationBus::new(),
             surfaces: crate::devices::SurfaceState::new(),
+            runs: None,
             audit: None,
         }
     }
@@ -135,6 +140,19 @@ impl AuthState {
     /// The per-node surface memory re-asserted on reconnect (F7.7).
     pub fn surfaces(&self) -> &crate::devices::SurfaceState {
         &self.surfaces
+    }
+
+    /// Let revocation reach a device's running work (M7 gate D-M7-1).
+    pub fn with_runs(mut self, runs: Arc<crate::runs::RunEngine>) -> Self {
+        self.runs = Some(runs);
+        self
+    }
+
+    /// Cancel everything the revoked device had in flight. Returns how many.
+    pub(crate) fn cancel_runs_for(&self, device: &jarvis_domain::ids::DeviceId) -> usize {
+        self.runs
+            .as_ref()
+            .map_or(0, |runs| runs.cancel_for_device(device))
     }
 
     pub fn current_pairing_code(&self) -> Option<String> {

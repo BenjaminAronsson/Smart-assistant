@@ -286,11 +286,22 @@ pub async fn revoke(
             // Close whatever this device has open. Durability lives in the
             // committed `revoked_at`; this is what makes it *immediate*.
             auth.surfaces().forget(&target);
+            // Stop what it had running. Closing the socket and refusing its
+            // grants stops anything *new*; a run already executing carries the
+            // `PolicyContext` it was spawned with, so without this it would
+            // keep acting on revoked authority until it finished on its own
+            // (M7 gate D-M7-1, docs/06 §7 "immediate revocation").
+            let cancelled = auth.cancel_runs_for(&target);
             let notified = auth.revocations().publish(&target);
             // `send` reports total live subscribers, not sockets closed — an
             // operator reading "closed=3" after revoking one tablet would
             // draw exactly the wrong conclusion.
-            tracing::info!(target = %target, subscribers_notified = notified, "device revoked");
+            tracing::info!(
+                target = %target,
+                subscribers_notified = notified,
+                runs_cancelled = cancelled,
+                "device revoked"
+            );
         }
         RevocationOutcome::AlreadyRevoked => {
             // Publish anyway. Retrying a revoke is the operator's natural move

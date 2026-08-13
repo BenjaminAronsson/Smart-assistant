@@ -50,7 +50,7 @@ use jarvis_contracts::messages::{MessageDto, SubmitMessageRequest};
 use jarvis_contracts::runs::{RunAck, RunBudgetDto, RunDto};
 use jarvis_contracts::timeline::{TimelineItem, TimelineResponse};
 use jarvis_domain::conversations::{Message, MessageRole};
-use jarvis_domain::ids::{ApprovalId, MessageId, RunId, SessionId, UserId};
+use jarvis_domain::ids::{ApprovalId, DeviceId, MessageId, RunId, SessionId, UserId};
 use jarvis_domain::location::Sensitivity;
 use jarvis_domain::run::{Run, RunBudget, RunState};
 use jarvis_infra::dispatcher::OutboxRecord;
@@ -112,7 +112,7 @@ pub struct RunEngine {
     /// the orchestrator on the text-only path with no ambient tool authority.
     tools: Option<ToolPlane>,
     /// Active runs → their cancellation token, for `POST /runs/{id}/cancel`.
-    active: Mutex<HashMap<RunId, CancellationToken>>,
+    active: Mutex<HashMap<RunId, ActiveRun>>,
     /// Tracks spawned run tasks so shutdown can drain them (invariant 4).
     tracker: TaskTracker,
     /// Parent of every run's token: cancelling it cancels all in-flight runs.
@@ -166,7 +166,11 @@ impl RunEngine {
     pub fn spawn(self: &Arc<Self>, run: Run, input: RunInput, policy: Option<PolicyContext>) {
         let run_id = run.id.clone();
         let cancel = self.shutdown.child_token();
-        self.register(run_id.clone(), cancel.clone());
+        // The device the run is attributable to, so revocation can reach it
+        // (M7 gate D-M7-1). A crash-recovered or degraded-requeued run has no
+        // device and no tool authority either — nothing to revoke.
+        let device = policy.as_ref().map(|p| p.device_id.clone());
+        self.register(run_id.clone(), cancel.clone(), device);
 
         let engine = Arc::clone(self);
         self.tracker.spawn(async move {
@@ -206,7 +210,7 @@ impl RunEngine {
 
     /// The token for an actively-driven run, if any.
     pub fn active_token(&self, run_id: &RunId) -> Option<CancellationToken> {
-        self.lock_active().get(run_id).cloned()
+        self.lock_active().get(run_id).map(|run| run.cancel.clone())
     }
 
     /// Stop accepting new runs and wait for the in-flight ones to drain. The
@@ -356,15 +360,36 @@ impl RunEngine {
         }
     }
 
-    fn register(&self, run_id: RunId, cancel: CancellationToken) {
-        self.lock_active().insert(run_id, cancel);
+    fn register(&self, run_id: RunId, cancel: CancellationToken, device: Option<DeviceId>) {
+        self.lock_active()
+            .insert(run_id, ActiveRun { cancel, device });
     }
 
     fn deregister(&self, run_id: &RunId) {
         self.lock_active().remove(run_id);
     }
 
-    fn lock_active(&self) -> std::sync::MutexGuard<'_, HashMap<RunId, CancellationToken>> {
+    /// Cancel every in-flight run started by `device` (M7 gate D-M7-1).
+    ///
+    /// docs/06 §7 promises revocation is immediate. Closing the socket and
+    /// refusing the device's grants stops anything *new*, but a run already
+    /// executing carries the `PolicyContext` it was spawned with — so a run
+    /// started by a device that has just been revoked would otherwise keep
+    /// acting on that authority until it finished on its own. Returns how many
+    /// were cancelled, for the operator record.
+    pub fn cancel_for_device(&self, device: &DeviceId) -> usize {
+        let active = self.lock_active();
+        let mut cancelled = 0;
+        for run in active.values() {
+            if run.device.as_ref() == Some(device) {
+                run.cancel.cancel();
+                cancelled += 1;
+            }
+        }
+        cancelled
+    }
+
+    fn lock_active(&self) -> std::sync::MutexGuard<'_, HashMap<RunId, ActiveRun>> {
         self.active
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -375,6 +400,15 @@ fn deterministic_local_request(text: &str) -> bool {
     jarvis_domain::math::parse_math_command(text)
         .and_then(|command| command.evaluate())
         .is_some()
+}
+
+/// One in-flight run: how to cancel it, and whose authority it carries.
+struct ActiveRun {
+    cancel: CancellationToken,
+    /// The device whose `PolicyContext` this run was spawned with. `None` for a
+    /// crash-recovered or degraded-requeued run, which carries no device
+    /// identity and no tool authority (invariant #1).
+    device: Option<DeviceId>,
 }
 
 /// A [`RunEventSink`] that both broadcasts (through the hub) and records the
@@ -448,6 +482,13 @@ impl RunApi {
             approval_gate,
             deepdive,
         }
+    }
+
+    /// The engine driving this API's runs — shared, so revocation can cancel a
+    /// device's work through the same registry `POST /runs/{id}/cancel` uses
+    /// (M7 gate D-M7-1).
+    pub fn engine(&self) -> Arc<RunEngine> {
+        Arc::clone(&self.engine)
     }
 }
 
@@ -1363,6 +1404,61 @@ mod tests {
             CancellationToken::new(),
             None, // text-only path: no tool plane wired for the degraded-mode test.
         )
+    }
+
+    /// **M7 gate D-M7-1.** Revocation must reach a device's *running* work.
+    /// Closing its socket and refusing its grants stops anything new, but a run
+    /// already executing carries the `PolicyContext` it was spawned with — so
+    /// without this a run started by a device revoked one second ago would keep
+    /// acting on that authority until it finished on its own.
+    #[tokio::test]
+    async fn revoking_a_device_cancels_only_that_devices_runs() {
+        let engine = engine_with(
+            Arc::new(FlakyModel {
+                id: ProfileId::new("fake-claude"),
+                turns: AtomicUsize::new(0),
+                reply: vec!["hi"],
+            }),
+            Arc::new(MemMessages::default()),
+        );
+
+        let revoked: DeviceId = "01ARZ3NDEKTSV4RRFFQ69G5FA1".parse().expect("ulid");
+        let other: DeviceId = "01ARZ3NDEKTSV4RRFFQ69G5FA2".parse().expect("ulid");
+        let (theirs, mine, orphan) = (
+            engine.shutdown.child_token(),
+            engine.shutdown.child_token(),
+            engine.shutdown.child_token(),
+        );
+        engine.register(
+            "01ARZ3NDEKTSV4RRFFQ69G5FB1".parse().expect("ulid"),
+            theirs.clone(),
+            Some(revoked.clone()),
+        );
+        engine.register(
+            "01ARZ3NDEKTSV4RRFFQ69G5FB2".parse().expect("ulid"),
+            mine.clone(),
+            Some(other),
+        );
+        // A crash-recovered run: no device, and no tool authority either.
+        engine.register(
+            "01ARZ3NDEKTSV4RRFFQ69G5FB3".parse().expect("ulid"),
+            orphan.clone(),
+            None,
+        );
+
+        assert_eq!(engine.cancel_for_device(&revoked), 1);
+        assert!(
+            theirs.is_cancelled(),
+            "the revoked device's run is cancelled"
+        );
+        assert!(
+            !mine.is_cancelled(),
+            "another device's run is untouched — revocation is not a kill switch"
+        );
+        assert!(!orphan.is_cancelled(), "an unattributed run is untouched");
+
+        // Idempotent: revoking again finds nothing new to stop.
+        assert_eq!(engine.cancel_for_device(&revoked), 1);
     }
 
     #[tokio::test]
