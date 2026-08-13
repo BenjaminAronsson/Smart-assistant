@@ -836,9 +836,9 @@ generated from two unrelated requests would be same-origin *with each other*.
 
 ## ADR-031 — Node identity: Ed25519 challenge-response pairing with key-bound tokens over pinned TLS, not mTLS {#adr-031}
 
-**Status.** **Proposed (M7 F7.2, 12 August 2026).** Owner chose this shape when approving the
-M7 feature list (scope decision 2, `docs/milestones/M7-features.md`); this ADR records the
-reasoning and is accepted at the M7 gate. Builds on F7.1's `DeviceClass` (authority comes from
+**Status.** **Accepted (M7 gate, 13 August 2026).** Owner chose this shape when approving the
+M7 feature list (scope decision 2, `docs/milestones/M7-features.md`); accepted with the gate
+sign-off (`docs/milestones/M7-gate-report.md`). Builds on F7.1's `DeviceClass` (authority comes from
 the class, not from anything the device says about itself).
 
 **Context.** docs/06 §5 names the control for remote-node impersonation as "challenge-response
