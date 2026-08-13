@@ -1,28 +1,54 @@
-//! The agent's connection to jarvisd (docs/05 §1): a paired `display`-channel
-//! client on `/ws/v1`. It receives display directives and applies them to the
-//! compositor; it sends nothing back in this slice (monitor-inventory reporting
-//! is deferred). Session/voice-channel frames are ignored — this device acts on
+//! The agent's connection to jarvisd (docs/05 §1): a paired client on
+//! `/ws/v1`. It receives display directives and applies them to the compositor;
+//! it sends nothing back in this slice (monitor-inventory reporting is
+//! deferred). Session/voice-channel frames are ignored — this device acts on
 //! the `display` channel only.
 //!
-//! The socket connect/read loop is exercised manually against a running jarvisd
-//! (CI has no live socket); the pure decode step is unit-tested below.
+//! Two things F8.1 adds to the M3a loop: the connection is made over **pinned**
+//! TLS when the node paired against an HTTPS daemon (ADR-031 §4), and the loop
+//! **reconnects with backoff** instead of returning after one socket — a
+//! kitchen satellite outlives any single TCP connection, and a daemon restart
+//! must not require a human.
+//!
+//! The one thing it must *not* do is retry forever against a daemon that has
+//! told it to go away. Revocation is terminal: it is not an error to recover
+//! from, it is the owner's decision (docs/05 §6.4).
+//!
+//! The pure decode step and the outcome classification are unit-tested below;
+//! the socket loop is covered end to end by `tests/node_session.rs` against a
+//! real TLS listener.
+
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use futures_util::StreamExt;
 use jarvis_contracts::display::DisplayDirective;
 use jarvis_contracts::envelope::{Channel, EventEnvelope};
-use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio_tungstenite::{Connector, connect_async_tls_with_config};
 
 /// Inbound frame ceiling for the agent, mirroring jarvisd's own 64 KiB cap
 /// (`jarvisd::ws`). Directives are tiny; a trusted peer has no legitimate large
 /// inbound payload — DoS hardening for symmetry.
 const MAX_INBOUND_FRAME_BYTES: usize = 64 * 1024;
 
+/// jarvisd closes a revoked device's socket with 1008 "policy violation"
+/// (`jarvisd::ws::REVOKED_CLOSE_CODE`). The node treats it as terminal.
+const REVOKED_CLOSE_CODE: u16 = 1008;
+
+/// Reconnect backoff: quick enough that a daemon restart is invisible, capped
+/// low enough that a satellite is not a poll loop against a dead host
+/// (low-power rule 2).
+const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
+const BACKOFF_MAX: Duration = Duration::from_secs(60);
+
 use crate::compositor::Compositor;
 use crate::handler;
+use crate::pinning;
+use crate::store::Credentials;
 
 /// Decode a raw `/ws/v1` frame into a display directive, or `None` if the frame
 /// is not a display-channel directive we act on (other channels, or a directive
@@ -49,21 +75,67 @@ pub fn decode_directive(text: &str) -> anyhow::Result<Option<DisplayDirective>> 
     Ok(serde_json::from_value::<DisplayDirective>(value).ok())
 }
 
-/// Connect to jarvisd and apply display directives until the socket closes or
-/// `shutdown` fires. `token` is the paired device bearer token (a secret — never
-/// logged).
-pub async fn run<C: Compositor>(
-    ws_url: &str,
-    token: &str,
+/// How a single socket ended, which is what decides whether there is a next one.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SessionOutcome {
+    /// The owner asked the process to stop.
+    Shutdown,
+    /// The daemon revoked this device. Terminal: re-pairing is the only way
+    /// back (ADR-031 consequences), so retrying is pure noise.
+    Revoked,
+    /// Anything else — daemon restart, network blip, cable. Reconnect.
+    Disconnected,
+}
+
+/// The `wss://…/ws/v1` (or `ws://`) URL for a daemon base URL.
+pub fn ws_url_for(server_url: &str) -> anyhow::Result<String> {
+    let base = server_url.trim_end_matches('/');
+    let base = if let Some(rest) = base.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = base.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        anyhow::bail!("server URL must start with https:// or http://");
+    };
+    Ok(format!("{base}/ws/v1"))
+}
+
+/// Classifies a tungstenite failure into "try again" or "stop".
+///
+/// A handshake rejected with 401/403 means the token is no longer authority —
+/// revoked, or a daemon that has forgotten this device. Either way the node
+/// cannot fix it by asking again, and a satellite hammering a daemon that keeps
+/// saying no is exactly the failure mode backoff is supposed to prevent.
+fn classify(error: &tokio_tungstenite::tungstenite::Error) -> SessionOutcome {
+    use tokio_tungstenite::tungstenite::Error;
+    match error {
+        Error::Http(response) => {
+            let status = response.status().as_u16();
+            if status == 401 || status == 403 {
+                SessionOutcome::Revoked
+            } else {
+                SessionOutcome::Disconnected
+            }
+        }
+        _ => SessionOutcome::Disconnected,
+    }
+}
+
+/// Connect once and pump directives until the socket ends.
+pub async fn connect_once<C: Compositor>(
+    credentials: &Credentials,
     compositor: &C,
-    shutdown: tokio::sync::watch::Receiver<bool>,
-) -> anyhow::Result<()> {
-    let mut request = ws_url
+    shutdown: &mut tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<SessionOutcome> {
+    let url = ws_url_for(&credentials.server_url)?;
+    let mut request = url
+        .as_str()
         .into_client_request()
         .context("invalid jarvisd WebSocket URL")?;
+    // The token is a secret: it goes in the header and is never traced.
     request.headers_mut().insert(
         "Authorization",
-        format!("Bearer {token}")
+        format!("Bearer {}", credentials.device_token)
             .parse()
             .context("token is not a valid header value")?,
     );
@@ -71,36 +143,96 @@ pub async fn run<C: Compositor>(
         .max_message_size(Some(MAX_INBOUND_FRAME_BYTES))
         .max_frame_size(Some(MAX_INBOUND_FRAME_BYTES));
 
-    let mut shutdown = shutdown;
+    // The pin, applied. A node that paired over TLS refuses to connect over
+    // anything else, and refuses any certificate but the one it pinned.
+    let connector = match (
+        credentials.is_tls(),
+        credentials.server_fingerprint.as_deref(),
+    ) {
+        (true, Some(fingerprint)) => Some(Connector::Rustls(Arc::new(pinning::pinned_config(
+            fingerprint,
+        )))),
+        (true, None) => anyhow::bail!(
+            "this node paired over TLS but stored no fingerprint; re-pair rather than \
+             connecting unpinned"
+        ),
+        (false, _) => None,
+    };
+
     // Make the connect itself cancellable (invariant 4): a stuck TCP connect must
     // still yield to shutdown rather than hang on the OS timeout.
-    let (mut socket, _resp) = tokio::select! {
-        _ = shutdown.changed() => return Ok(()),
-        connected = connect_async_with_config(request, Some(config), false) => {
-            connected.context("connecting to jarvisd /ws/v1")?
+    let connected = tokio::select! {
+        _ = shutdown.changed() => return Ok(SessionOutcome::Shutdown),
+        connected = connect_async_tls_with_config(request, Some(config), false, connector) => connected,
+    };
+    let (mut socket, _resp) = match connected {
+        Ok(connected) => connected,
+        Err(e) => {
+            let outcome = classify(&e);
+            if outcome == SessionOutcome::Revoked {
+                tracing::error!("daemon refused this device's token; it has been revoked");
+            } else {
+                tracing::warn!(error = %e, "connecting to jarvisd /ws/v1 failed");
+            }
+            return Ok(outcome);
         }
     };
     tracing::info!("connected to jarvisd; listening for display directives");
+
     loop {
         tokio::select! {
             changed = shutdown.changed() => {
                 // A send-side drop or a `true` value ends the loop.
                 if changed.is_err() || *shutdown.borrow() {
-                    break;
+                    return Ok(SessionOutcome::Shutdown);
                 }
             }
             frame = socket.next() => match frame {
                 Some(Ok(WsMessage::Text(text))) => dispatch(&text, compositor).await,
-                Some(Ok(WsMessage::Close(_))) | None => break,
+                Some(Ok(WsMessage::Close(Some(frame)))) => {
+                    return Ok(if u16::from(frame.code) == REVOKED_CLOSE_CODE {
+                        tracing::error!(reason = %frame.reason, "daemon closed the socket: this device was revoked");
+                        SessionOutcome::Revoked
+                    } else {
+                        tracing::info!(code = %u16::from(frame.code), "daemon closed the socket");
+                        SessionOutcome::Disconnected
+                    });
+                }
+                Some(Ok(WsMessage::Close(None))) | None => return Ok(SessionOutcome::Disconnected),
                 Some(Ok(_)) => {}
                 Some(Err(e)) => {
                     tracing::warn!(error = %e, "websocket error; closing");
-                    break;
+                    return Ok(SessionOutcome::Disconnected);
                 }
             },
         }
     }
-    Ok(())
+}
+
+/// Connect, and keep reconnecting, until shutdown or revocation.
+///
+/// Returns `true` if the node was revoked — the caller turns that into a clean
+/// exit with a message the owner can act on.
+pub async fn run<C: Compositor>(
+    credentials: &Credentials,
+    compositor: &C,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<bool> {
+    let mut shutdown = shutdown;
+    let mut backoff = BACKOFF_INITIAL;
+    loop {
+        match connect_once(credentials, compositor, &mut shutdown).await? {
+            SessionOutcome::Shutdown => return Ok(false),
+            SessionOutcome::Revoked => return Ok(true),
+            SessionOutcome::Disconnected => {}
+        }
+        tracing::info!(seconds = backoff.as_secs(), "reconnecting after backoff");
+        tokio::select! {
+            _ = shutdown.changed() => return Ok(false),
+            _ = tokio::time::sleep(backoff) => {}
+        }
+        backoff = (backoff * 2).min(BACKOFF_MAX);
+    }
 }
 
 async fn dispatch<C: Compositor>(text: &str, compositor: &C) {

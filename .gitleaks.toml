@@ -1,0 +1,26 @@
+# gitleaks configuration for the CI secret scan (`.github/workflows/ci.yml`).
+#
+# The default rule set is kept in full — this file only narrows it, and only
+# for values that are provably not credentials. Every entry needs a reason a
+# reviewer can check, because an allowlist is the one place where a real leak
+# can be waved through by accident.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Canonical non-secret constants that trip the entropy heuristic"
+
+regexes = [
+  # `01ARZ3NDEKTSV4RRFFQ69G5FAV` is *the* example ULID from the ULID
+  # specification, and this codebase uses it as the fixture identifier
+  # everywhere a `RunId`/`SessionId`/`DeviceId` is needed in a test or a doc
+  # comment. It is a public example value, it identifies nothing, and it grants
+  # nothing: IDs are not credentials here (docs/05 §6 — authority comes from
+  # the device class and an opaque token, never from an identifier).
+  #
+  # `generic-api-key` flags it at entropy 4.18 purely because Crockford base32
+  # looks like a key. Without this entry the scan fails on hundreds of
+  # pre-existing test fixtures across the tree.
+  '''01ARZ3NDEKTSV4RRFFQ69G5FAV''',
+]
