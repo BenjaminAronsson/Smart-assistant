@@ -58,6 +58,12 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 # workspace already builds for MPRIS — so this costs no new transitive tree at
 # all. `crypto-rust` keeps the transport encryption pure Rust (no OpenSSL).
 keyring = { version = "3", features = ["async-secret-service", "crypto-rust", "tokio"] }
+# Node audio (F8.2). cpal is the ecosystem-standard cross-platform audio I/O
+# crate and is a thin wrapper over the host API — ALSA on Linux, which needs
+# `libasound2-dev` at build time (added to CI). No resampling or DSP crate: the
+# nearest-neighbour conversion in `audio.rs` is all a 16 kHz speech path needs,
+# and a satellite is the wrong place for a DSP dependency (low-power rule 5).
+cpal = "0.16"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

@@ -14,13 +14,20 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use jarvis_agent::client::{self, SessionOutcome};
+use jarvis_agent::audio::NoOutput;
+use jarvis_agent::client::{self, NodeAudio, SessionOutcome};
 use jarvis_agent::compositor::NoCompositor;
 use jarvis_agent::store::Credentials;
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+
+/// These tests exercise the loop's *decisions*, not its audio, so they run a
+/// node with no audio at all. F8.2's audio behaviour is covered by
+/// `node_voice`'s unit tests and `tests/node_audio.rs`.
+const NO_AUDIO: Option<NodeAudio<NoOutput>> = None;
+const NO_AUDIO_REF: Option<&mut NodeAudio<NoOutput>> = None;
 
 /// How the stub daemon greets each connection.
 #[derive(Clone, Copy)]
@@ -110,7 +117,7 @@ async fn a_revoked_node_stops_instead_of_reconnecting() {
 
     let revoked = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        client::run(&credentials_for(address), &NoCompositor, rx),
+        client::run(&credentials_for(address), &NoCompositor, NO_AUDIO, rx),
     )
     .await
     .expect("the loop must terminate on revocation, not spin")
@@ -133,7 +140,7 @@ async fn a_handshake_refused_with_403_is_terminal() {
 
     let revoked = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        client::run(&credentials_for(address), &NoCompositor, rx),
+        client::run(&credentials_for(address), &NoCompositor, NO_AUDIO, rx),
     )
     .await
     .expect("the loop must terminate")
@@ -161,7 +168,7 @@ async fn an_ordinary_close_reconnects() {
 
     let revoked = tokio::time::timeout(
         std::time::Duration::from_secs(20),
-        client::run(&credentials_for(address), &NoCompositor, rx),
+        client::run(&credentials_for(address), &NoCompositor, NO_AUDIO, rx),
     )
     .await
     .expect("the loop must reconnect and then observe shutdown")
@@ -183,7 +190,7 @@ async fn a_tls_node_with_no_stored_fingerprint_refuses_to_connect() {
     credentials.server_fingerprint = None;
 
     let (_tx, mut rx) = tokio::sync::watch::channel(false);
-    let error = client::connect_once(&credentials, &NoCompositor, &mut rx)
+    let error = client::connect_once(&credentials, &NoCompositor, NO_AUDIO_REF, &mut rx)
         .await
         .expect_err("must refuse to connect unpinned");
     assert!(error.to_string().contains("re-pair"), "{error}");
@@ -197,7 +204,7 @@ async fn shutdown_ends_the_loop_without_claiming_revocation() {
 
     let revoked = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        client::run(&credentials_for(address), &NoCompositor, rx),
+        client::run(&credentials_for(address), &NoCompositor, NO_AUDIO, rx),
     )
     .await
     .expect("must return promptly")

@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use jarvis_contracts::display::DisplayDirective;
 use jarvis_contracts::envelope::{Channel, EventEnvelope};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -45,8 +45,10 @@ const REVOKED_CLOSE_CODE: u16 = 1008;
 const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
 
+use crate::audio::AudioOutput;
 use crate::compositor::Compositor;
 use crate::handler;
+use crate::node_voice::NodeVoice;
 use crate::pinning;
 use crate::store::Credentials;
 
@@ -121,10 +123,49 @@ fn classify(error: &tokio_tungstenite::tungstenite::Error) -> SessionOutcome {
     }
 }
 
+/// A node's audio, as the socket loop sees it: somewhere to play what the
+/// daemon says, and somewhere to take what the microphone hears.
+pub struct NodeAudio<O: AudioOutput> {
+    pub voice: NodeVoice<O>,
+    /// Captured frames, already in the wire format.
+    pub frames: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    /// The open capture stream, if there is one.
+    ///
+    /// **Nothing opens it in F8.2, and that is the point.** The transport is
+    /// built and tested here; the *trigger* is F8.3's wake word. Until then a
+    /// node captures into a channel that is drained and discarded, so this
+    /// feature cannot accidentally ship a satellite that streams the kitchen to
+    /// a server continuously — which is the privacy property M8's decision 3
+    /// turns on.
+    pub streaming: Option<String>,
+    /// Keeps the capture stream open. Dropping it stops the microphone, so it
+    /// lives exactly as long as the node's audio does — no `mem::forget`, no
+    /// stream outliving the thing it feeds.
+    _capture: Option<crate::audio::CaptureHandle>,
+}
+
+impl<O: AudioOutput> NodeAudio<O> {
+    pub fn new(voice: NodeVoice<O>, frames: tokio::sync::mpsc::Receiver<Vec<u8>>) -> Self {
+        Self {
+            voice,
+            frames,
+            streaming: None,
+            _capture: None,
+        }
+    }
+
+    /// Attaches the live capture stream.
+    pub fn with_capture(mut self, capture: crate::audio::CaptureHandle) -> Self {
+        self._capture = Some(capture);
+        self
+    }
+}
+
 /// Connect once and pump directives until the socket ends.
-pub async fn connect_once<C: Compositor>(
+pub async fn connect_once<C: Compositor, O: AudioOutput>(
     credentials: &Credentials,
     compositor: &C,
+    audio: Option<&mut NodeAudio<O>>,
     shutdown: &mut tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<SessionOutcome> {
     let url = ws_url_for(&credentials.server_url)?;
@@ -177,18 +218,60 @@ pub async fn connect_once<C: Compositor>(
             return Ok(outcome);
         }
     };
-    tracing::info!("connected to jarvisd; listening for display directives");
+    tracing::info!("connected to jarvisd; listening for directives");
 
+    let mut audio = audio;
     loop {
+        // A node with no audio still needs a future here, so the arm is
+        // disabled rather than absent.
+        let captured = async {
+            match audio.as_mut() {
+                Some(audio) => audio.frames.recv().await,
+                None => std::future::pending().await,
+            }
+        };
+
         tokio::select! {
             changed = shutdown.changed() => {
                 // A send-side drop or a `true` value ends the loop.
                 if changed.is_err() || *shutdown.borrow() {
+                    if let Some(audio) = audio.as_mut() {
+                        audio.voice.silence();
+                    }
                     return Ok(SessionOutcome::Shutdown);
                 }
             }
+            frame = captured => {
+                let Some(frame) = frame else {
+                    // The capture thread stopped; the socket is still fine.
+                    continue;
+                };
+                if let Some(audio) = audio.as_mut()
+                    && audio.streaming.is_some()
+                    && socket.send(WsMessage::Binary(frame.into())).await.is_err()
+                {
+                    return Ok(SessionOutcome::Disconnected);
+                }
+                // Not streaming: the frame is discarded here, at the node.
+            }
             frame = socket.next() => match frame {
-                Some(Ok(WsMessage::Text(text))) => dispatch(&text, compositor).await,
+                Some(Ok(WsMessage::Text(text))) => {
+                    dispatch(&text, compositor, audio.as_deref_mut()).await;
+                }
+                Some(Ok(WsMessage::Binary(bytes))) => {
+                    match audio.as_mut() {
+                        Some(audio) => {
+                            if let Err(e) = audio.voice.on_audio_frame(&bytes) {
+                                // Never fatal: a bad frame is dropped and the
+                                // utterance continues, rather than taking the
+                                // socket down with it.
+                                tracing::warn!(error = %e, "audio frame rejected");
+                            }
+                        }
+                        // A screen-only node has nothing to do with audio.
+                        None => tracing::debug!("audio frame ignored: this node has no output"),
+                    }
+                }
                 Some(Ok(WsMessage::Close(Some(frame)))) => {
                     return Ok(if u16::from(frame.code) == REVOKED_CLOSE_CODE {
                         tracing::error!(reason = %frame.reason, "daemon closed the socket: this device was revoked");
@@ -213,18 +296,24 @@ pub async fn connect_once<C: Compositor>(
 ///
 /// Returns `true` if the node was revoked — the caller turns that into a clean
 /// exit with a message the owner can act on.
-pub async fn run<C: Compositor>(
+pub async fn run<C: Compositor, O: AudioOutput>(
     credentials: &Credentials,
     compositor: &C,
+    mut audio: Option<NodeAudio<O>>,
     shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<bool> {
     let mut shutdown = shutdown;
     let mut backoff = BACKOFF_INITIAL;
     loop {
-        match connect_once(credentials, compositor, &mut shutdown).await? {
+        match connect_once(credentials, compositor, audio.as_mut(), &mut shutdown).await? {
             SessionOutcome::Shutdown => return Ok(false),
             SessionOutcome::Revoked => return Ok(true),
             SessionOutcome::Disconnected => {}
+        }
+        // A socket that died mid-sentence leaves the speaker holding audio for
+        // a turn that is over.
+        if let Some(audio) = audio.as_mut() {
+            audio.voice.silence();
         }
         tracing::info!(seconds = backoff.as_secs(), "reconnecting after backoff");
         tokio::select! {
@@ -235,7 +324,22 @@ pub async fn run<C: Compositor>(
     }
 }
 
-async fn dispatch<C: Compositor>(text: &str, compositor: &C) {
+async fn dispatch<C: Compositor, O: AudioOutput>(
+    text: &str,
+    compositor: &C,
+    audio: Option<&mut NodeAudio<O>>,
+) {
+    // The voice channel first: an envelope is either a voice control frame or a
+    // display directive, never both.
+    if let Some(audio) = audio
+        && let Ok(envelope) = serde_json::from_str::<EventEnvelope>(text)
+        && envelope.channel == Channel::Voice
+    {
+        if let Err(e) = audio.voice.on_envelope(&envelope) {
+            tracing::warn!(error = %e, "voice control frame refused");
+        }
+        return;
+    }
     match decode_directive(text) {
         Ok(Some(directive)) => {
             if let Err(e) = handler::apply(&directive, compositor).await {

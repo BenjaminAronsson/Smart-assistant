@@ -19,9 +19,13 @@
 
 use anyhow::{Context, Result};
 
+use jarvis_agent::audio::AudioInput;
+use jarvis_agent::audio::{AudioConfig, AudioOutput, CpalInput, CpalOutput, Mute};
 use jarvis_agent::cli::{self, Command};
+use jarvis_agent::client::NodeAudio;
 use jarvis_agent::compositor::{self, HyprctlClient};
 use jarvis_agent::identity::NodeKey;
+use jarvis_agent::node_voice::NodeVoice;
 use jarvis_agent::store::{CredentialStore, KeyringStore};
 use jarvis_agent::{client, pairing};
 
@@ -174,9 +178,23 @@ async fn run() -> Result<()> {
         }
     });
 
-    let revoked = match &compositor {
-        Some(compositor) => client::run(&credentials, compositor, rx).await?,
-        None => client::run(&credentials, &compositor::NoCompositor, rx).await?,
+    // Audio belongs to the classes that were given `voice-capture` authority.
+    // A `display-node` is a screen; opening a microphone on one would be
+    // capturing audio the owner never granted (docs/05 §6.3).
+    let audio = match credentials.device_class.as_str() {
+        "voice-node" | "room-node" => open_audio(),
+        _ => None,
+    };
+
+    let revoked = match (&compositor, audio) {
+        (Some(compositor), Some(audio)) => {
+            client::run(&credentials, compositor, Some(audio), rx).await?
+        }
+        (Some(compositor), None) => client::run(&credentials, compositor, NO_AUDIO, rx).await?,
+        (None, Some(audio)) => {
+            client::run(&credentials, &compositor::NoCompositor, Some(audio), rx).await?
+        }
+        (None, None) => client::run(&credentials, &compositor::NoCompositor, NO_AUDIO, rx).await?,
     };
 
     if revoked {
@@ -190,4 +208,64 @@ async fn run() -> Result<()> {
         std::process::exit(EXIT_REVOKED);
     }
     Ok(())
+}
+
+/// The type a node names when it has no audio at all.
+const NO_AUDIO: Option<NodeAudio<CpalOutput>> = None;
+
+/// Opens this node's microphone and speaker, or reports why it could not.
+///
+/// **A missing device is not fatal.** The feature's own acceptance says so: a
+/// node with no sound card still runs and says so. A satellite that refuses to
+/// boot because a USB microphone was unplugged is a satellite that also stops
+/// showing timers, and the screen half has nothing to do with the audio half.
+fn open_audio() -> Option<NodeAudio<CpalOutput>> {
+    let config = AudioConfig::from_env();
+    let mute = Mute::new(config.start_muted);
+
+    let output = match CpalOutput::open(config.output_device.as_deref()) {
+        Ok(output) => output,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "no audio output on this node: it will connect, but cannot speak"
+            );
+            return None;
+        }
+    };
+    tracing::info!(device = %output.describe(), "audio output ready");
+
+    // Bounded: on a satellite an unbounded audio queue is a memory leak with a
+    // countdown (low-power rule 3). Two seconds of speech is plenty of slack
+    // for a socket hiccup, and beyond that dropping is the right answer.
+    let (frames_tx, frames_rx) = tokio::sync::mpsc::channel(100);
+    let capture = match CpalInput::open(config.input_device.as_deref()) {
+        Ok(input) => match input.start(frames_tx, mute.clone()) {
+            Ok(handle) => {
+                tracing::info!(
+                    device = %input.describe(),
+                    muted = mute.is_muted(),
+                    "microphone ready"
+                );
+                Some(handle)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "microphone could not be started");
+                None
+            }
+        },
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "no audio input on this node: it will speak, but cannot listen"
+            );
+            None
+        }
+    };
+
+    let audio = NodeAudio::new(NodeVoice::new(output), frames_rx);
+    Some(match capture {
+        Some(capture) => audio.with_capture(capture),
+        None => audio,
+    })
 }
