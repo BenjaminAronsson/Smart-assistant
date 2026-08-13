@@ -7,6 +7,7 @@
 //! into a bin-only crate. A claim that can only be tested through unit tests of
 //! its own parts is not the claim the feature makes.
 
+pub mod aec;
 pub mod audio;
 pub mod cli;
 pub mod client;

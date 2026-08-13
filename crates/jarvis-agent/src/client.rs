@@ -45,6 +45,7 @@ const REVOKED_CLOSE_CODE: u16 = 1008;
 const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
 
+use crate::aec::{self, EchoCanceller, HalfDuplex};
 use crate::audio::AudioOutput;
 use crate::compositor::Compositor;
 use crate::handler;
@@ -143,6 +144,10 @@ pub struct NodeAudio<O: AudioOutput> {
     /// all, which is still a working node — it just does not answer to its
     /// name (ADR-032, last consequence).
     pub gate: Option<WakeGate<Box<dyn WakeWordDetector>>>,
+    /// Removes this node's own voice from what its microphone hears (F8.4).
+    pub aec: EchoCanceller,
+    /// The guarantee that does not depend on the filter converging.
+    pub duplex: HalfDuplex,
     /// Keeps the capture stream open. Dropping it stops the microphone, so it
     /// lives exactly as long as the node's audio does — no `mem::forget`, no
     /// stream outliving the thing it feeds.
@@ -156,6 +161,8 @@ impl<O: AudioOutput> NodeAudio<O> {
             frames,
             streaming: None,
             gate: None,
+            aec: EchoCanceller::new(),
+            duplex: HalfDuplex::default(),
             _capture: None,
         }
     }
@@ -271,7 +278,18 @@ pub async fn connect_once<C: Compositor, O: AudioOutput>(
                 Some(Ok(WsMessage::Binary(bytes))) => {
                     match audio.as_mut() {
                         Some(audio) => {
-                            if let Err(e) = audio.voice.on_audio_frame(&bytes) {
+                            // The canceller needs to know what the room is
+                            // about to hear, whether or not it is ducked —
+                            // the reference is what was *sent* to the speaker.
+                            let ducked = if audio.gate.as_ref().is_some_and(WakeGate::is_streaming) {
+                                // The owner is talking. Keep speaking, stop
+                                // shouting over them.
+                                aec::apply_gain(&bytes, aec::DUCKED_GAIN)
+                            } else {
+                                bytes.to_vec()
+                            };
+                            audio.aec.observe_playback(&ducked);
+                            if let Err(e) = audio.voice.on_audio_frame(&ducked) {
                                 // Never fatal: a bad frame is dropped and the
                                 // utterance continues, rather than taking the
                                 // socket down with it.
@@ -348,11 +366,27 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let speaking = audio.voice.is_speaking();
+
+    // Subtract this node's own voice before anything looks at the frame. Both
+    // the detector and the daemon want the owner, not the assistant.
+    let frame = audio.aec.process(&frame);
+    let residual = aec::frame_energy(&frame);
+    let may_detect = audio
+        .duplex
+        .should_detect(speaking, residual, audio.aec.is_enabled());
+
     let Some(gate) = audio.gate.as_mut() else {
         // No detector: the microphone is open but nothing it hears is ever
         // sent. A node with no wake word answers push-to-talk, not its name.
         return Ok(());
     };
+
+    // Suppressed *and* not mid-turn: the frame goes nowhere. A turn already in
+    // progress keeps streaming — suppression is about not being triggered by
+    // our own voice, not about truncating the owner mid-sentence.
+    if !may_detect && !gate.is_streaming() {
+        return Ok(());
+    }
 
     match gate.accept(&frame, speaking) {
         GateAction::Discard => Ok(()),
