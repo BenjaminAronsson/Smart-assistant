@@ -460,6 +460,10 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     let server_fingerprint = server_tls.as_ref().map(|t| t.fingerprint.clone());
     // docs/05 §6.2 scopes the unauthenticated health page to loopback.
     let public_health = config.bind_addr().ip().is_loopback();
+    // Revocation must reach a device's *running* work, not just its next
+    // request (M7 gate D-M7-1). The same engine `POST /runs/{id}/cancel` uses.
+    let auth = auth.with_runs(run_api.engine());
+
     let ws_state = WsState {
         connected: connected.clone(),
         surfaces: auth.surfaces().clone(),
