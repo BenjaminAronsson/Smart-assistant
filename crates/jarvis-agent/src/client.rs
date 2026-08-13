@@ -48,9 +48,10 @@ const BACKOFF_MAX: Duration = Duration::from_secs(60);
 use crate::audio::AudioOutput;
 use crate::compositor::Compositor;
 use crate::handler;
-use crate::node_voice::NodeVoice;
+use crate::node_voice::{self, NodeVoice};
 use crate::pinning;
 use crate::store::Credentials;
+use crate::wake::{GateAction, WakeGate, WakeWordDetector};
 
 /// Decode a raw `/ws/v1` frame into a display directive, or `None` if the frame
 /// is not a display-channel directive we act on (other channels, or a directive
@@ -138,6 +139,10 @@ pub struct NodeAudio<O: AudioOutput> {
     /// a server continuously — which is the privacy property M8's decision 3
     /// turns on.
     pub streaming: Option<String>,
+    /// The wake-word pipeline (F8.3). `None` on a node with no detector at
+    /// all, which is still a working node — it just does not answer to its
+    /// name (ADR-032, last consequence).
+    pub gate: Option<WakeGate<Box<dyn WakeWordDetector>>>,
     /// Keeps the capture stream open. Dropping it stops the microphone, so it
     /// lives exactly as long as the node's audio does — no `mem::forget`, no
     /// stream outliving the thing it feeds.
@@ -150,8 +155,15 @@ impl<O: AudioOutput> NodeAudio<O> {
             voice,
             frames,
             streaming: None,
+            gate: None,
             _capture: None,
         }
+    }
+
+    /// Attaches the wake-word pipeline.
+    pub fn with_gate(mut self, gate: WakeGate<Box<dyn WakeWordDetector>>) -> Self {
+        self.gate = Some(gate);
+        self
     }
 
     /// Attaches the live capture stream.
@@ -247,12 +259,10 @@ pub async fn connect_once<C: Compositor, O: AudioOutput>(
                     continue;
                 };
                 if let Some(audio) = audio.as_mut()
-                    && audio.streaming.is_some()
-                    && socket.send(WsMessage::Binary(frame.into())).await.is_err()
+                    && handle_captured_frame(&mut socket, audio, frame).await.is_err()
                 {
                     return Ok(SessionOutcome::Disconnected);
                 }
-                // Not streaming: the frame is discarded here, at the node.
             }
             frame = socket.next() => match frame {
                 Some(Ok(WsMessage::Text(text))) => {
@@ -322,6 +332,95 @@ pub async fn run<C: Compositor, O: AudioOutput>(
         }
         backoff = (backoff * 2).min(BACKOFF_MAX);
     }
+}
+
+/// Runs one captured frame through the wake gate and does what it says.
+///
+/// This is the only place a capture stream is ever opened, which is ADR-032 §3
+/// made structural: there is no protocol frame that asks a node to stream, and
+/// no code path that opens one without a local detection.
+async fn handle_captured_frame<S, O: AudioOutput>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    audio: &mut NodeAudio<O>,
+    frame: Vec<u8>,
+) -> Result<(), ()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let speaking = audio.voice.is_speaking();
+    let Some(gate) = audio.gate.as_mut() else {
+        // No detector: the microphone is open but nothing it hears is ever
+        // sent. A node with no wake word answers push-to-talk, not its name.
+        return Ok(());
+    };
+
+    match gate.accept(&frame, speaking) {
+        GateAction::Discard => Ok(()),
+        GateAction::Send => send_audio(socket, frame).await,
+        GateAction::OpenStream { pre_roll } | GateAction::BargeIn { pre_roll } => {
+            // A barge-in silences the assistant *first*: the interruption is
+            // its own voice, so speaking over it is not an option.
+            if speaking {
+                audio.voice.silence();
+            }
+            let stream_id = new_stream_id();
+            let start = node_voice::stream_start(&stream_id, None);
+            send_control(socket, &start).await?;
+            audio.streaming = Some(stream_id);
+            for frame in pre_roll {
+                send_audio(socket, frame).await?;
+            }
+            Ok(())
+        }
+        GateAction::CloseStream => {
+            if let Some(stream_id) = audio.streaming.take() {
+                send_control(socket, &node_voice::stream_stop(&stream_id)).await?;
+            }
+            Ok(())
+        }
+    }
+}
+
+async fn send_audio<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    frame: Vec<u8>,
+) -> Result<(), ()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    socket
+        .send(WsMessage::Binary(frame.into()))
+        .await
+        .map_err(|_| ())
+}
+
+async fn send_control<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    control: &jarvis_contracts::voice::VoiceControlDto,
+) -> Result<(), ()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    // Inbound control frames are bare JSON, not envelopes (docs/05 §1): the
+    // daemon is the only reader.
+    let text = serde_json::to_string(control).map_err(|_| ())?;
+    socket
+        .send(WsMessage::Text(text.into()))
+        .await
+        .map_err(|_| ())
+}
+
+/// A stream identifier the daemon can scope one turn by.
+fn new_stream_id() -> String {
+    // ULIDs are the project's identifier shape; the agent has no ulid crate, so
+    // this is a monotonic counter over the process start time — unique within a
+    // node, which is all a stream id has to be.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos() as u64);
+    format!("node-{nanos:x}-{:x}", NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
 async fn dispatch<C: Compositor, O: AudioOutput>(

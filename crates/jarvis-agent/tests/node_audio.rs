@@ -14,6 +14,7 @@ use jarvis_agent::client::{self, NodeAudio};
 use jarvis_agent::compositor::NoCompositor;
 use jarvis_agent::node_voice::NodeVoice;
 use jarvis_agent::store::Credentials;
+use jarvis_agent::wake::{WakeGate, WakeWordDetector};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -166,4 +167,121 @@ async fn a_node_streams_nothing_before_a_stream_is_opened() {
         "a node with no open stream must send no audio at all; sent {} frames",
         received.lock().expect("lock").len()
     );
+}
+
+/// Fires on the Nth frame it sees, once.
+struct FiresOnce {
+    at: usize,
+    seen: usize,
+}
+
+impl WakeWordDetector for FiresOnce {
+    fn accept(&mut self, _frame: &[u8]) -> bool {
+        self.seen += 1;
+        self.seen == self.at
+    }
+    fn word(&self) -> &str {
+        "jarvis"
+    }
+}
+
+/// The other half of the privacy claim: once the word fires, audio *does* flow
+/// — and it is bracketed by a real `voice.stream.start`, not raw binary.
+///
+/// Without this, "nothing streams before detection" could be satisfied by a
+/// node that never streams at all.
+#[tokio::test]
+async fn a_detection_opens_a_bracketed_stream_and_audio_then_flows() {
+    let (address, received) = spawn_recording_daemon().await;
+    let speaker = FakeSpeaker::default();
+    let (frames_tx, frames_rx) = tokio::sync::mpsc::channel(64);
+    let gate = WakeGate::new(Box::new(FiresOnce { at: 10, seen: 0 }) as Box<dyn WakeWordDetector>);
+    let audio = NodeAudio::new(NodeVoice::new(speaker), frames_rx).with_gate(gate);
+
+    // Loud frames throughout, so nothing looks like end-of-speech.
+    tokio::spawn(async move {
+        let loud: Vec<u8> = (0..320).flat_map(|_| 8000_i16.to_le_bytes()).collect();
+        for _ in 0..40 {
+            if frames_tx.send(loud.clone()).await.is_err() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+    });
+
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let seen = received.clone();
+    tokio::spawn(async move {
+        // Wait until audio has actually arrived, then stop.
+        for _ in 0..200 {
+            if seen
+                .lock()
+                .expect("lock")
+                .iter()
+                .any(|m| m.starts_with("binary:"))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let _ = tx.send(true);
+    });
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        client::run(&credentials(address), &NoCompositor, Some(audio), rx),
+    )
+    .await
+    .expect("must shut down cleanly")
+    .expect("run");
+
+    let messages = received.lock().expect("lock").clone();
+    let first_binary = messages
+        .iter()
+        .position(|m| m.starts_with("binary:"))
+        .expect("audio must flow once the word has fired");
+    let start = messages
+        .iter()
+        .position(|m| m.contains("voice.stream.start"))
+        .expect("the stream must be opened with a control frame");
+    assert!(
+        start < first_binary,
+        "audio must be preceded by voice.stream.start, got {messages:?}"
+    );
+    // The pre-roll means the sentence's beginning survives the detection.
+    let binary_count = messages.iter().filter(|m| m.starts_with("binary:")).count();
+    assert!(
+        binary_count > 1,
+        "the pre-roll must be delivered, not just the firing frame"
+    );
+}
+
+/// Records everything the node sends, text and binary.
+async fn spawn_recording_daemon() -> (std::net::SocketAddr, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("addr");
+    let received = Arc::new(Mutex::new(Vec::new()));
+
+    let seen = received.clone();
+    tokio::spawn(async move {
+        let Ok((socket, _)) = listener.accept().await else {
+            return;
+        };
+        let Ok(stream) = tokio_tungstenite::accept_async(socket).await else {
+            return;
+        };
+        use futures_util::StreamExt as _;
+        let (_sink, mut source) = stream.split();
+        while let Some(Ok(message)) = source.next().await {
+            let record = match message {
+                Message::Text(text) => text.to_string(),
+                Message::Binary(bytes) => format!("binary:{}", bytes.len()),
+                _ => continue,
+            };
+            seen.lock().expect("lock").push(record);
+        }
+    });
+
+    (address, received)
 }

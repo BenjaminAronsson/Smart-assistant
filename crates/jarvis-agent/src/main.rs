@@ -27,6 +27,7 @@ use jarvis_agent::compositor::{self, HyprctlClient};
 use jarvis_agent::identity::NodeKey;
 use jarvis_agent::node_voice::NodeVoice;
 use jarvis_agent::store::{CredentialStore, KeyringStore};
+use jarvis_agent::wake::{NeverWakes, Sensitivity, WakeGate, WakeWordDetector};
 use jarvis_agent::{client, pairing};
 
 /// Exit code for a node whose device was revoked. Distinct from a crash so a
@@ -263,9 +264,30 @@ fn open_audio() -> Option<NodeAudio<CpalOutput>> {
         }
     };
 
-    let audio = NodeAudio::new(NodeVoice::new(output), frames_rx);
+    let audio = NodeAudio::new(NodeVoice::new(output), frames_rx).with_gate(open_wake_gate());
     Some(match capture {
         Some(capture) => audio.with_capture(capture),
         None => audio,
     })
+}
+
+/// Builds this node's wake-word pipeline (F8.3, ADR-032).
+///
+/// The engine is chosen here and nowhere else, which is what makes ADR-032 §4's
+/// swap path real. With no engine compiled in, the node gets [`NeverWakes`] and
+/// says so: it still connects, still shows its screen, still speaks, and still
+/// answers push-to-talk — it just does not answer to its name.
+fn open_wake_gate() -> WakeGate<Box<dyn WakeWordDetector>> {
+    let sensitivity = std::env::var("JARVIS_AGENT_WAKE_SENSITIVITY")
+        .ok()
+        .and_then(|raw| raw.parse::<f32>().ok())
+        .map_or(Sensitivity::DEFAULT, Sensitivity::new);
+
+    let detector: Box<dyn WakeWordDetector> = Box::new(NeverWakes);
+    tracing::warn!(
+        sensitivity = sensitivity.value(),
+        "no wake-word engine is compiled into this build: this node will not answer to \
+         its name. Push-to-talk is unaffected (ADR-032, last consequence)."
+    );
+    WakeGate::new(detector)
 }

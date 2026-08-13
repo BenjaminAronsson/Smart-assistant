@@ -890,3 +890,73 @@ anything that has it, with no possession proof at reconnect.
 - Signed-request authentication per call is **not** adopted now; the token remains the
   per-request credential. If a future node crosses a network the owner does not control, that
   is the increment to make, and this ADR does not foreclose it.
+
+## ADR-032 — Wake word: openWakeWord, detected on the node, behind a port {#adr-032}
+
+**Status.** **Proposed** (drafted in F8.3, M8a). Owner accepts or rejects at the M8a gate.
+Implements the FR-13 amendment taken when the M8 feature list was approved
+(`docs/milestones/M8-features.md`, decisions 1–3): hands-free invocation moved from Should to
+**Must**, with push-to-talk retained as an equal path (NFR-11).
+
+**Context.** Wake word had been a `docs/08 §6` deferred decision since M0. M5 built a voice
+*turn* and M7 built the *transport* for satellites, but "talking to Jarvis" still meant opening a
+browser tab and holding a button. Nothing in the tree could hear its own name.
+
+Three things had to be decided together, because each constrains the others: which engine, where
+detection runs, and what the node is allowed to send before it fires.
+
+**Decision.**
+
+1. **openWakeWord** as the engine, `"jarvis"` as the word. It is Apache-2.0, the pre-trained
+   models are Apache-2.0/CC-BY, it runs on CPU well inside the 8 GB profile's budget
+   (docs/01 §4.1), and it needs no per-user training or cloud enrolment. **Licence review:** the
+   openWakeWord code is Apache-2.0; the bundled `melspectrogram` and `embedding` feature
+   extractors derive from Google's TFHub speech-embedding model, released under Apache-2.0; the
+   pre-trained wake-word models are released by the openWakeWord project under Apache-2.0. No
+   model asset is vendored into this repository — see consequence 4.
+
+2. **Detection runs on the node.** The satellite streams **nothing** until the word fires. This
+   is a privacy property, not an optimisation: an always-on microphone that ships every sound to
+   a server is a different product from one that listens locally and speaks only when addressed.
+   It also keeps the daemon inside its CPU budget with several rooms attached.
+
+3. **The daemon cannot ask a node to stream continuously.** There is no protocol frame for it and
+   the node has no code path to it: a capture stream is opened by a local detection or by the
+   local push-to-talk control, and by nothing else. Stated as a decision rather than an
+   implementation detail so that adding such a frame later is visibly a change to this ADR.
+
+4. **The engine sits behind a `WakeWordDetector` port**, like every other adapter. The
+   pipeline — pre-roll, gating, one-detection-per-utterance, barge-in — is engine-independent and
+   tested against a scripted detector; the engine is what is swappable.
+
+**Rejected: Picovoice Porcupine.** Materially better accuracy per CPU cycle and a genuinely small
+footprint, but the free tier is per-user-account key-gated with an online activation step, and a
+house that stops answering because an access key lapsed is a worse failure than a false accept.
+The licence is also not compatible with the "runs offline, forever, with no account" property the
+rest of this system has.
+
+**Rejected: Snowboy / precise.** Both effectively unmaintained.
+
+**Rejected: detection in the daemon.** It would let one model serve every room and simplify
+updates. It requires every satellite to stream its room's audio to the daemon continuously,
+which is exactly the product this is not.
+
+**Rejected: a cloud wake-word service.** Same objection, one hop further, and it would put a
+third party in the path of every sound in the house.
+
+**Consequences.**
+- A node needs ~20–30 MB resident for the model and its feature extractors, and a few percent of
+  one core continuously. That is the cost of the privacy property and is budgeted per *node*, not
+  against the daemon.
+- **False accepts are a budget to measure, not a claim to assert.** Sensitivity is configurable
+  per node, and the M8a gate reports a measured false-accept rate over a household-noise corpus
+  rather than an assurance.
+- **Model assets are provisioned, not vendored.** They are downloaded at install time (F8.9) with
+  a pinned checksum. A repository that commits a 20 MB binary blob it did not build cannot
+  meaningfully review the licence of what it ships.
+- ONNX Runtime is a heavyweight native dependency, so the engine adapter is behind a Cargo
+  feature (`wake-word-onnx`). CI builds and tests the pipeline without it; a satellite image
+  enables it. The port makes the fallback honest rather than hypothetical: with the feature off,
+  a node still runs and still answers push-to-talk.
+- Barge-in is now possible from the node side, which F8.4 needs — a wake word detected while the
+  assistant is speaking must interrupt it, not start a second turn.

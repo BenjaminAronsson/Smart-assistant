@@ -18,3 +18,4 @@ pub mod node_voice;
 pub mod pairing;
 pub mod pinning;
 pub mod store;
+pub mod wake;
