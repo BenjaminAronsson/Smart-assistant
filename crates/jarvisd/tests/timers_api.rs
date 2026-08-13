@@ -110,7 +110,11 @@ struct RecordingAlert {
 
 #[async_trait::async_trait]
 impl AlertPlayer for RecordingAlert {
-    async fn play(&self, _cancel: CancellationToken) -> Result<(), AlertError> {
+    async fn play(
+        &self,
+        _target: Option<&jarvis_domain::ids::DeviceId>,
+        _cancel: CancellationToken,
+    ) -> Result<(), AlertError> {
         *self.plays.lock().unwrap() += 1;
         Ok(())
     }
@@ -124,7 +128,12 @@ struct VoicelessAnnouncer {
 
 #[async_trait::async_trait]
 impl Announcer for VoicelessAnnouncer {
-    async fn announce(&self, text: &str, _cancel: CancellationToken) -> AnnouncementOutcome {
+    async fn announce(
+        &self,
+        text: &str,
+        _target: Option<&jarvis_domain::ids::DeviceId>,
+        _cancel: CancellationToken,
+    ) -> AnnouncementOutcome {
         self.lines.lock().unwrap().push(text.to_owned());
         AnnouncementOutcome::Unavailable
     }
@@ -238,6 +247,8 @@ fn overdue(id: &str, name: &str) -> Timer {
         TimerState::Pending,
         at(T0 - 3_600),
         at(T0 - 4_200),
+        // Unattributed: the restart-sweep fixture predates room attribution.
+        None,
     )
 }
 

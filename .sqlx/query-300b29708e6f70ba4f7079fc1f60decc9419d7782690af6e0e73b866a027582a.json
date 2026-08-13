@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO timers.timers\n                (id, name, kind, duration_secs, note, state, fire_at, created_at, updated_at,\n                 origin_device_id)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "300b29708e6f70ba4f7079fc1f60decc9419d7782690af6e0e73b866a027582a"
+}

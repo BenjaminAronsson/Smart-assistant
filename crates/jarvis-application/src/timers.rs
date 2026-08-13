@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use jarvis_domain::audit::AuditEvent;
-use jarvis_domain::ids::TimerId;
+use jarvis_domain::ids::{DeviceId, TimerId};
 use jarvis_domain::timers::{
     MISSED_GRACE, Timer, TimerAction, TimerKind, TimerName, TimerScheduleError, TimerSnoozeError,
     TimerTransitionError,
@@ -182,7 +182,13 @@ impl TimerService {
             Some(raw) => TimerName::new(raw).map_err(|_| TimerServiceError::EmptyName)?,
             None => TimerName::fallback_for(&request.kind),
         };
-        let timer = Timer::schedule(id, name, request.kind, fire_at, now)?;
+        // The actor *is* the room: `set` is reached from an authenticated
+        // device socket, and the device that set the timer is the one standing
+        // in the room that spoke (F8.5). An actor that names no device — the
+        // shell, and later an automation — leaves the timer unattributed, which
+        // is a real case and rings on the host.
+        let timer =
+            Timer::schedule(id, name, request.kind, fire_at, now)?.with_origin(device_of(actor));
         // Audit and row commit together (invariant 6): a timer that cannot be
         // recorded is not set at all.
         self.store
@@ -326,14 +332,24 @@ impl TimerService {
         // A silent box is reported, never fatal. This layer has no `tracing`
         // dependency by design (it stays pure — arch-test), so the diagnostic is
         // carried out on [`FiredTimer::alerted`] and logged by the host.
-        let alerted = self.alert.play(cancel.clone()).await.is_ok();
+        // Where it was set is where it rings (F8.5). This closes the bug M7
+        // made visible: the alert used to play on the daemon host with no
+        // device notion, so a timer set in the kitchen rang at the desk.
+        let target = timer.origin_device().cloned();
+        let alerted = self
+            .alert
+            .play(target.as_ref(), cancel.clone())
+            .await
+            .is_ok();
         let line = if missed {
             timer.missed_announcement()
         } else {
             timer.announcement()
         };
         let announced = matches!(
-            self.announcer.announce(&line, cancel.clone()).await,
+            self.announcer
+                .announce(&line, target.as_ref(), cancel.clone())
+                .await,
             AnnouncementOutcome::Spoken
         );
         FiredTimer {
@@ -343,6 +359,16 @@ impl TimerService {
             announced,
         }
     }
+}
+
+/// The device inside an audit actor, if the actor names one.
+///
+/// Actors are `device:<ulid>` for anything reached through a device socket and
+/// `system` for the daemon's own work (see [`audit`]). Parsing rather than
+/// threading a second parameter keeps one definition of "who did this": the
+/// value that is already audited is the value that decides the room.
+fn device_of(actor: &str) -> Option<DeviceId> {
+    actor.strip_prefix("device:")?.parse().ok()
 }
 
 fn check(cancel: &CancellationToken) -> Result<(), TimerServiceError> {
@@ -511,6 +537,8 @@ mod tests {
     struct FakeAlert {
         plays: Mutex<u32>,
         unavailable: bool,
+        /// The room the last alert was addressed to (F8.5).
+        target: Mutex<Option<DeviceId>>,
     }
 
     impl FakeAlert {
@@ -520,6 +548,9 @@ mod tests {
                 ..Self::default()
             })
         }
+        fn last_target(&self) -> Option<DeviceId> {
+            self.target.lock().expect("lock").clone()
+        }
         fn count(&self) -> u32 {
             *self.plays.lock().unwrap()
         }
@@ -527,7 +558,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AlertPlayer for FakeAlert {
-        async fn play(&self, _cancel: CancellationToken) -> Result<(), AlertError> {
+        async fn play(
+            &self,
+            target: Option<&DeviceId>,
+            _cancel: CancellationToken,
+        ) -> Result<(), AlertError> {
+            *self.target.lock().expect("lock") = target.cloned();
             *self.plays.lock().unwrap() += 1;
             if self.unavailable {
                 return Err(AlertError::Unavailable);
@@ -540,6 +576,8 @@ mod tests {
     struct FakeAnnouncer {
         spoken: Mutex<Vec<String>>,
         available: bool,
+        /// The room the last announcement was addressed to (F8.5).
+        target: Mutex<Option<DeviceId>>,
     }
 
     impl FakeAnnouncer {
@@ -547,22 +585,33 @@ mod tests {
             Arc::new(Self {
                 spoken: Mutex::default(),
                 available: false,
+                target: Mutex::default(),
             })
         }
         fn voiced() -> Arc<Self> {
             Arc::new(Self {
                 spoken: Mutex::default(),
                 available: true,
+                target: Mutex::default(),
             })
         }
         fn lines(&self) -> Vec<String> {
             self.spoken.lock().unwrap().clone()
         }
+        fn last_target(&self) -> Option<DeviceId> {
+            self.target.lock().expect("lock").clone()
+        }
     }
 
     #[async_trait::async_trait]
     impl Announcer for FakeAnnouncer {
-        async fn announce(&self, text: &str, _cancel: CancellationToken) -> AnnouncementOutcome {
+        async fn announce(
+            &self,
+            text: &str,
+            target: Option<&DeviceId>,
+            _cancel: CancellationToken,
+        ) -> AnnouncementOutcome {
+            *self.target.lock().expect("lock") = target.cloned();
             self.spoken.lock().unwrap().push(text.to_owned());
             if self.available {
                 AnnouncementOutcome::Spoken
@@ -618,6 +667,10 @@ mod tests {
                 FakeAnnouncer::voiceless(),
             )
         }
+    }
+
+    fn dev(raw: &str) -> DeviceId {
+        raw.parse().expect("test device id")
     }
 
     fn pending(raw_id: &str, name: &str, fire_at: u64, created: u64) -> Timer {
@@ -706,6 +759,118 @@ mod tests {
         assert_eq!(fired.len(), 1);
         assert!(!fired[0].missed);
         assert_eq!(h.announcer.lines(), vec!["pasta timer is up"]);
+    }
+
+    // ---- room attribution (F8.5) -------------------------------------------
+
+    /// The bug this closes: the alert used to play on the daemon host with no
+    /// device notion, so a timer set in the kitchen rang at the desk.
+    #[tokio::test]
+    async fn a_timer_rings_in_the_room_it_was_set_in() {
+        let kitchen = "01ARZ3NDEKTSV4RRFFQ69G5FB2";
+        let alert = Arc::new(FakeAlert::default());
+        let announcer = FakeAnnouncer::voiced();
+        let h = Harness::with(
+            vec![pending(ID, "pasta timer", T0, T0 - 600).with_origin(Some(dev(kitchen)))],
+            alert.clone(),
+            announcer.clone(),
+        );
+
+        h.service.fire_due(&CancellationToken::new()).await.unwrap();
+
+        assert_eq!(
+            alert.last_target().as_ref().map(DeviceId::as_str),
+            Some(kitchen),
+            "the tone must be addressed to the room that set the timer"
+        );
+        assert_eq!(
+            announcer.last_target().as_ref().map(DeviceId::as_str),
+            Some(kitchen),
+            "and so must the spoken announcement"
+        );
+    }
+
+    /// A timer nobody set from a room — the shell, or later an automation —
+    /// still has to ring somewhere. `None` is the fallback signal, not a
+    /// failure.
+    #[tokio::test]
+    async fn an_unattributed_timer_still_rings_somewhere() {
+        let alert = Arc::new(FakeAlert::default());
+        let h = Harness::with(
+            vec![pending(ID, "pasta timer", T0, T0 - 600)],
+            alert.clone(),
+            FakeAnnouncer::voiced(),
+        );
+
+        let fired = h.service.fire_due(&CancellationToken::new()).await.unwrap();
+
+        assert_eq!(alert.count(), 1, "it must still ring");
+        assert!(fired[0].alerted);
+        assert_eq!(
+            alert.last_target(),
+            None,
+            "with no room, the host is the fallback"
+        );
+    }
+
+    /// The room comes from the actor, which is the device that set it — one
+    /// definition of "who did this", already audited.
+    #[tokio::test]
+    async fn setting_a_timer_from_a_device_attributes_it_to_that_room() {
+        let kitchen = "01ARZ3NDEKTSV4RRFFQ69G5FB2";
+        let h = Harness::empty();
+        let timer = h
+            .service
+            .set(
+                id(ID),
+                NewTimer {
+                    kind: TimerKind::Alarm,
+                    when: TimerWhen::In(Duration::from_secs(60)),
+                    name: Some("wake up".to_owned()),
+                },
+                &format!("device:{kitchen}"),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("sets");
+        assert_eq!(
+            timer.origin_device().map(DeviceId::as_str),
+            Some(kitchen),
+            "the device that set it is the room it belongs to"
+        );
+    }
+
+    /// `system` is the daemon acting on its own behalf — no room, and nothing
+    /// that looks like one may be invented from it.
+    #[tokio::test]
+    async fn a_timer_set_by_the_system_belongs_to_no_room() {
+        let h = Harness::empty();
+        let timer = h
+            .service
+            .set(
+                id(ID),
+                NewTimer {
+                    kind: TimerKind::Alarm,
+                    when: TimerWhen::In(Duration::from_secs(60)),
+                    name: Some("wake up".to_owned()),
+                },
+                "system",
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("sets");
+        assert_eq!(timer.origin_device(), None);
+    }
+
+    #[test]
+    fn a_malformed_actor_yields_no_room_rather_than_a_wrong_one() {
+        assert_eq!(device_of("system"), None);
+        assert_eq!(device_of("device:not-a-ulid"), None);
+        assert_eq!(device_of(""), None);
+        assert_eq!(
+            device_of("device:01ARZ3NDEKTSV4RRFFQ69G5FB2").map(|d| d.as_str().to_owned()),
+            Some("01ARZ3NDEKTSV4RRFFQ69G5FB2".to_owned())
+        );
     }
 
     // ---- the alert is independent of the TTS pipeline ----------------------
