@@ -1226,6 +1226,17 @@ export interface TimerDto {
    */
   remainingSecs?: number | null;
   state: TimerStateDto;
+  /**
+   * The device this timer was set on — the room it must ring in (F8.5,
+   * FR-33). Absent when it was set from nowhere in particular (the shell, or
+   * an automation), which is the case that falls back to the daemon's own
+   * speaker.
+   *
+   * Same name and same meaning as the display directives' `targetDeviceId`
+   * (F7.5): the fan-out addresses on this field, so an alert reaches exactly
+   * the room that set it and no other.
+   */
+  targetDeviceId?: string | null;
   [k: string]: unknown;
 }
 /**

@@ -312,6 +312,33 @@ impl WsHub {
         let _ = self.tx.send(Arc::new(envelope));
     }
 
+    /// Ring a timer in the room it was set in (F8.5, FR-33).
+    ///
+    /// Voice channel and **addressed**, so exactly the node that set the timer
+    /// hears it — [`delivers_to`] enforces that. Only the *instruction* travels:
+    /// the alert tone is fixed and deterministic, so the node synthesises it
+    /// locally rather than having audio pushed at it. That keeps this a small
+    /// text frame instead of a per-socket binary stream, and it means a room
+    /// still rings when nothing about the voice pipeline is working.
+    ///
+    /// Returns whether any socket was subscribed — the caller uses that to
+    /// decide whether the alarm was actually delivered, or whether it has to
+    /// fall back to the daemon's own speaker (ADR-023: an alarm must sound).
+    pub fn ring_timer_at(&self, timer: &jarvis_contracts::timers::TimerDto) -> bool {
+        let payload = serde_json::to_value(timer).expect("timer dto serializes");
+        let envelope = EventEnvelope {
+            v: CONTRACT_VERSION,
+            seq: self.high_water.load(Ordering::SeqCst),
+            channel: Channel::Voice,
+            event_type: "timer.fired".to_owned(),
+            occurred_at: now_rfc3339(),
+            trace_id: None,
+            resource_version: None,
+            payload,
+        };
+        self.tx.send(Arc::new(envelope)).is_ok()
+    }
+
     /// Broadcast a transient `hud.canvas` instruction (F3b.6, FR-27/ADR-017):
     /// what this turn does to the materialization canvas, plus the cards that
     /// belong on it. Like a text delta it rides at the current high-water `seq`
@@ -575,6 +602,18 @@ pub(crate) fn delivers_to(
         Channel::Voice => {
             if !class.holds(ClassScope::VoiceCapture.as_str()) {
                 return false;
+            }
+            // Addressed to a *device* (F8.5): a timer must ring in the room it
+            // was set in and nowhere else. Checked before the stream rule,
+            // because this kind of event belongs to a room rather than to a
+            // conversation — there is no capture stream open when a timer goes
+            // off in an empty kitchen.
+            if let Some(target) = envelope
+                .payload
+                .get("targetDeviceId")
+                .and_then(|v| v.as_str())
+            {
+                return device_id.is_some_and(|id| id == target);
             }
             match envelope.payload.get("streamId").and_then(|v| v.as_str()) {
                 // Addressed to a stream: only its owner hears it.
@@ -2276,6 +2315,50 @@ mod delivery_scope_tests {
         assert!(delivers_to(
             &card,
             DeviceClass::OwnerUi,
+            Some(THIS_DEVICE),
+            None
+        ));
+    }
+
+    /// A timer rings in exactly the room it was set in (F8.5). Without this,
+    /// a kitchen timer either rings in every room at once or — as it did before
+    /// M8 — rings only on the daemon's own host, at the desk.
+    #[test]
+    fn a_timer_alert_reaches_only_the_room_it_was_set_in() {
+        let addressed = envelope(
+            Channel::Voice,
+            "timer.fired",
+            serde_json::json!({ "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "targetDeviceId": THIS_DEVICE }),
+        );
+        // Both satellite classes can ring: a voice node is a speaker with no
+        // screen, which is exactly the device a kitchen timer needs.
+        for class in [DeviceClass::VoiceNode, DeviceClass::RoomNode] {
+            assert!(
+                delivers_to(&addressed, class, Some(THIS_DEVICE), None),
+                "{class} did not receive the alert addressed to it"
+            );
+            assert!(
+                !delivers_to(&addressed, class, Some(OTHER_DEVICE), None),
+                "{class} received an alert addressed to another room"
+            );
+        }
+    }
+
+    /// The device address is checked *before* the stream rule, because a timer
+    /// belongs to a room rather than to a conversation: nothing has a capture
+    /// stream open when a timer goes off in an empty kitchen.
+    #[test]
+    fn a_timer_alert_needs_no_open_capture_stream() {
+        let addressed = envelope(
+            Channel::Voice,
+            "timer.fired",
+            serde_json::json!({ "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "targetDeviceId": THIS_DEVICE }),
+        );
+        // `None` for the owned stream: this socket is idle, as a kitchen node
+        // is for all but a few seconds a day.
+        assert!(delivers_to(
+            &addressed,
+            DeviceClass::VoiceNode,
             Some(THIS_DEVICE),
             None
         ));

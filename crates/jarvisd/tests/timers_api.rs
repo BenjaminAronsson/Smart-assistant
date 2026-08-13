@@ -112,7 +112,7 @@ struct RecordingAlert {
 impl AlertPlayer for RecordingAlert {
     async fn play(
         &self,
-        _target: Option<&jarvis_domain::ids::DeviceId>,
+        _timer: &jarvis_domain::timers::Timer,
         _cancel: CancellationToken,
     ) -> Result<(), AlertError> {
         *self.plays.lock().unwrap() += 1;

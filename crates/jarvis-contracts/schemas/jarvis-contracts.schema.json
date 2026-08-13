@@ -3393,6 +3393,13 @@
         },
         "state": {
           "$ref": "#/definitions/TimerStateDto"
+        },
+        "targetDeviceId": {
+          "description": "The device this timer was set on — the room it must ring in (F8.5,\nFR-33). Absent when it was set from nowhere in particular (the shell, or\nan automation), which is the case that falls back to the daemon's own\nspeaker.\n\nSame name and same meaning as the display directives' `targetDeviceId`\n(F7.5): the fan-out addresses on this field, so an alert reaches exactly\nthe room that set it and no other.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
