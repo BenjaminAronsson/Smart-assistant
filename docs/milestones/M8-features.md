@@ -92,7 +92,7 @@ fresh machine.
 **Sub-gate exit evidence:** say the wake word at a satellite and be answered aloud *by that
 satellite*, with no browser involved and nothing streamed before the word fired.
 
-- [ ] **F8.1 — `jarvis-agent --node`: pair, pin, connect (FR-19)** · *strong model*
+- [x] **F8.1 — `jarvis-agent --node`: pair, pin, connect (FR-19)** ✅ PR #44 · *strong model*
       The client M7's protocol never got. Generates an Ed25519 keypair, pairs through the
       real `/api/v1/devices/pair` route with a code the owner reads out, **pins the
       `serverFingerprint`** and refuses anything else afterwards, stores its token in the

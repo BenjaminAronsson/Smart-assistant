@@ -7,12 +7,14 @@
 //! into a bin-only crate. A claim that can only be tested through unit tests of
 //! its own parts is not the claim the feature makes.
 
+pub mod audio;
 pub mod cli;
 pub mod client;
 pub mod compositor;
 pub mod handler;
 pub mod http;
 pub mod identity;
+pub mod node_voice;
 pub mod pairing;
 pub mod pinning;
 pub mod store;
