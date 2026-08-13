@@ -23,7 +23,7 @@
 use std::fmt;
 use std::time::{Duration, SystemTime};
 
-use crate::ids::TimerId;
+use crate::ids::{DeviceId, TimerId};
 use crate::tools::sanitize_result_content;
 
 /// Longest accepted timer name, in bytes. Names are spoken back ("the pasta
@@ -374,6 +374,17 @@ pub struct Timer {
     state: TimerState,
     fire_at: SystemTime,
     created_at: SystemTime,
+    /// The device that set this timer — the room that spoke (F8.5, FR-33).
+    ///
+    /// `Option` because not every timer has a room: one set from the shell, or
+    /// later by an automation, was set by nobody standing anywhere. That case
+    /// is not an error and must still ring somewhere sensible, so the absence
+    /// is modelled rather than defaulted.
+    ///
+    /// Provenance, so it is immutable for the same reason `created_at` is: a
+    /// timer that could be re-homed after the fact could be made to ring in a
+    /// room its setter never chose.
+    origin_device: Option<DeviceId>,
 }
 
 impl Timer {
@@ -407,7 +418,21 @@ impl Timer {
             state: TimerState::Pending,
             fire_at,
             created_at: now,
+            // Attribution is applied by the caller that knows the actor; a
+            // timer is valid without one.
+            origin_device: None,
         })
+    }
+
+    /// Attribute this timer to the device that set it (F8.5).
+    ///
+    /// A builder rather than a `schedule` parameter because attribution is
+    /// genuinely optional and the scheduling rules — horizon, backdate — have
+    /// nothing to do with it.
+    #[must_use]
+    pub fn with_origin(mut self, origin_device: Option<DeviceId>) -> Self {
+        self.origin_device = origin_device;
+        self
     }
 
     /// Rehydrate a stored row. The repository is the only caller; it has already
@@ -419,6 +444,7 @@ impl Timer {
         state: TimerState,
         fire_at: SystemTime,
         created_at: SystemTime,
+        origin_device: Option<DeviceId>,
     ) -> Self {
         Self {
             id,
@@ -427,6 +453,7 @@ impl Timer {
             state,
             fire_at,
             created_at,
+            origin_device,
         }
     }
 
@@ -452,6 +479,14 @@ impl Timer {
 
     pub fn created_at(&self) -> SystemTime {
         self.created_at
+    }
+
+    /// The device this timer was set on, if it was set on one.
+    ///
+    /// The fire path uses this to ring in the room that spoke; `None` means
+    /// "nobody's room", and the caller falls back to the host (F8.5).
+    pub fn origin_device(&self) -> Option<&DeviceId> {
+        self.origin_device.as_ref()
     }
 
     /// **The** due decision (docs/02 §11e): armed, and its moment has arrived.

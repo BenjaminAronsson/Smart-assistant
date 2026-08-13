@@ -8,7 +8,7 @@ use jarvis_domain::artifact::{ArtifactManifest, ArtifactVersion};
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::conversations::{Message, Session};
 use jarvis_domain::grants::Sha256;
-use jarvis_domain::ids::{ArtifactId, ListId, ListItemId, RunId, SessionId, TimerId};
+use jarvis_domain::ids::{ArtifactId, DeviceId, ListId, ListItemId, RunId, SessionId, TimerId};
 use jarvis_domain::lists::{ItemList, ListItem, ListName};
 use jarvis_domain::memory::{Memory, MemoryLayer};
 use jarvis_domain::run::Run;
@@ -778,7 +778,19 @@ pub enum AlertError {
 /// still carded, and still audited.
 #[async_trait::async_trait]
 pub trait AlertPlayer: Send + Sync {
-    async fn play(&self, cancel: tokio_util::sync::CancellationToken) -> Result<(), AlertError>;
+    /// Sound the alert, in `target`'s room when there is one (F8.5).
+    ///
+    /// `None` means the timer was not attributed to a device — set from the
+    /// shell, or by an automation — and the implementation falls back to
+    /// whatever it considers "somewhere sensible", which for the daemon is its
+    /// own host. A target that is no longer reachable (a revoked or unplugged
+    /// node) is the same case: the timer still rings, it just does not ring
+    /// there.
+    async fn play(
+        &self,
+        target: Option<&DeviceId>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<(), AlertError>;
 }
 
 /// What happened to a spoken announcement.
@@ -801,9 +813,12 @@ pub enum AnnouncementOutcome {
 /// working with no voice pipeline at all.
 #[async_trait::async_trait]
 pub trait Announcer: Send + Sync {
+    /// Speak `text`, in `target`'s room when there is one (F8.5). Same
+    /// fallback rule as [`AlertPlayer::play`].
     async fn announce(
         &self,
         text: &str,
+        target: Option<&DeviceId>,
         cancel: tokio_util::sync::CancellationToken,
     ) -> AnnouncementOutcome;
 }

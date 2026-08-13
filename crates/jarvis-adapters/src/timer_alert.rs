@@ -166,7 +166,15 @@ impl CommandAlertPlayer {
 
 #[async_trait]
 impl AlertPlayer for CommandAlertPlayer {
-    async fn play(&self, cancel: CancellationToken) -> Result<(), AlertError> {
+    async fn play(
+        &self,
+        // This player is the daemon's own speaker, so it is the fallback rather
+        // than a router: it rings here wherever the timer was set. Routing to
+        // the room lives in jarvisd, which is the only thing that knows which
+        // nodes are connected.
+        _target: Option<&jarvis_domain::ids::DeviceId>,
+        cancel: CancellationToken,
+    ) -> Result<(), AlertError> {
         if cancel.is_cancelled() {
             return Err(AlertError::Cancelled);
         }
@@ -224,7 +232,12 @@ pub struct SilentAnnouncer;
 
 #[async_trait]
 impl Announcer for SilentAnnouncer {
-    async fn announce(&self, _text: &str, _cancel: CancellationToken) -> AnnouncementOutcome {
+    async fn announce(
+        &self,
+        _text: &str,
+        _target: Option<&jarvis_domain::ids::DeviceId>,
+        _cancel: CancellationToken,
+    ) -> AnnouncementOutcome {
         AnnouncementOutcome::Unavailable
     }
 }
@@ -288,7 +301,7 @@ mod tests {
         // must still fire — this is a report, not an error to propagate.
         let player = CommandAlertPlayer::new("jarvis-no-such-audio-player", Vec::new());
         assert_eq!(
-            player.play(CancellationToken::new()).await,
+            player.play(None, CancellationToken::new()).await,
             Err(AlertError::Unavailable)
         );
     }
@@ -300,7 +313,7 @@ mod tests {
         // `true` exists everywhere and would succeed; the cancellation check
         // must come first (invariant 4).
         let player = CommandAlertPlayer::new("true", Vec::new());
-        assert_eq!(player.play(cancel).await, Err(AlertError::Cancelled));
+        assert_eq!(player.play(None, cancel).await, Err(AlertError::Cancelled));
     }
 
     #[tokio::test]
@@ -308,14 +321,14 @@ mod tests {
         // `cat` consumes stdin and exits 0 — a stand-in for a working audio
         // sink that proves the pipe/wait path, with no device needed in CI.
         let player = CommandAlertPlayer::new("cat", Vec::new());
-        assert_eq!(player.play(CancellationToken::new()).await, Ok(()));
+        assert_eq!(player.play(None, CancellationToken::new()).await, Ok(()));
     }
 
     #[tokio::test]
     async fn a_player_that_rejects_the_stream_reads_as_unavailable() {
         let player = CommandAlertPlayer::new("false", Vec::new());
         assert_eq!(
-            player.play(CancellationToken::new()).await,
+            player.play(None, CancellationToken::new()).await,
             Err(AlertError::Unavailable)
         );
     }
@@ -324,7 +337,7 @@ mod tests {
     async fn the_pre_m5_announcer_admits_it_cannot_speak() {
         assert_eq!(
             SilentAnnouncer
-                .announce("Reminder — call Mom", CancellationToken::new())
+                .announce("Reminder — call Mom", None, CancellationToken::new())
                 .await,
             AnnouncementOutcome::Unavailable,
             "claiming success here would hide that the card is the only notice"

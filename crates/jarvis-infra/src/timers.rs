@@ -21,7 +21,7 @@
 use async_trait::async_trait;
 use jarvis_application::ports::{DomainEventRecord, RepositoryError, TimerStore};
 use jarvis_domain::audit::AuditEvent;
-use jarvis_domain::ids::TimerId;
+use jarvis_domain::ids::{DeviceId, TimerId};
 use jarvis_domain::timers::{Timer, TimerKind, TimerName, TimerNote, TimerState};
 use sqlx::PgPool;
 use std::time::{Duration, SystemTime};
@@ -61,6 +61,7 @@ struct TimerRow {
     state: String,
     fire_at: OffsetDateTime,
     created_at: OffsetDateTime,
+    origin_device_id: Option<String>,
 }
 
 impl TimerRow {
@@ -102,6 +103,17 @@ impl TimerRow {
                 )));
             }
         };
+        // An unreadable origin is an error, not a silent `None`: quietly
+        // dropping the attribution would ring the timer in the wrong room and
+        // look like a routing bug rather than a bad row.
+        let origin_device = self
+            .origin_device_id
+            .as_deref()
+            .map(|raw| {
+                raw.parse::<DeviceId>()
+                    .map_err(|e| RepositoryError::Storage(format!("bad timer origin device: {e}")))
+            })
+            .transpose()?;
         Ok(Timer::from_parts(
             id,
             name,
@@ -109,6 +121,7 @@ impl TimerRow {
             state,
             self.fire_at.into(),
             self.created_at.into(),
+            origin_device,
         ))
     }
 }
@@ -144,8 +157,9 @@ impl TimerStore for PgTimerStore {
         sqlx::query!(
             r#"
             INSERT INTO timers.timers
-                (id, name, kind, duration_secs, note, state, fire_at, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
+                (id, name, kind, duration_secs, note, state, fire_at, created_at, updated_at,
+                 origin_device_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9)
             "#,
             timer.id().as_str(),
             timer.name().as_str(),
@@ -155,6 +169,7 @@ impl TimerStore for PgTimerStore {
             timer.state().as_str(),
             utc(timer.fire_at()),
             now,
+            timer.origin_device().map(DeviceId::as_str),
         )
         .execute(&mut *tx)
         .await
@@ -174,7 +189,8 @@ impl TimerStore for PgTimerStore {
         let row = sqlx::query_as!(
             TimerRow,
             r#"
-            SELECT id, name, kind, duration_secs, note, state, fire_at, created_at
+            SELECT id, name, kind, duration_secs, note, state, fire_at, created_at,
+                   origin_device_id
             FROM timers.timers
             WHERE id = $1
             "#,
@@ -193,7 +209,8 @@ impl TimerStore for PgTimerStore {
         let rows = sqlx::query_as!(
             TimerRow,
             r#"
-            SELECT id, name, kind, duration_secs, note, state, fire_at, created_at
+            SELECT id, name, kind, duration_secs, note, state, fire_at, created_at,
+                   origin_device_id
             FROM timers.timers
             WHERE state IN ('pending', 'snoozed', 'fired')
             ORDER BY fire_at ASC, id ASC

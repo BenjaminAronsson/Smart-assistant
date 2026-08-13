@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, name, kind, duration_secs, note, state, fire_at, created_at\n            FROM timers.timers\n            WHERE id = $1\n            ",
+  "query": "\n            SELECT id, name, kind, duration_secs, note, state, fire_at, created_at,\n                   origin_device_id\n            FROM timers.timers\n            WHERE state IN ('pending', 'snoozed', 'fired')\n            ORDER BY fire_at ASC, id ASC\n            ",
   "describe": {
     "columns": [
       {
@@ -42,12 +42,15 @@
         "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "origin_device_id",
+        "type_info": "Text"
       }
     ],
     "parameters": {
-      "Left": [
-        "Text"
-      ]
+      "Left": []
     },
     "nullable": [
       false,
@@ -57,8 +60,9 @@
       true,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "879a9f0f86a8acbc9f7f57300d90dcbf532b9999db8b9175b5909a15ac3e4a66"
+  "hash": "5ddb4b22bba190274d01638e2f6d857fabb736677ad3a437945ace99b2ca88fc"
 }

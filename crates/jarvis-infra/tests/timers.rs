@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime};
 
 use jarvis_application::ports::{DomainEventRecord, RepositoryError, TimerStore};
 use jarvis_domain::audit::AuditEvent;
-use jarvis_domain::ids::TimerId;
+use jarvis_domain::ids::{DeviceId, TimerId};
 use jarvis_domain::timers::{MISSED_GRACE, Timer, TimerKind, TimerName, TimerNote, TimerState};
 use jarvis_infra::audit::verify_chain;
 use jarvis_infra::timers::PgTimerStore;
@@ -47,6 +47,8 @@ fn countdown(raw_id: &str, name: &str, secs_ahead: i64) -> Timer {
         TimerState::Pending,
         fire_at,
         now - Duration::from_secs(600),
+        // Unattributed: these fixtures predate room attribution (F8.5).
+        None,
     )
 }
 
@@ -243,6 +245,8 @@ async fn every_kind_round_trips_including_its_kind_specific_payload(pool: PgPool
         TimerState::Pending,
         t0() + Duration::from_secs(3_600),
         t0(),
+        // Unattributed: these fixtures predate room attribution (F8.5).
+        None,
     );
     let reminder = Timer::from_parts(
         id(MOM),
@@ -253,6 +257,8 @@ async fn every_kind_round_trips_including_its_kind_specific_payload(pool: PgPool
         TimerState::Pending,
         t0() + Duration::from_secs(7_200),
         t0(),
+        // Unattributed: these fixtures predate room attribution (F8.5).
+        None,
     );
     let pasta = countdown(PASTA, "pasta timer", 600);
     for t in [&alarm, &reminder, &pasta] {
@@ -451,4 +457,65 @@ async fn outbox_types(pool: &PgPool) -> Vec<String> {
         .fetch_all(pool)
         .await
         .unwrap()
+}
+
+/// F8.5's named acceptance: "a timer set on one node rings on it **after a
+/// restart**". That is a claim about the *row*, not about memory — the origin
+/// has to come back out of Postgres.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_timers_room_survives_a_restart(pool: PgPool) {
+    let store = PgTimerStore::new(pool.clone());
+    let kitchen: DeviceId = "01ARZ3NDEKTSV4RRFFQ69G5FB2".parse().expect("device id");
+
+    let timer = Timer::from_parts(
+        id(BREAD),
+        TimerName::new("pasta timer").unwrap(),
+        TimerKind::Countdown {
+            duration: Duration::from_secs(600),
+        },
+        TimerState::Pending,
+        t0() + Duration::from_secs(600),
+        t0(),
+        Some(kitchen.clone()),
+    );
+    store
+        .create(&timer, &audit_for(&timer, "timer.set"))
+        .await
+        .expect("creates");
+
+    // A new store over the same pool is the restart: nothing in memory carries
+    // over, so anything that comes back came out of the row.
+    let after_restart = PgTimerStore::new(pool);
+    let live = after_restart.list_live().await.expect("lists");
+    assert_eq!(live.len(), 1);
+    assert_eq!(
+        live[0].origin_device(),
+        Some(&kitchen),
+        "the room a timer was set in must survive a restart"
+    );
+}
+
+/// An unattributed timer round-trips as unattributed — the absence is stored,
+/// not defaulted into somebody's room.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_timer_with_no_room_reads_back_with_no_room(pool: PgPool) {
+    let store = PgTimerStore::new(pool);
+    let timer = Timer::from_parts(
+        id(BREAD),
+        TimerName::new("pasta timer").unwrap(),
+        TimerKind::Countdown {
+            duration: Duration::from_secs(600),
+        },
+        TimerState::Pending,
+        t0() + Duration::from_secs(600),
+        t0(),
+        None,
+    );
+    store
+        .create(&timer, &audit_for(&timer, "timer.set"))
+        .await
+        .expect("creates");
+
+    let live = store.list_live().await.expect("lists");
+    assert_eq!(live[0].origin_device(), None);
 }
