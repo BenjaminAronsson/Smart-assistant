@@ -104,7 +104,7 @@ satellite*, with no browser involved and nothing streamed before the word fired.
       Refs: ADR-031, docs/05 §6.5, M7's `golden11_node.rs` (the shape to follow).
       Deps: none.
 
-- [ ] **F8.2 — Node audio: capture and playback (FR-13)** · *Sonnet*
+- [x] **F8.2 — Node audio: capture and playback (FR-13)** ✅ PR #45 · *Sonnet*
       Makes `voice-node` / `room-node` describe something real. `cpal`-backed capture at
       16 kHz mono 16-bit — the format docs/05 §1 already fixes — streamed as binary WS
       frames, and TTS frames played back on the node's output device. Config names the
@@ -115,6 +115,10 @@ satellite*, with no browser involved and nothing streamed before the word fired.
       Refs: docs/05 §1 (binary frames), F7.6's socket-side routing. Deps: F8.1.
 
 - [ ] **F8.3 — Wake word on the node (FR-13 amended, ADR-032)** · *strong model*
+      ⚠️ **PARTIAL — PR #46.** Port, pipeline and ADR-032 are merged; the **openWakeWord ONNX
+      binding is not implemented**, so a node does not answer to its name and the recorded-clip /
+      household-noise tests are unsatisfied. **Blocks M8a's exit evidence.** The only place an
+      engine is chosen is `open_wake_gate()` in `crates/jarvis-agent/src/main.rs`.
       The feature that changes what this product *is*. The engine runs **on the node**;
       audio never leaves the device until the word fires, and the daemon cannot be asked to
       stream continuously. VAD gates end-of-turn as it does today. Includes a visible
@@ -126,7 +130,7 @@ satellite*, with no browser involved and nothing streamed before the word fired.
       detection while speaking triggers barge-in rather than a second turn.
       Refs: docs/02 §9, docs/08 §6. Deps: F8.2.
 
-- [ ] **F8.4 — Echo cancellation and on-device barge-in (FR-13)** · *strong model*
+- [x] **F8.4 — Echo cancellation and on-device barge-in (FR-13)** ✅ PR #47 · *strong model*
       A satellite with a speaker beside its microphone hears itself; server-side barge-in
       cannot fix that, because the interruption *is* the assistant's own voice. AEC on the
       node, ducking while speaking, and a barge-in path that survives the speaker being
@@ -138,6 +142,11 @@ satellite*, with no browser involved and nothing streamed before the word fired.
 
 - [ ] **F8.5 — Room attribution: answer, and ring, where I spoke (FR-13/FR-33)**
       · *strong model*
+      ⚠️ **PARTIAL — PR #48.** A timer now remembers its room and the fire path is told which one,
+      durable across a restart; **jarvisd still rings on its own host.** Delivering to a node needs
+      a fan-out routing decision — satellites hold `voice-capture`/`display-agent`, never `ui`, so
+      `timer.fired` on the Session channel cannot reach them. No further domain/migration/contract
+      change is needed.
       The run learns its **origin node**, and everything that speaks goes back there: the
       answer, the clarifying question, the timer that fires, the alarm that was missed while
       the daemon was down. This closes the bug M7 made visible — `timer_alert` plays on the
