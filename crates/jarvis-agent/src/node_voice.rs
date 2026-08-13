@@ -31,6 +31,8 @@ pub enum Reaction {
     SpeechStarted,
     /// The daemon stopped speaking, for the given reason.
     SpeechStopped(VoiceSpeakEndDto),
+    /// A timer went off in this room (F8.5).
+    Rang,
 }
 
 /// Playback state for one node.
@@ -59,6 +61,13 @@ impl<O: AudioOutput> NodeVoice<O> {
     pub fn on_envelope(&mut self, envelope: &EventEnvelope) -> Result<Reaction> {
         if envelope.channel != Channel::Voice {
             return Ok(Reaction::Handled);
+        }
+        // A timer going off in this room (F8.5). The daemon has already decided
+        // this node is the room — the fan-out only delivers an addressed alert
+        // to its target — so there is nothing to check here beyond the tag.
+        if envelope.event_type == "timer.fired" {
+            self.ring_alert()?;
+            return Ok(Reaction::Rang);
         }
         // The hub puts the tag on the envelope and the variant's fields in the
         // payload, so merge them back before decoding (same shape as
@@ -144,12 +153,52 @@ impl<O: AudioOutput> NodeVoice<O> {
         Ok(Reaction::Handled)
     }
 
+    /// Rings a timer in this room (F8.5).
+    ///
+    /// Independent of the speech path on purpose: ADR-023 requires an alarm to
+    /// sound even with voice services down, so this does not open an utterance
+    /// and is not suppressed by one.
+    pub fn ring_alert(&mut self) -> Result<()> {
+        for frame in alert_tone().chunks(audio::FRAME_BYTES) {
+            self.output.play(frame)?;
+        }
+        Ok(())
+    }
+
     /// Stops playback now — shutdown, revocation, or a socket that died
     /// mid-sentence.
     pub fn silence(&mut self) {
         self.speaking = None;
         self.output.flush();
     }
+}
+
+/// A short two-tone alert, synthesised locally (F8.5).
+///
+/// The daemon sends only the *instruction* to ring — never the audio. The tone
+/// is fixed and deterministic, so a node builds its own: that keeps a timer
+/// alert a small text frame instead of a per-socket binary stream, and it means
+/// a room still rings when nothing about the voice pipeline is working.
+pub fn alert_tone() -> Vec<u8> {
+    const BEEP_MS: usize = 180;
+    const GAP_MS: usize = 120;
+    let samples_for = |ms: usize| ms * audio::SAMPLE_RATE_HZ as usize / 1000;
+
+    let mut pcm = Vec::new();
+    for (index, hz) in [880.0_f32, 1174.0_f32].into_iter().enumerate() {
+        if index > 0 {
+            pcm.extend(std::iter::repeat_n(0_i16, samples_for(GAP_MS)));
+        }
+        for sample in 0..samples_for(BEEP_MS) {
+            let t = sample as f32 / audio::SAMPLE_RATE_HZ as f32;
+            // Fade the edges so the tone does not click.
+            let progress = sample as f32 / samples_for(BEEP_MS) as f32;
+            let envelope = (progress * std::f32::consts::PI).sin();
+            let value = (t * hz * std::f32::consts::TAU).sin() * envelope * 0.6;
+            pcm.push((value * 32767.0) as i16);
+        }
+    }
+    pcm.into_iter().flat_map(i16::to_le_bytes).collect()
 }
 
 /// The control frame that opens a capture stream, in the one legal format.
@@ -357,6 +406,72 @@ mod tests {
             Reaction::SpeechStarted
         );
         assert!(voice.is_speaking());
+    }
+
+    /// F8.5: the alert arrives as an instruction, and this node makes the
+    /// sound itself. No audio crossed the wire.
+    #[test]
+    fn a_timer_alert_addressed_here_rings_locally() {
+        let output = FakeOutput::default();
+        let mut voice = NodeVoice::new(output.clone());
+
+        let envelope: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "v": 1, "seq": 9, "channel": "voice",
+            "type": "timer.fired", "occurredAt": "2026-08-13T00:00:00Z",
+            "payload": {
+                "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                "name": "pasta timer",
+                "targetDeviceId": "01ARZ3NDEKTSV4RRFFQ69G5FB2"
+            }
+        }))
+        .expect("envelope");
+
+        assert_eq!(
+            voice.on_envelope(&envelope).expect("handled"),
+            Reaction::Rang
+        );
+        assert!(
+            !output.played.lock().expect("lock").is_empty(),
+            "the node must synthesise and play the tone itself"
+        );
+        assert!(
+            !voice.is_speaking(),
+            "an alert is not an utterance: it must not open one"
+        );
+    }
+
+    /// ADR-023: an alarm must sound even with voice services down. Ringing does
+    /// not depend on — and is not suppressed by — an utterance being in flight.
+    #[test]
+    fn a_timer_alert_rings_even_while_the_assistant_is_speaking() {
+        let output = FakeOutput::default();
+        let mut voice = NodeVoice::new(output.clone());
+        voice.on_control(speak_start("u1")).expect("start");
+        let before = output.played.lock().expect("lock").len();
+
+        voice.ring_alert().expect("rings");
+
+        assert!(output.played.lock().expect("lock").len() > before);
+        assert!(voice.is_speaking(), "the utterance is untouched");
+    }
+
+    #[test]
+    fn the_alert_tone_is_audible_and_bounded() {
+        let tone = alert_tone();
+        // Whole 16-bit samples, and a sane length: two ~180 ms beeps and a gap.
+        assert_eq!(tone.len() % 2, 0);
+        let seconds = tone.len() as f32 / 2.0 / audio::SAMPLE_RATE_HZ as f32;
+        assert!(
+            (0.3..1.0).contains(&seconds),
+            "{seconds}s is not a timer beep"
+        );
+        // Actually audible: something well above silence.
+        let peak = tone
+            .chunks_exact(2)
+            .map(|s| i16::from_le_bytes([s[0], s[1]]).abs())
+            .max()
+            .expect("samples");
+        assert!(peak > 8_000, "the tone must be audible, peak was {peak}");
     }
 
     #[test]

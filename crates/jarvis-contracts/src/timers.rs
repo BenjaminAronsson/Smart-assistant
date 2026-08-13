@@ -101,6 +101,16 @@ pub struct TimerDto {
     /// arithmetic (docs/09 §5: no polling loop for something a clock can do).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remaining_secs: Option<u64>,
+    /// The device this timer was set on — the room it must ring in (F8.5,
+    /// FR-33). Absent when it was set from nowhere in particular (the shell, or
+    /// an automation), which is the case that falls back to the daemon's own
+    /// speaker.
+    ///
+    /// Same name and same meaning as the display directives' `targetDeviceId`
+    /// (F7.5): the fan-out addresses on this field, so an alert reaches exactly
+    /// the room that set it and no other.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_device_id: Option<String>,
 }
 
 /// `POST /api/v1/timers`. Exactly one of `durationSecs` (a countdown) or

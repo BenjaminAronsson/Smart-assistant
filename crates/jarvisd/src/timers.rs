@@ -79,6 +79,12 @@ pub fn to_timer_dto(timer: &Timer, now: SystemTime) -> TimerDto {
         duration_secs,
         note,
         remaining_secs: timer.remaining_at(now).map(|d| d.as_secs()),
+        // The room it was set in (F8.5). Carried on every projection, not just
+        // the fired event, so the settings surface can show which room owns a
+        // timer without a second lookup.
+        target_device_id: timer
+            .origin_device()
+            .map(|device| device.as_str().to_owned()),
     }
 }
 
@@ -411,5 +417,56 @@ async fn sleep_or_stop(d: Duration, wake: &Notify, shutdown: &CancellationToken)
         () = shutdown.cancelled() => true,
         () = wake.notified() => false,
         () = tokio::time::sleep(d) => false,
+    }
+}
+
+/// Rings a timer in the room it was set in, falling back to the daemon's own
+/// speaker (F8.5, FR-33, ADR-023).
+///
+/// This is the piece that closes the bug M7 made visible: `CommandAlertPlayer`
+/// plays on whatever host jarvisd runs on, with no device notion, so a timer
+/// set in the kitchen rang at the desk.
+///
+/// The fallback is not a nicety, it is the requirement. ADR-023 says an alarm
+/// must sound; a node that has been revoked, unplugged, or simply moved to
+/// another room must not be able to swallow one by being addressed and absent.
+/// So: ring in the room when there is a room and something is listening in it,
+/// and ring here otherwise.
+pub struct RoutingAlertPlayer {
+    hub: std::sync::Arc<crate::ws::WsHub>,
+    /// The daemon's own speaker.
+    host: std::sync::Arc<dyn jarvis_application::ports::AlertPlayer>,
+}
+
+impl RoutingAlertPlayer {
+    pub fn new(
+        hub: std::sync::Arc<crate::ws::WsHub>,
+        host: std::sync::Arc<dyn jarvis_application::ports::AlertPlayer>,
+    ) -> Self {
+        Self { hub, host }
+    }
+}
+
+#[async_trait::async_trait]
+impl jarvis_application::ports::AlertPlayer for RoutingAlertPlayer {
+    async fn play(
+        &self,
+        timer: &jarvis_domain::timers::Timer,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<(), jarvis_application::ports::AlertError> {
+        if let Some(target) = timer.origin_device() {
+            let dto = to_timer_dto(timer, SystemTime::now());
+            if self.hub.ring_timer_at(&dto) {
+                tracing::info!(device_id = %target, "timer rung in the room it was set in");
+                return Ok(());
+            }
+            // Addressed but nobody is listening: an absent node must not
+            // swallow an alarm.
+            tracing::warn!(
+                device_id = %target,
+                "the room this timer was set in is not connected; ringing on the host"
+            );
+        }
+        self.host.play(timer, cancel).await
     }
 }

@@ -778,17 +778,20 @@ pub enum AlertError {
 /// still carded, and still audited.
 #[async_trait::async_trait]
 pub trait AlertPlayer: Send + Sync {
-    /// Sound the alert, in `target`'s room when there is one (F8.5).
+    /// Sound the alert for `timer`, in the room it was set in (F8.5).
     ///
-    /// `None` means the timer was not attributed to a device — set from the
-    /// shell, or by an automation — and the implementation falls back to
+    /// The whole timer rather than just its room, because an implementation
+    /// that routes has to tell the room *which* timer is going off, and
+    /// threading that through a side channel would make the port lie about
+    /// what it needs. `timer.origin_device()` is `None` when it was set from
+    /// the shell or by an automation — then the implementation falls back to
     /// whatever it considers "somewhere sensible", which for the daemon is its
-    /// own host. A target that is no longer reachable (a revoked or unplugged
+    /// own host. A room that is no longer reachable (a revoked or unplugged
     /// node) is the same case: the timer still rings, it just does not ring
-    /// there.
+    /// there (ADR-023 — an alarm must sound).
     async fn play(
         &self,
-        target: Option<&DeviceId>,
+        timer: &jarvis_domain::timers::Timer,
         cancel: tokio_util::sync::CancellationToken,
     ) -> Result<(), AlertError>;
 }

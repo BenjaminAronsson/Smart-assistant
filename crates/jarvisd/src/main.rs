@@ -570,9 +570,14 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     let timer_api = if config.timers.enabled {
         let service = Arc::new(jarvis_application::timers::TimerService::new(
             Arc::new(jarvis_infra::timers::PgTimerStore::new(pool.clone())),
-            Arc::new(jarvis_adapters::timer_alert::CommandAlertPlayer::new(
-                config.timers.alert_command.clone(),
-                config.timers.alert_args.clone(),
+            // Ring in the room it was set in, falling back to this host when
+            // there is no room or nothing is listening in it (F8.5, ADR-023).
+            Arc::new(jarvisd::timers::RoutingAlertPlayer::new(
+                hub.clone(),
+                Arc::new(jarvis_adapters::timer_alert::CommandAlertPlayer::new(
+                    config.timers.alert_command.clone(),
+                    config.timers.alert_args.clone(),
+                )),
             )),
             Arc::new(jarvis_adapters::timer_alert::SilentAnnouncer),
             Arc::new(jarvisd::timers::TimerEncoder),

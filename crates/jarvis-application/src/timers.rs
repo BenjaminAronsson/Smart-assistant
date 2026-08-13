@@ -336,11 +336,7 @@ impl TimerService {
         // made visible: the alert used to play on the daemon host with no
         // device notion, so a timer set in the kitchen rang at the desk.
         let target = timer.origin_device().cloned();
-        let alerted = self
-            .alert
-            .play(target.as_ref(), cancel.clone())
-            .await
-            .is_ok();
+        let alerted = self.alert.play(&timer, cancel.clone()).await.is_ok();
         let line = if missed {
             timer.missed_announcement()
         } else {
@@ -558,12 +554,8 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AlertPlayer for FakeAlert {
-        async fn play(
-            &self,
-            target: Option<&DeviceId>,
-            _cancel: CancellationToken,
-        ) -> Result<(), AlertError> {
-            *self.target.lock().expect("lock") = target.cloned();
+        async fn play(&self, timer: &Timer, _cancel: CancellationToken) -> Result<(), AlertError> {
+            *self.target.lock().expect("lock") = timer.origin_device().cloned();
             *self.plays.lock().unwrap() += 1;
             if self.unavailable {
                 return Err(AlertError::Unavailable);
