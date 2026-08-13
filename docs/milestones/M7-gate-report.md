@@ -1,6 +1,11 @@
 # M7 "Distributed rooms" — gate report
 
-**Status: awaiting owner sign-off.** Produced 2026-08-12 by the `/gate` loop (docs/11 §2)
+**Status: SIGNED OFF — owner approval 2026-08-13.** Tagged `m7-complete`; docs/08 §1 ticked;
+ADR-031 moved to **Accepted**. Two of the four deviations were **closed after approval rather
+than carried**: D-M7-1 (PR #40) and D-M7-2 (PR #39). D-M7-3 and D-M7-4 are accepted as
+written — both are statements about what this hardware can demonstrate, not about the code.
+
+**Original report follows.** Produced 2026-08-12 by the `/gate` loop (docs/11 §2)
 on Opus 5. Covers `git diff m6-complete..main` plus the gate-hardening commit on
 `fix/m7-gate-hardening`: 21 commits, 70 files, +8 476 / −545, eight features (F7.1–F7.8)
 merged as PRs #29, #31–#37, with #30 unblocking CI first.
@@ -98,7 +103,11 @@ authority change; no secret ever logged or serialized.
 
 ## 5. Deviations requested
 
-**D-M7-1 — revocation does not cancel a revoked device's in-flight runs.** The grant half
+**D-M7-1 — ~~revocation does not cancel a revoked device's in-flight runs~~ — CLOSED after
+sign-off (PR #40).** The live-run registry now records which device each run belongs to, so
+revocation cancels exactly that device's work through the same path `POST /runs/{id}/cancel`
+uses; another device's runs are untouched, and an unattributed run (which carries no tool
+authority) is left alone. Original text: The grant half
 is fixed (above); the run half is not. A run already executing when its device is revoked
 continues with the `PolicyContext` it cached at start. Bounded by run lifetime, and every
 *new* grant consumption is now refused, but it is a real gap against docs/06 §7's
