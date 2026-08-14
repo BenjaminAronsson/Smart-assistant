@@ -6,6 +6,7 @@ pub mod appbridge;
 pub mod appspec;
 pub mod artifact;
 pub mod audit;
+pub mod automations;
 pub mod conversations;
 pub mod deepdive;
 pub mod display;

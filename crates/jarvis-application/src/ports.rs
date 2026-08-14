@@ -768,6 +768,57 @@ pub enum AlertError {
     Failed(String),
 }
 
+/// Storage for automations and their execution history (FR-17, F8.6).
+///
+/// Note what this port does **not** offer: any way to store or read a policy
+/// decision. An automation is a stored intention, and its authority is resolved
+/// at fire time from its creator's current scopes — see
+/// [`crate::automations::decide_at_fire_time`].
+#[async_trait::async_trait]
+pub trait AutomationStore: Send + Sync {
+    /// Persist a new automation together with its audit row (invariant 6).
+    async fn create(
+        &self,
+        automation: &jarvis_domain::automations::Automation,
+        audit: &jarvis_domain::audit::AuditEvent,
+    ) -> Result<(), RepositoryError>;
+
+    /// Every enabled automation — what the scheduler sweeps.
+    async fn list_enabled(
+        &self,
+    ) -> Result<Vec<jarvis_domain::automations::Automation>, RepositoryError>;
+
+    /// Every automation, enabled or not — what the settings surface lists.
+    async fn list_all(
+        &self,
+    ) -> Result<Vec<jarvis_domain::automations::Automation>, RepositoryError>;
+
+    async fn set_enabled(
+        &self,
+        id: &jarvis_domain::ids::AutomationId,
+        enabled: bool,
+    ) -> Result<(), RepositoryError>;
+
+    async fn delete(&self, id: &jarvis_domain::ids::AutomationId) -> Result<(), RepositoryError>;
+
+    /// Record one firing and stamp `last_fired_at`, in one transaction.
+    ///
+    /// Together, because a firing that is rate-limited but not recorded — or
+    /// recorded but not rate-limited — is a bug that only shows up as a
+    /// flapping sensor turning the lights on forty times.
+    async fn record_execution(
+        &self,
+        execution: &jarvis_domain::automations::AutomationExecution,
+    ) -> Result<(), RepositoryError>;
+
+    /// Most recent firings first — the history FR-17 asks for.
+    async fn history(
+        &self,
+        id: &jarvis_domain::ids::AutomationId,
+        limit: i64,
+    ) -> Result<Vec<jarvis_domain::automations::AutomationExecution>, RepositoryError>;
+}
+
 /// The **audible** half of a timer going off (ADR-023): a short tone on a
 /// playback path that is *independent of the TTS pipeline*, so an alarm sounds
 /// even when voice services are down or absent entirely.

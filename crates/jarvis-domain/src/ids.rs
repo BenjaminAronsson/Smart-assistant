@@ -113,6 +113,14 @@ ulid_id!(
     TimerId
 );
 ulid_id!(
+    /// One stored automation (FR-17): a trigger plus the action it proposes.
+    ///
+    /// Stable across edits — enabling, disabling or renaming an automation is a
+    /// mutation of this row, never a new one, so its execution history stays
+    /// joined to it and "why did the lights come on?" remains answerable.
+    AutomationId
+);
+ulid_id!(
     /// A named list of items — shopping, todo, Notes (FR-34, ADR-024). Stable
     /// across renames: the display name is untrusted text the owner may change,
     /// the id is what a card, a REST path, and an artifact promotion refer to.
