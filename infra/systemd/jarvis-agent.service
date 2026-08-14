@@ -1,0 +1,39 @@
+# jarvis-agent (docs/09 §4, F8.9) — a node: a screen, a microphone, or both.
+#
+# A USER service, unlike jarvisd: a display node needs the graphical session's
+# Hyprland socket and the user's audio devices, and a system service has
+# neither.
+#
+#   cp infra/systemd/jarvis-agent.service ~/.config/systemd/user/
+#   systemctl --user enable --now jarvis-agent
+#
+# Pair it first — the agent will not start without credentials, and there is
+# deliberately no way to hand it a token through the environment:
+#
+#   jarvis-agent pair --server https://jarvis.lan:8741 --name kitchen
+
+[Unit]
+Description=Jarvis node agent
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/jarvis-agent run
+Restart=on-failure
+RestartSec=5s
+
+# Exit code 3 is "this device was revoked" (see jarvis-agent's EXIT_REVOKED).
+# Revocation is a decision, not a fault: the node stops and stays stopped,
+# rather than being restarted forever against a daemon that keeps saying no.
+RestartPreventExitStatus=3
+
+# Audio devices are named here rather than guessed. Leave unset for the host
+# default.
+# Environment=JARVIS_AGENT_AUDIO_INPUT=alsa_input.usb-mic
+# Environment=JARVIS_AGENT_AUDIO_OUTPUT=alsa_output.usb-speaker
+# Start with the microphone muted (a bedroom node, say):
+# Environment=JARVIS_AGENT_START_MUTED=1
+
+[Install]
+WantedBy=graphical-session.target
