@@ -152,6 +152,43 @@ pub struct VoiceConfig {
     pub wyoming_tts: Option<String>,
     #[serde(default)]
     pub audio: VoiceAudioConfig,
+    /// `[voice.elevenlabs]` (F8.11, ADR-033). Absent means never.
+    #[serde(default)]
+    pub elevenlabs: ElevenLabsConfig,
+}
+
+/// `[voice.elevenlabs]` — a third-party voice, off unless switched on.
+///
+/// **Switching this on is the consent** (ADR-033 §2): it is the moment the
+/// house's spoken output starts leaving the house, so it is one deliberate,
+/// reversible act rather than a per-utterance prompt. Everything the local
+/// voice does keeps working when it is off, and when it fails.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ElevenLabsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// A **keyring reference** (`keyring:service/entry`), never a literal key
+    /// (invariant 5). Resolved at the adapter boundary.
+    #[serde(default)]
+    pub api_key_ref: Option<String>,
+    #[serde(default)]
+    pub voice_id: Option<String>,
+    #[serde(default = "default_elevenlabs_model")]
+    pub model_id: String,
+    /// Characters per process lifetime. A ceiling that makes runaway spend
+    /// impossible; exhaustion falls back to the local voice rather than
+    /// failing a turn (ADR-033 §5).
+    #[serde(default = "default_elevenlabs_budget")]
+    pub character_budget: u64,
+}
+
+fn default_elevenlabs_model() -> String {
+    "eleven_flash_v2_5".to_owned()
+}
+
+fn default_elevenlabs_budget() -> u64 {
+    100_000
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,6 +235,7 @@ impl Default for VoiceConfig {
             wyoming_stt: default_wyoming_stt(),
             wyoming_tts: None,
             audio: VoiceAudioConfig::default(),
+            elevenlabs: ElevenLabsConfig::default(),
         }
     }
 }

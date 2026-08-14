@@ -123,6 +123,58 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             _ => None,
         };
 
+    // ElevenLabs (F8.11, ADR-033), off unless switched on. It *wraps* the local
+    // voice rather than replacing it: the local synthesizer stays the fallback
+    // for every refusal, failure and exhausted budget, so an alarm still sounds
+    // with the network down (ADR-023).
+    //
+    // Deliberately impossible to enable without a local voice underneath —
+    // there would be nothing to fall back to, which would make an internet
+    // outage a mute house.
+    let synthesizer: Option<Arc<dyn SpeechSynthesizer>> = match (
+        synthesizer,
+        &config.voice.elevenlabs,
+    ) {
+        (Some(local), eleven) if eleven.enabled => {
+            let (Some(api_key_ref), Some(voice_id)) =
+                (eleven.api_key_ref.as_deref(), eleven.voice_id.as_deref())
+            else {
+                anyhow::bail!(
+                    "[voice.elevenlabs] is enabled but api_key_ref or voice_id is missing"
+                );
+            };
+            // The key is a keyring reference resolved here, at the boundary —
+            // never a literal in config, never an argv entry (invariant 5).
+            let api_key = jarvisd::config::resolve_secret_ref(api_key_ref)?;
+            tracing::info!(
+                budget = eleven.character_budget,
+                "ElevenLabs speech synthesis enabled; the local voice remains the fallback"
+            );
+            Some(Arc::new(
+                jarvis_adapters::elevenlabs::ElevenLabsSynthesizer::new(
+                    jarvis_adapters::elevenlabs::ElevenLabsConfig {
+                        enabled: true,
+                        voice_id: voice_id.to_owned(),
+                        model_id: eleven.model_id.clone(),
+                        api_key: api_key.expose().to_owned(),
+                        monthly_character_budget: eleven.character_budget,
+                        base_url: jarvis_adapters::elevenlabs::ElevenLabsConfig::api_base(),
+                    },
+                    local,
+                ),
+            ))
+        }
+        (local, eleven) => {
+            if eleven.enabled {
+                anyhow::bail!(
+                    "[voice.elevenlabs] is enabled but there is no local voice to fall back to; \
+                     set [voice].wyoming_tts as well (ADR-033 §3)"
+                );
+            }
+            local
+        }
+    };
+
     // Display placement surface (F3a.4): the hub is the directive sink to agents;
     // placements are audited through the fallible audit log before dispatch.
     let display = jarvisd::display::DisplayApi::new(

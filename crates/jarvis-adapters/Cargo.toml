@@ -37,7 +37,10 @@ tl = "0.7.8"
 # Live web.search/web.fetch backends (F2.8 Slice 3). Pinned to 0.12 to reuse the
 # workspace's existing rustls+ring TLS stack (already in the lock via otel/tonic)
 # — no aws-lc-rs/OpenSSL-licensed crate enters the tree, keeping cargo-deny green.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
+# `stream` is for ElevenLabs (F8.11): spoken audio is consumed as it
+# arrives so barge-in can cut it off mid-sentence, rather than buffering a
+# whole utterance before a word is heard.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2", "stream"] }
 time = { version = "0.3", features = ["formatting", "parsing"] }
 # MPRIS media control over the D-Bus **session** bus (F3a.7, ADR-012, docs/02
 # §11a). `default-features = false` + `tokio` drops zbus's default async-io

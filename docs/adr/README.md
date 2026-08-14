@@ -960,3 +960,151 @@ third party in the path of every sound in the house.
   a node still runs and still answers push-to-talk.
 - Barge-in is now possible from the node side, which F8.4 needs — a wake word detected while the
   assistant is speaking must interrupt it, not start a second turn.
+
+## ADR-034 — Internal module structure is a ratcheted, enforced norm, not a review convention {#adr-034}
+
+**Status.** **Proposed** (drafted in F9.13, M9). Owner accepts or rejects at the M9 gate. Depends
+on the M9 feature list being approved (`docs/milestones/M9-features.md`); ADR-033 is reserved by
+F8.11.
+
+**Context.** `docs/02 §3` fixes the *crate* boundaries and `cargo xtask arch-test` enforces them —
+the dependency rule has held for eight milestones without a single violation. That is the evidence
+for this ADR, not against it: **the rules that were written down and automated held; the ones left
+to review did not.**
+
+Nothing governs structure *inside* a crate. `arch-test` explicitly checks only crate-level edges.
+No document states a file-size norm, a module-layout rule, or where test doubles belong. After
+eight milestones the tree contains a 3,789-line adapter file holding a transport, an auth cache,
+wire DTOs and six tools; a 2,348-line WebSocket module implementing five sink traits; a 708-line
+composition-root function; two crates with 48 modules between them and zero subdirectories; and
+one pair of in-memory test doubles independently reimplemented seven times.
+
+None of that arrived through carelessness. Each file grew by one reasonable feature-sized
+increment at a time, and no individual diff was worth blocking. That is exactly the failure mode a
+per-diff review cannot catch and a threshold can.
+
+**Decision.**
+
+1. **A module that exceeds the file ceiling becomes a directory.** `foo.rs` → `foo/` with
+   `mod.rs` re-exporting the same public surface. The ceiling is a hard `arch-test` failure, not a
+   warning: a warning in a `-D warnings` CI is either noise or a second, weaker gate.
+
+2. **Two ceilings, both enforced by `cargo xtask arch-test`:** a maximum lines per `.rs` file and a
+   maximum lines per function. `arch-test` is the right home rather than clippy — it already owns
+   "structure the compiler cannot check", it already fails on an unruled crate, and its rules live
+   in reviewable Rust rather than a config file.
+
+3. **The ceilings are ratcheted, never aspirational.** Each is set to the worst value the tree
+   actually achieves at the moment the rule lands, so the gate is green on arrival and can only be
+   tightened. A threshold that fails on the day it is written teaches the team to bypass it.
+   Lowering a ceiling is an ordinary PR; raising one requires editing this ADR.
+
+4. **Test doubles live in `jarvis-test-support`, not at their call sites.** Any fake, recorder or
+   harness used by more than one test file belongs to that crate, reachable by dev-dependency edges
+   only. It must never become a route around `jarvis-domain`'s purity allowlist, and `arch-test`
+   enforces that too.
+
+5. **Adapter crates keep integration tests in `tests/`, not inline in `src/`.** This does **not**
+   apply to `jarvis-application`: golden traces 1–6 are `--lib` filters against
+   `jarvis-application/src/*_tests.rs`, and the golden runner is the more important invariant. The
+   exception is deliberate and belongs in this record rather than in a reviewer's memory.
+
+6. **A per-tool policy declaration stays written out in full at its declaration site.** Boilerplate
+   around tool registration may be collapsed into a macro; `risk`, `egress` and `required_scopes`
+   may not be defaulted or inherited. Invariant 1 depends on that classification being explicit and
+   greppable, and on this one surface "fewer lines" is the wrong objective.
+
+**Rejected: leaving structure to code review.** The eight-milestone record is the argument. Every
+one of these files passed review, repeatedly, because no single increment was objectionable.
+
+**Rejected: clippy's `cognitive_complexity` / `too_many_lines` as the mechanism.** They fire on the
+wrong unit (a 300-line route table is fine; a 300-line `handle_socket` is not), they are `-W` lints
+whose thresholds are global, and the tree already carries justified `#[allow(clippy::too_many_lines)]`
+— proving the lint measures something adjacent to, but not the same as, what this ADR is about.
+`clippy.toml` and `rustfmt.toml` still land in F9.13; they are a complement, not the gate.
+
+**Rejected: a line-count budget per crate.** It would let one god-module hide behind a dozen small
+files in the same crate, which is the precise shape being removed.
+
+**Consequences.**
+- Adding a genuinely large cohesive module now costs a directory and a `mod.rs`. That is the
+  intended friction, and it is small.
+- `arch-test` gains file-walking responsibilities and stops being a pure `cargo metadata` reader.
+  Its runtime is still trivial against a 230-file tree.
+- The ceilings will look arbitrary, because they are — their value is that they exist and only
+  move one way. The number matters far less than the ratchet.
+- **This ADR governs structure, not behaviour.** It cannot be cited to justify changing what the
+  system does, and a refactor made to satisfy it is still bound by the M9 rule that behavioural
+  fixes leave in their own PR with their own test.
+- Documentation drift becomes possible in a new place: `docs/02 §3`'s second table lists an
+  intended internal module set that nothing has ever checked. If this ADR is accepted, that table
+  is either enforced or deleted at the next `/sync-docs`.
+
+## ADR-033 — ElevenLabs as an opt-in speech synthesizer behind the existing port {#adr-033}
+
+**Status.** **Proposed** (drafted in F8.11, M8c). Owner accepts or rejects at the M8c gate.
+
+**Context.** The M8 feature list *deferred* ElevenLabs with five conditions
+(`docs/milestones/M8-features.md`, decision 5), and the owner then pulled it into scope the
+same day as F8.11. The timing moved; the conditions did not. This ADR records why the
+conditions are the design rather than a checklist bolted to it.
+
+Piper (F5.x, via Wyoming) is local, free, offline, and adequate. It is also unmistakably a
+robot. A house that talks to you all day is a product where voice quality is not cosmetic —
+but it is also a product where "all day" means a third party would otherwise hear
+everything said in it.
+
+**Decision.**
+
+1. **Behind the existing `SpeechSynthesizer` port**, as one more implementation. Two methods,
+   `id` and `synthesize`; streaming already matches and barge-in is already threaded. This is
+   an added adapter, not a change to the voice path — and it stays deletable.
+
+2. **Opt-in is the consent gate.** Off by default; nothing reaches ElevenLabs until the owner
+   switches it on. The switch is the consent, so there is no second prompt and no per-utterance
+   dialogue: one deliberate act, reversible, in the settings surface.
+
+3. **The local voice is the fallback, always.** Unreachable, rate-limited, quota-exhausted,
+   mid-stream failure — every one of them degrades to Piper. ADR-023 requires that an alarm
+   sounds; a cloud voice that can fail to silence would quietly revoke that guarantee for
+   every alarm in the house.
+
+4. **Sensitivity is a routing constraint, not a preference.** `SpeechSensitivity::Sensitive`
+   never leaves the house, whatever the config says and however much budget is left. The label
+   is applied by the **producer** of the text, never inferred from its content: a heuristic
+   deciding whether a sentence is private fails open, silently, and only for the people whose
+   messages happen not to look private.
+
+5. **A character budget, reserved before the request and observable.** Reserved rather than
+   counted afterwards, because a limit that notices overspend once the bytes are sent is an
+   accounting record. Exhaustion falls back to Piper rather than failing the turn — running
+   out of a *nicety* must never cost the user an *answer*.
+
+6. **The API key is a keyring reference**, resolved at the adapter boundary (invariant 5).
+
+**Rejected: replacing Piper.** The local voice is not a fallback we tolerate, it is the thing
+that makes the system work with the network down. Anything that made ElevenLabs the only path
+would make an internet outage a mute house.
+
+**Rejected: using it for the wake word.** Detection must be local and offline (ADR-032 §2).
+Not a cost question — an always-on microphone that consults a third party is a different
+product.
+
+**Rejected: using it for STT.** Voice is the most sensitive stream in the system: it carries
+everything said in the house, not just what was addressed to the assistant. The zero-LLM paths
+(timers, lights, lists) must keep working offline, and routing recognition through a vendor
+would make every one of them network-dependent.
+
+**Rejected: their Agents platform.** It takes over the conversation loop — turn-taking, tool
+calls, state. That is precisely what `orchestrator` owns, and adopting it would break
+invariant 1 (text never grants authority) and invariant 2 (the state machine owns the loop) in
+one step. Not a variation on this ADR; a different architecture.
+
+**Consequences.**
+- Spoken output becomes a new `DataEgress::External` path. It is the *only* one in the voice
+  pipeline, and it is off unless switched on.
+- A second voice means two voices in one house; utterances can differ in character depending
+  on sensitivity routing. Accepted: a private message read in the local voice is the *point*.
+- The budget is per-process and resets on restart. A durable monthly counter belongs with the
+  settings surface (F8.8) if the owner wants one; the ceiling here exists to make runaway spend
+  impossible, not to bill accurately.
