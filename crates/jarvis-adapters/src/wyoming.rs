@@ -38,8 +38,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures_util::stream::{BoxStream, StreamExt, poll_fn};
 use jarvis_application::voice::{
-    AudioFormat, SpeechSynthesizer, SpeechTranscriber, TranscriptEvent, VadEvent,
-    VoiceActivityDetector, VoiceError,
+    AudioFormat, SpeechSensitivity, SpeechSynthesizer, SpeechTranscriber, TranscriptEvent,
+    VadEvent, VoiceActivityDetector, VoiceError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -520,6 +520,10 @@ impl SpeechSynthesizer for WyomingClient {
     async fn synthesize(
         &self,
         text: &str,
+        // Ignored, and safe to ignore: Piper runs on the LAN, so nothing a
+        // caller marks sensitive leaves the house by coming here. The label
+        // exists for synthesizers that *can* leak (F8.11).
+        _sensitivity: SpeechSensitivity,
         cancel: CancellationToken,
     ) -> Result<(AudioFormat, BoxStream<'static, Result<Vec<u8>, VoiceError>>), VoiceError> {
         let stream = self.connect(&cancel).await?;
@@ -866,7 +870,11 @@ mod tests {
         bounded(async {
             let client = WyomingClient::new("tts-truncated", addr);
             let (_format, mut chunks) = client
-                .synthesize("hello there", CancellationToken::new())
+                .synthesize(
+                    "hello there",
+                    SpeechSensitivity::Normal,
+                    CancellationToken::new(),
+                )
                 .await
                 .expect("synthesize opens fine; the failure is mid-stream");
 
@@ -923,7 +931,11 @@ mod tests {
         bounded(async {
             let client = WyomingClient::new("tts-test", addr);
             let (format, mut chunks) = client
-                .synthesize("hello there", CancellationToken::new())
+                .synthesize(
+                    "hello there",
+                    SpeechSensitivity::Normal,
+                    CancellationToken::new(),
+                )
                 .await
                 .expect("synthesize must succeed");
 
@@ -994,7 +1006,7 @@ mod tests {
             // `.map(|_| ())` discards the (non-`Debug`) audio stream so the
             // assertion failure message below can print the outcome.
             let result = client
-                .synthesize("hi", CancellationToken::new())
+                .synthesize("hi", SpeechSensitivity::Normal, CancellationToken::new())
                 .await
                 .map(|_| ());
             assert!(
@@ -1021,7 +1033,7 @@ mod tests {
         bounded(async {
             let client = WyomingClient::new("malformed-json-test", addr);
             let result = client
-                .synthesize("hi", CancellationToken::new())
+                .synthesize("hi", SpeechSensitivity::Normal, CancellationToken::new())
                 .await
                 .map(|_| ());
             assert!(
@@ -1048,7 +1060,7 @@ mod tests {
         bounded(async {
             let client = WyomingClient::new("malformed-type-test", addr);
             let result = client
-                .synthesize("hi", CancellationToken::new())
+                .synthesize("hi", SpeechSensitivity::Normal, CancellationToken::new())
                 .await
                 .map(|_| ());
             assert!(

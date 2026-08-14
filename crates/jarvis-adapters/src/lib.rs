@@ -7,6 +7,7 @@ pub mod browser;
 pub mod caldav;
 pub mod claude_cli;
 pub mod coding;
+pub mod elevenlabs;
 pub mod embeddings;
 pub mod home_assistant;
 pub mod mcp_host;

@@ -984,6 +984,13 @@ async fn speak_task(
     synthesizer: Arc<dyn SpeechSynthesizer>,
     mut clauses: mpsc::Receiver<String>,
     out: mpsc::Sender<SpeechChunk>,
+    // Whether this utterance may be spoken by a third-party voice (F8.11).
+    // Labelled here, at the producer, rather than sniffed from the text: a
+    // heuristic guessing whether a sentence is private fails open and silently.
+    // A spoken *run response* is `Normal`; anything reading out message bodies
+    // or calendar entries must pass `Sensitive`, and the synthesizer treats
+    // that as a hard routing constraint.
+    speech_sensitivity: jarvis_application::voice::SpeechSensitivity,
     cancel: CancellationToken,
 ) {
     let mut announced = false;
@@ -998,7 +1005,10 @@ async fn speak_task(
         };
         let Some(clause) = clause else { break };
 
-        let (format, mut pcm) = match synthesizer.synthesize(&clause, cancel.clone()).await {
+        let (format, mut pcm) = match synthesizer
+            .synthesize(&clause, speech_sensitivity, cancel.clone())
+            .await
+        {
             Ok(started) => started,
             Err(VoiceError::Cancelled) => {
                 ended = VoiceSpeakEndDto::Cancelled;
@@ -1060,7 +1070,15 @@ fn begin_speech(
 ) -> ActiveSpeech {
     let (clause_tx, clause_rx) = mpsc::channel(CLAUSE_QUEUE_CAPACITY);
     let (audio_tx, audio_rx) = mpsc::channel(AUDIO_QUEUE_CAPACITY);
-    let task = tokio::spawn(speak_task(synthesizer, clause_rx, audio_tx, cancel.clone()));
+    let task = tokio::spawn(speak_task(
+        synthesizer,
+        clause_rx,
+        audio_tx,
+        // A run's spoken answer. When a tool starts reading message bodies
+        // aloud, that path passes `Sensitive` instead.
+        jarvis_application::voice::SpeechSensitivity::Normal,
+        cancel.clone(),
+    ));
     ActiveSpeech {
         // Opaque, per-utterance: the client uses it only to discard audio that
         // belongs to an utterance it has already been told ended.
