@@ -103,6 +103,15 @@ pub struct AutomationService {
     executor: std::sync::Arc<dyn AutomationExecutor>,
 }
 
+/// An automation whose moment passed while the daemon was down.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissedAutomation {
+    pub automation_id: jarvis_domain::ids::AutomationId,
+    /// Carried so the announcement can name it — "the morning lights did not
+    /// run" is actionable; "an automation did not run" is not.
+    pub name: String,
+}
+
 /// What one sweep did, for the daemon's log and the tests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FiredAutomation {
@@ -150,6 +159,38 @@ impl AutomationService {
             })
             .collect();
         self.fire_all(due, now).await
+    }
+
+    /// Report automations whose moment passed while the daemon was down
+    /// (M8b exit evidence, the same shape timers already use).
+    ///
+    /// **Reported, not fired.** A timer that was missed still has to ring —
+    /// the owner asked for a noise at a time and the noise is the whole point.
+    /// An automation that was missed is a different thing: firing "turn on the
+    /// lights at 07:00" at 11:00 because the daemon was off all morning is
+    /// worse than not firing it, because the *reason* the owner wanted it has
+    /// passed. So the honest behaviour is to say so and skip, rather than to
+    /// act late or to say nothing at all.
+    ///
+    /// Skipping silently is the option this rules out: an owner who comes back
+    /// to a house that did nothing cannot tell "the automation is broken" from
+    /// "the daemon was off", and those need very different responses.
+    pub async fn missed_since(
+        &self,
+        down_since_minutes: u16,
+        now_minutes: u16,
+    ) -> Result<Vec<MissedAutomation>, crate::ports::RepositoryError> {
+        Ok(self
+            .store
+            .list_enabled()
+            .await?
+            .into_iter()
+            .filter(|a| a.trigger().fires_in_window(down_since_minutes, now_minutes))
+            .map(|a| MissedAutomation {
+                automation_id: a.id().clone(),
+                name: a.name().as_str().to_owned(),
+            })
+            .collect())
     }
 
     /// Fire every enabled automation watching `entity_id` entering `state`.
@@ -597,6 +638,93 @@ mod tests {
             .expect("sweeps");
         assert_eq!(fired.len(), 1);
         assert_eq!(*executor.0.lock().expect("lock"), 1);
+    }
+
+    /// M8b's exit evidence: a run missed while the daemon was down is
+    /// announced rather than silently skipped.
+    #[tokio::test]
+    async fn an_automation_missed_while_the_daemon_was_down_is_reported() {
+        let tool = ToolId::home_set_light();
+        let store = std::sync::Arc::new(MemStore::default());
+        store
+            .automations
+            .lock()
+            .expect("lock")
+            .push(automation_for(tool.clone()));
+        let executor = std::sync::Arc::new(CountingExecutor::default());
+        let service = service(
+            store.clone(),
+            registry_with(&tool, RiskLevel::R1, &["home:control"]),
+            Authority(Some(scopes(&["home:control"]))),
+            executor.clone(),
+        );
+
+        // Down from 06:00 to 11:00; the 07:00 trigger fell inside that.
+        let missed = service.missed_since(360, 660).await.expect("reports");
+
+        assert_eq!(missed.len(), 1);
+        // Named, so the announcement is actionable: "the evening lights did
+        // not run" beats "an automation did not run".
+        assert_eq!(missed[0].name, "evening lights");
+        // Reported, NOT fired: acting on "turn the lights on at 07:00" at
+        // 11:00 is worse than not acting, because the reason has passed.
+        assert_eq!(
+            *executor.0.lock().expect("lock"),
+            0,
+            "a missed automation must not be run late"
+        );
+        assert!(
+            store.recorded.lock().expect("lock").is_empty(),
+            "reporting is not firing; nothing is recorded as having happened"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_automation_outside_the_downtime_is_not_reported_as_missed() {
+        let tool = ToolId::home_set_light();
+        let store = std::sync::Arc::new(MemStore::default());
+        store
+            .automations
+            .lock()
+            .expect("lock")
+            .push(automation_for(tool.clone()));
+        let service = service(
+            store,
+            registry_with(&tool, RiskLevel::R1, &["home:control"]),
+            Authority(Some(scopes(&["home:control"]))),
+            std::sync::Arc::new(CountingExecutor::default()),
+        );
+
+        // Down 08:00–09:00; the 07:00 trigger was already past.
+        assert!(
+            service
+                .missed_since(480, 540)
+                .await
+                .expect("reports")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_disabled_automation_is_never_reported_as_missed() {
+        let tool = ToolId::home_set_light();
+        let store = std::sync::Arc::new(MemStore::default());
+        let mut disabled = automation_for(tool.clone());
+        disabled.set_enabled(false);
+        store.automations.lock().expect("lock").push(disabled);
+        let service = service(
+            store,
+            registry_with(&tool, RiskLevel::R1, &["home:control"]),
+            Authority(Some(scopes(&["home:control"]))),
+            std::sync::Arc::new(CountingExecutor::default()),
+        );
+        assert!(
+            service
+                .missed_since(360, 660)
+                .await
+                .expect("reports")
+                .is_empty()
+        );
     }
 
     /// The positive case, so the tests are not all refusals: a creator who

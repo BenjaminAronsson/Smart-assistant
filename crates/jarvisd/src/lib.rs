@@ -12,6 +12,7 @@ pub mod automations;
 pub mod cards;
 pub mod config;
 pub mod deepdive;
+pub mod deferred;
 pub mod devices;
 pub mod display;
 pub mod light_targets;
