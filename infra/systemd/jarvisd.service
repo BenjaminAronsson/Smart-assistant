@@ -1,0 +1,50 @@
+# jarvisd (docs/09 §4, F8.9).
+#
+# A system service: it owns the database connection, the audit chain and the
+# TLS listener, and it must come back after a reboot without anyone logging in.
+#
+#   sudo cp infra/systemd/jarvisd.service /etc/systemd/system/
+#   sudo systemctl enable --now jarvisd
+
+[Unit]
+Description=Jarvis daemon
+Documentation=https://github.com/BenjaminAronsson/Smart-assistant
+# Postgres is a hard requirement, not a soft one: jarvisd fails fast without
+# it rather than starting into a half-working state.
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jarvis
+Group=jarvis
+ExecStart=/usr/local/bin/jarvisd
+Restart=on-failure
+RestartSec=5s
+
+# Config and secrets. The database URL is a *reference* resolved at startup
+# (invariant 5) — this file names where to look, never the value.
+Environment=JARVIS_CONFIG=/etc/jarvis/jarvisd.toml
+WorkingDirectory=/var/lib/jarvis
+
+# Hardening. Everything the daemon needs is under /var/lib/jarvis; nothing
+# else on the filesystem is writable, and nothing is executable that it did
+# not ship with.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/jarvis
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# Loopback and LAN. The daemon talks to Postgres, Wyoming, Home Assistant and
+# (when enabled) the open web.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

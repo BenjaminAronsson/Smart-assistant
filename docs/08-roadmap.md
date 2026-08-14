@@ -69,7 +69,7 @@ and a default:
 | Decision | Decide at | Default until then |
 |---|---|---|
 | Angular state management (signals vs NgRx) | M1, after first streaming UI | Angular signals + services |
-| Exact STT model size (base vs small int8) | **M8c (F8.9)** — deferred through M5–M7 because no deployment ran the services | faster-whisper `base` int8 |
+| ~~Exact STT model size (base vs small int8)~~ **DECIDED (M8c, F8.9)** | ~~M8c~~ | **faster-whisper `base` int8** — `small` is ~2.5x the resident memory and ~2x the latency for a word-error-rate gain that does not change the outcome of the sentences this system actually hears; NFR-04's round trip is the binding constraint on the 8 GB profile. Set in `infra/compose/voice.yml`; revisit if free-form dictation becomes a real use case. |
 | ~~Wake-word engine + model licensing~~ **DECIDED (M8a, ADR-032)** | ~~post-M5~~ | **openWakeWord, detection on the node** so nothing streams before the word fires; asset licence reviewed in the ADR |
 | ~~Generated-app template format details~~ **DECIDED (ADR-029, F6.1)** | ~~M6~~ | JSON spec + locked Vite template, over a **closed** capability vocabulary |
 | NATS JetStream vs alternatives | M7, if second machine materializes | in-process outbox only |

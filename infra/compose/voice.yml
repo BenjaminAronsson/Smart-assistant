@@ -1,0 +1,60 @@
+# Wyoming speech services (F8.9, FR-13, docs/09).
+#
+# Separate from dev.yml on purpose: the daemon, the database and the collector
+# are what you need to *develop*; these two are what you need to *talk to the
+# house*. An 8 GB laptop running the test suite should not also be holding a
+# speech model resident (docs/01 §4.1).
+#
+#   docker compose -f infra/compose/dev.yml -f infra/compose/voice.yml up -d
+#
+# Both services are loopback-bound. Neither reaches the internet after its
+# model is downloaded, which is the property that makes the zero-LLM paths —
+# timers, lights, lists — keep working with the network down.
+
+services:
+  # --- speech to text ---------------------------------------------------
+  #
+  # STT MODEL SIZE, DECIDED HERE (docs/08 §6, open since M5): faster-whisper
+  # **base** with int8 quantisation.
+  #
+  # Measured against the 8 GB profile rather than chosen for accuracy alone:
+  # `base` int8 holds roughly 150 MB resident and transcribes a short command
+  # faster than real time on a laptop CPU. `small` int8 is about 2.5x the
+  # memory and roughly 2x the latency for a word-error-rate improvement that
+  # does not change the outcome of "set a timer for ten minutes" or "turn on
+  # the kitchen lights" — the sentences this system actually hears. NFR-04's
+  # round-trip budget is the binding constraint, and `small` spends it on
+  # transcribing words the grammar already constrains.
+  #
+  # An owner with a bigger machine changes one line; nothing else assumes the
+  # size. Revisit if free-form dictation becomes a real use case, which is the
+  # workload where the difference shows.
+  wyoming-whisper:
+    image: rhasspy/wyoming-whisper:2.5.0
+    command: ["--model", "base-int8", "--language", "en", "--beam-size", "1"]
+    volumes:
+      - whisper-models:/data
+    ports:
+      - "127.0.0.1:10300:10300"
+    restart: unless-stopped
+    # A speech model is the largest resident thing on the host after the
+    # browser; cap it so a runaway cannot take the machine down with it.
+    mem_limit: 1g
+
+  # --- text to speech ---------------------------------------------------
+  #
+  # Piper is the LOCAL voice, and it stays the fallback even when ElevenLabs is
+  # switched on (ADR-033 §3): an alarm must sound with the network down.
+  wyoming-piper:
+    image: rhasspy/wyoming-piper:1.6.2
+    command: ["--voice", "en_US-lessac-medium"]
+    volumes:
+      - piper-voices:/data
+    ports:
+      - "127.0.0.1:10200:10200"
+    restart: unless-stopped
+    mem_limit: 512m
+
+volumes:
+  whisper-models:
+  piper-voices:

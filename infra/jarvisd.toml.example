@@ -1,0 +1,91 @@
+# jarvisd production configuration (docs/09 §1, F8.9).
+#
+# Copy to /etc/jarvis/jarvisd.toml. Environment overrides file values
+# (`JARVIS__SERVER__BIND=…`), which is how a systemd drop-in changes one
+# setting without editing this file.
+#
+# Two rules run through the whole file:
+#
+#   * SECRETS ARE REFERENCES, never literals (invariant 5). Every `*_secret`
+#     and `*_ref` takes `keyring:service/entry` or `env:VAR`. A literal here is
+#     refused at startup rather than at first use.
+#   * OUTBOUND CAPABILITIES ARE OFF UNTIL NAMED. Voice, web search, Home
+#     Assistant, media, maps — each stays unregistered until this file says
+#     otherwise. A fresh install talks to nothing.
+
+[server]
+# 0.0.0.0 only once TLS is configured below: nodes reach this over the LAN,
+# and everything they send is authenticated but not, without TLS, private.
+bind = "0.0.0.0:8741"
+
+[server.tls]
+# Generate with infra/install/generate-tls-cert.sh. Self-signed and PINNED by
+# each node at pairing (ADR-031 §4) — regenerating these invalidates every
+# paired node, which is the correct behaviour and a real inconvenience, so do
+# it deliberately.
+cert_path = "/var/lib/jarvis/tls/cert.pem"
+key_path = "/var/lib/jarvis/tls/key.pem"
+
+[database]
+url_secret = "keyring:jarvis/database-url"
+max_connections = 8
+
+# --- voice ----------------------------------------------------------------
+[voice]
+enabled = true
+# faster-whisper base int8 (decided at F8.9; see infra/compose/voice.yml for
+# why base rather than small).
+wyoming_stt = "tcp://127.0.0.1:10300"
+# Piper. This is the LOCAL voice and it stays the fallback even with a cloud
+# voice enabled below — an alarm must sound with the network down (ADR-023).
+wyoming_tts = "tcp://127.0.0.1:10200"
+
+[voice.elevenlabs]
+# A third-party voice. OFF BY DEFAULT, and switching it on IS the consent
+# (ADR-033 §2): it is the moment spoken output starts leaving the house.
+#
+# Requires [voice].wyoming_tts above — jarvisd refuses to start otherwise,
+# because there would be nothing to fall back to.
+#
+# Message bodies and calendar entries are never routed here regardless of this
+# setting (ADR-033 §4): sensitivity is a routing constraint, not a preference.
+enabled = false
+# api_key_ref = "keyring:jarvis/elevenlabs"
+# voice_id = "…"
+# model_id = "eleven_flash_v2_5"
+# Characters per process lifetime. Exhaustion falls back to Piper rather than
+# failing a turn — running out of a nicety must not cost an answer.
+# character_budget = 100000
+
+[timers]
+enabled = true
+# The daemon's own speaker, used when a timer has no room to ring in (F8.5).
+# A timer set on a node rings on that node; this is the fallback.
+alert_command = "paplay"
+alert_args = ["-"]
+
+# --- integrations (each off until named) ----------------------------------
+# [integrations.home_assistant]
+# base_url = "http://homeassistant.local:8123"
+# token_secret = "keyring:jarvis/home-assistant"
+# allowlist = ["light.kitchen", "scene.evening"]
+
+# [integrations.smtp]
+# enabled = false
+# host = "smtp.example.com"
+# from_address = "jarvis@example.com"
+# password_secret = "keyring:jarvis/smtp"
+
+[maps]
+# Absent => map endpoints are not registered and the HUD shows its coverage
+# fallback. The map never reaches a third-party tile service on its own.
+# pmtiles_path = "/var/lib/jarvis/maps/region.pmtiles"
+
+[ui]
+background = "none"
+panel_ttl_hours = 2
+motion = "auto"
+
+[observability]
+# Off by default (docs/09 §5). Uncomment when a collector is running.
+# otlp_endpoint = "http://127.0.0.1:4317"

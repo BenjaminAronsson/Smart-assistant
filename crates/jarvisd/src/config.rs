@@ -163,7 +163,7 @@ pub struct VoiceConfig {
 /// house's spoken output starts leaving the house, so it is one deliberate,
 /// reversible act rather than a per-utterance prompt. Everything the local
 /// voice does keeps working when it is off, and when it fails.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ElevenLabsConfig {
     #[serde(default)]
@@ -181,6 +181,22 @@ pub struct ElevenLabsConfig {
     /// failing a turn (ADR-033 §5).
     #[serde(default = "default_elevenlabs_budget")]
     pub character_budget: u64,
+}
+
+/// Written by hand rather than derived: `Config::from_figment` serializes the
+/// defaults in as a base layer, so a derived `Default` would put an explicit
+/// `character_budget = 0` underneath the `serde(default = …)` and win — which
+/// showed up as a fully-configured file being refused for having no budget.
+impl Default for ElevenLabsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key_ref: None,
+            voice_id: None,
+            model_id: default_elevenlabs_model(),
+            character_budget: default_elevenlabs_budget(),
+        }
+    }
 }
 
 fn default_elevenlabs_model() -> String {
@@ -994,6 +1010,50 @@ impl Config {
                 path.display()
             );
         }
+        // Half-configured voice (F8.9). These are the states people actually
+        // reach on a first install, and each one fails *later* and less
+        // legibly than it does here: a daemon that starts and then cannot
+        // speak looks like broken hardware, not a missing line of config.
+        if self.voice.elevenlabs.enabled {
+            anyhow::ensure!(
+                self.voice.enabled,
+                "[voice.elevenlabs] is enabled but [voice].enabled is false — \
+                 there is no voice pipeline for it to speak through"
+            );
+            anyhow::ensure!(
+                self.voice.wyoming_tts.is_some(),
+                "[voice.elevenlabs] is enabled but [voice].wyoming_tts is unset — \
+                 there would be no local voice to fall back to, and an alarm must \
+                 sound even when the network is down (ADR-023, ADR-033 §3)"
+            );
+            let api_key_ref = self
+                .voice
+                .elevenlabs
+                .api_key_ref
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("[voice.elevenlabs].api_key_ref is required when it is enabled")
+                })?;
+            // A literal key here would be a secret in a config file
+            // (invariant 5). Refused at load, not at first use.
+            validate_secret_ref_named("[voice.elevenlabs].api_key_ref", api_key_ref)?;
+            anyhow::ensure!(
+                self.voice
+                    .elevenlabs
+                    .voice_id
+                    .as_deref()
+                    .is_some_and(|id| !id.trim().is_empty()),
+                "[voice.elevenlabs].voice_id is required when it is enabled"
+            );
+            anyhow::ensure!(
+                self.voice.elevenlabs.character_budget > 0,
+                "[voice.elevenlabs].character_budget must be greater than zero — \
+                 a zero budget silently routes every utterance to the local voice, \
+                 which is a confusing way to spell `enabled = false`"
+            );
+        }
+
         if self.integrations.smtp.enabled {
             anyhow::ensure!(
                 !self.integrations.smtp.host.trim().is_empty(),
@@ -1188,6 +1248,116 @@ pub fn resolve_secret_ref_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- half-configured states a first install actually reaches (F8.9) ----
+
+    /// Builds a config from TOML the way an operator's file would load.
+    fn load(toml: &str) -> anyhow::Result<Config> {
+        Config::from_figment(Figment::new().merge(Toml::string(toml)))
+    }
+
+    #[test]
+    fn elevenlabs_without_a_voice_pipeline_is_refused() {
+        let error = load(
+            r#"
+            [voice]
+            enabled = false
+            [voice.elevenlabs]
+            enabled = true
+            api_key_ref = "keyring:jarvis/elevenlabs"
+            voice_id = "abc"
+            "#,
+        )
+        .expect_err("must refuse");
+        assert!(
+            error.to_string().contains("no voice pipeline"),
+            "unexpected: {error}"
+        );
+    }
+
+    /// The one that matters most: enabling a cloud voice with no local voice
+    /// underneath would make an internet outage a mute house, and would let a
+    /// failed alarm be silent (ADR-023, ADR-033 §3).
+    #[test]
+    fn elevenlabs_without_a_local_voice_to_fall_back_to_is_refused() {
+        let error = load(
+            r#"
+            [voice]
+            enabled = true
+            [voice.elevenlabs]
+            enabled = true
+            api_key_ref = "keyring:jarvis/elevenlabs"
+            voice_id = "abc"
+            "#,
+        )
+        .expect_err("must refuse");
+        assert!(
+            error.to_string().contains("fall back"),
+            "unexpected: {error}"
+        );
+    }
+
+    #[test]
+    fn a_literal_elevenlabs_key_in_config_is_refused() {
+        let error = load(
+            r#"
+            [voice]
+            enabled = true
+            wyoming_tts = "tcp://127.0.0.1:10200"
+            [voice.elevenlabs]
+            enabled = true
+            api_key_ref = "sk_a_real_looking_key"
+            voice_id = "abc"
+            "#,
+        )
+        .expect_err("a secret must never be a literal in config (invariant 5)");
+        // The message must not echo the value back into the operator's terminal.
+        assert!(!error.to_string().contains("sk_a_real_looking_key"));
+    }
+
+    #[test]
+    fn elevenlabs_missing_its_voice_id_or_budget_is_refused() {
+        let base = |extra: &str| {
+            format!(
+                r#"
+                [voice]
+                enabled = true
+                wyoming_tts = "tcp://127.0.0.1:10200"
+                [voice.elevenlabs]
+                enabled = true
+                api_key_ref = "keyring:jarvis/elevenlabs"
+                {extra}
+                "#
+            )
+        };
+        assert!(load(&base("")).is_err(), "no voice_id");
+        assert!(
+            load(&base("voice_id = \"abc\"\ncharacter_budget = 0"))
+                .expect_err("zero budget")
+                .to_string()
+                .contains("greater than zero")
+        );
+        // …and the fully configured version is accepted.
+        assert!(load(&base("voice_id = \"abc\"")).is_ok());
+    }
+
+    /// A disabled block is never validated: an operator leaving a half-filled
+    /// `[voice.elevenlabs]` behind with `enabled = false` must still be able to
+    /// start the daemon.
+    #[test]
+    fn a_disabled_elevenlabs_block_is_not_validated() {
+        assert!(
+            load(
+                r#"
+                [voice.elevenlabs]
+                enabled = false
+                voice_id = ""
+                character_budget = 0
+                "#,
+            )
+            .is_ok()
+        );
+    }
 
     #[test]
     fn defaults_carry_the_documented_claude_cli_config() {
