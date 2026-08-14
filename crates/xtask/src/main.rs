@@ -42,7 +42,7 @@ fn main() -> anyhow::Result<()> {
 /// **skips with a message** when they are absent, so a fresh checkout does not
 /// fail for a reason that looks like a bug.
 fn golden() -> anyhow::Result<()> {
-    println!("Running golden traces 1–9 + M3a/M3b/M5/M6 acceptance scenarios...");
+    println!("Running golden traces 1–12 + M3a/M3b/M5/M6 acceptance scenarios...");
     println!("  Trace 1: simple question streams within budget");
     println!("  Trace 2: complex question (placeholder for M1)");
     println!("  Trace 3: quota-exhausted → degraded mode → recovery");
@@ -90,6 +90,34 @@ fn golden() -> anyhow::Result<()> {
         None,
         3,
         "golden 8: generated app requests an undeclared capability; bridge rejects",
+    )?;
+
+    // Trace 12 — M8's exit evidence, daemon side. The node-side halves (nothing
+    // streams before the wake word, a detection opens one bracketed stream,
+    // playback does not self-trigger) run in jarvis-agent's own suite, because
+    // they are claims about the NODE and asserting them here would prove only
+    // that a fake said so.
+    run_scenario(
+        &[
+            "test",
+            "-p",
+            "jarvisd",
+            "--test",
+            "golden12_the_house_answers",
+        ],
+        None,
+        4,
+        "golden 12: a timer rings in its own room, an automation fires on its own, \
+         and a revoked node's automation stops",
+    )?;
+
+    // Golden 12's node-side half.
+    run_scenario(
+        &["test", "-p", "jarvis-agent", "--test", "node_audio"],
+        None,
+        4,
+        "golden 12 (node): nothing streams before the wake word; a detection opens \
+         one bracketed stream; playback does not self-trigger",
     )?;
 
     // M6 acceptance: exit evidence #1, the real worker and a real Vite build.
