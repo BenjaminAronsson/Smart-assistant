@@ -121,6 +121,20 @@ impl IdentityStore for InMemoryIdentityStore {
         Ok(())
     }
 
+    async fn find_active_device_by_id(
+        &self,
+        id: &jarvis_domain::ids::DeviceId,
+    ) -> Result<Option<Device>, RepositoryError> {
+        self.guard()?;
+        Ok(self
+            .devices
+            .lock()
+            .expect("not poisoned")
+            .iter()
+            .find(|d| &d.id == id && d.is_active())
+            .cloned())
+    }
+
     async fn find_active_device_by_token_hash(
         &self,
         token_hash: &str,

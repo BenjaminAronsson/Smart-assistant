@@ -83,6 +83,138 @@ pub async fn decide_at_fire_time(
     }
 }
 
+/// Runs the tool an automation proposed.
+///
+/// A separate port from the decision so that "decided" and "did" cannot be
+/// confused: `decide_at_fire_time` returns a proposal and cannot execute, and
+/// this cannot decide.
+#[async_trait::async_trait]
+pub trait AutomationExecutor: Send + Sync {
+    /// Execute an authorized proposal. `Err` carries a neutral reason — never
+    /// raw adapter text (docs/06 §5).
+    async fn execute(&self, proposal: &ToolProposal) -> Result<(), String>;
+}
+
+/// Sweeps automations and fires the ones whose moment has come (FR-17, F8.7).
+pub struct AutomationService {
+    store: std::sync::Arc<dyn crate::ports::AutomationStore>,
+    registry: std::sync::Arc<crate::policy::ToolRegistry>,
+    authority: std::sync::Arc<dyn DeviceAuthority>,
+    executor: std::sync::Arc<dyn AutomationExecutor>,
+}
+
+/// What one sweep did, for the daemon's log and the tests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FiredAutomation {
+    pub automation_id: jarvis_domain::ids::AutomationId,
+    pub outcome: ExecutionOutcome,
+}
+
+impl AutomationService {
+    pub fn new(
+        store: std::sync::Arc<dyn crate::ports::AutomationStore>,
+        registry: std::sync::Arc<crate::policy::ToolRegistry>,
+        authority: std::sync::Arc<dyn DeviceAuthority>,
+        executor: std::sync::Arc<dyn AutomationExecutor>,
+    ) -> Self {
+        Self {
+            store,
+            registry,
+            authority,
+            executor,
+        }
+    }
+
+    /// Fire every enabled automation whose trigger fell in `(previous, now]`.
+    ///
+    /// `now_minutes`/`previous_minutes` are wall-clock minutes since midnight,
+    /// passed in rather than read here: the clock enters as data, exactly as it
+    /// does for timers, so a sweep is reproducible in a test.
+    ///
+    /// Every firing is **recorded**, including refusals. A sweep that decided
+    /// not to act and did not say so is indistinguishable from one that never
+    /// ran.
+    pub async fn sweep_clock(
+        &self,
+        previous_minutes: u16,
+        now_minutes: u16,
+        now: std::time::SystemTime,
+    ) -> Result<Vec<FiredAutomation>, crate::ports::RepositoryError> {
+        let due: Vec<_> = self
+            .store
+            .list_enabled()
+            .await?
+            .into_iter()
+            .filter(|a| {
+                a.trigger().fires_in_window(previous_minutes, now_minutes) && a.may_fire_at(now)
+            })
+            .collect();
+        self.fire_all(due, now).await
+    }
+
+    /// Fire every enabled automation watching `entity_id` entering `state`.
+    ///
+    /// Edge-triggered by the caller: this is invoked when the entity *changes*
+    /// into the state, not repeatedly while it sits there.
+    pub async fn sweep_state(
+        &self,
+        entity_id: &str,
+        state: &str,
+        now: std::time::SystemTime,
+    ) -> Result<Vec<FiredAutomation>, crate::ports::RepositoryError> {
+        let due: Vec<_> = self
+            .store
+            .list_enabled()
+            .await?
+            .into_iter()
+            .filter(|a| {
+                matches!(
+                    a.trigger(),
+                    jarvis_domain::automations::Trigger::HomeAssistantState { entity_id: e, state: s }
+                        if e == entity_id && s == state
+                ) && a.may_fire_at(now)
+            })
+            .collect();
+        self.fire_all(due, now).await
+    }
+
+    async fn fire_all(
+        &self,
+        due: Vec<Automation>,
+        now: std::time::SystemTime,
+    ) -> Result<Vec<FiredAutomation>, crate::ports::RepositoryError> {
+        let mut fired = Vec::new();
+        for automation in due {
+            let outcome =
+                match decide_at_fire_time(&automation, &self.registry, self.authority.as_ref())
+                    .await
+                {
+                    Ok(proposal) => match self.executor.execute(&proposal).await {
+                        Ok(()) => ExecutionOutcome::Executed,
+                        Err(reason) => ExecutionOutcome::Failed { reason },
+                    },
+                    Err(refusal) => refusal,
+                };
+
+            // Recorded whatever happened, and *before* it is reported: the
+            // record is what stops a flapping trigger re-firing, so a firing we
+            // could not write down must not count as having happened.
+            self.store
+                .record_execution(&jarvis_domain::automations::AutomationExecution {
+                    automation_id: automation.id().clone(),
+                    occurred_at: now,
+                    outcome: outcome.clone(),
+                })
+                .await?;
+            fired.push(FiredAutomation {
+                automation_id: automation.id().clone(),
+                outcome,
+            });
+        }
+        Ok(fired)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +346,257 @@ mod tests {
             }
             other => panic!("expected a denial, got {other:?}"),
         }
+    }
+
+    // ---- the sweep (F8.7) --------------------------------------------------
+
+    /// Records everything, refuses nothing — the store under test.
+    #[derive(Default)]
+    struct MemStore {
+        automations: std::sync::Mutex<Vec<Automation>>,
+        recorded: std::sync::Mutex<Vec<jarvis_domain::automations::AutomationExecution>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::ports::AutomationStore for MemStore {
+        async fn create(
+            &self,
+            _a: &Automation,
+            _audit: &jarvis_domain::audit::AuditEvent,
+        ) -> Result<(), crate::ports::RepositoryError> {
+            Ok(())
+        }
+        async fn list_enabled(&self) -> Result<Vec<Automation>, crate::ports::RepositoryError> {
+            Ok(self
+                .automations
+                .lock()
+                .expect("lock")
+                .iter()
+                .filter(|a| a.is_enabled())
+                .cloned()
+                .collect())
+        }
+        async fn list_all(&self) -> Result<Vec<Automation>, crate::ports::RepositoryError> {
+            Ok(self.automations.lock().expect("lock").clone())
+        }
+        async fn set_enabled(
+            &self,
+            _id: &jarvis_domain::ids::AutomationId,
+            _enabled: bool,
+        ) -> Result<(), crate::ports::RepositoryError> {
+            Ok(())
+        }
+        async fn delete(
+            &self,
+            _id: &jarvis_domain::ids::AutomationId,
+        ) -> Result<(), crate::ports::RepositoryError> {
+            Ok(())
+        }
+        async fn record_execution(
+            &self,
+            execution: &jarvis_domain::automations::AutomationExecution,
+        ) -> Result<(), crate::ports::RepositoryError> {
+            self.recorded.lock().expect("lock").push(execution.clone());
+            Ok(())
+        }
+        async fn history(
+            &self,
+            _id: &jarvis_domain::ids::AutomationId,
+            _limit: i64,
+        ) -> Result<
+            Vec<jarvis_domain::automations::AutomationExecution>,
+            crate::ports::RepositoryError,
+        > {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Counts what actually reached the world.
+    #[derive(Default)]
+    struct CountingExecutor(std::sync::Mutex<usize>);
+
+    #[async_trait::async_trait]
+    impl AutomationExecutor for CountingExecutor {
+        async fn execute(&self, _proposal: &ToolProposal) -> Result<(), String> {
+            *self.0.lock().expect("lock") += 1;
+            Ok(())
+        }
+    }
+
+    fn service(
+        store: std::sync::Arc<MemStore>,
+        registry: ToolRegistry,
+        authority: Authority,
+        executor: std::sync::Arc<CountingExecutor>,
+    ) -> AutomationService {
+        AutomationService::new(
+            store,
+            std::sync::Arc::new(registry),
+            std::sync::Arc::new(authority),
+            executor,
+        )
+    }
+
+    fn at(secs: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)
+    }
+
+    /// A trigger fires once and only once — the feature list's first named test.
+    #[tokio::test]
+    async fn a_trigger_fires_once_and_only_once() {
+        let tool = ToolId::home_set_light();
+        let store = std::sync::Arc::new(MemStore::default());
+        store
+            .automations
+            .lock()
+            .expect("lock")
+            .push(automation_for(tool.clone()));
+        let executor = std::sync::Arc::new(CountingExecutor::default());
+        let service = service(
+            store.clone(),
+            registry_with(&tool, RiskLevel::R1, &["home:control"]),
+            Authority(Some(scopes(&["home:control"]))),
+            executor.clone(),
+        );
+
+        // 07:00 falls in this window.
+        let fired = service
+            .sweep_clock(419, 420, at(1_000))
+            .await
+            .expect("sweeps");
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].outcome, ExecutionOutcome::Executed);
+        assert_eq!(*executor.0.lock().expect("lock"), 1);
+
+        // The same window again must not re-fire it: the trigger already passed.
+        let again = service
+            .sweep_clock(420, 425, at(1_100))
+            .await
+            .expect("sweeps");
+        assert!(again.is_empty(), "the moment does not come round twice");
+        assert_eq!(*executor.0.lock().expect("lock"), 1);
+    }
+
+    /// A disabled automation does not fire — the second named test.
+    #[tokio::test]
+    async fn a_disabled_automation_does_not_fire() {
+        let tool = ToolId::home_set_light();
+        let store = std::sync::Arc::new(MemStore::default());
+        let mut disabled = automation_for(tool.clone());
+        disabled.set_enabled(false);
+        store.automations.lock().expect("lock").push(disabled);
+        let executor = std::sync::Arc::new(CountingExecutor::default());
+        let service = service(
+            store.clone(),
+            registry_with(&tool, RiskLevel::R1, &["home:control"]),
+            Authority(Some(scopes(&["home:control"]))),
+            executor.clone(),
+        );
+
+        assert!(
+            service
+                .sweep_clock(419, 420, at(1_000))
+                .await
+                .expect("sweeps")
+                .is_empty()
+        );
+        assert_eq!(*executor.0.lock().expect("lock"), 0);
+        assert!(store.recorded.lock().expect("lock").is_empty());
+    }
+
+    /// **Policy denial at fire time is recorded and visible** — the third named
+    /// test, and the one that makes a refusal answerable from the sofa.
+    #[tokio::test]
+    async fn a_denial_at_fire_time_is_recorded_and_nothing_executes() {
+        let tool = ToolId::home_set_light();
+        let store = std::sync::Arc::new(MemStore::default());
+        store
+            .automations
+            .lock()
+            .expect("lock")
+            .push(automation_for(tool.clone()));
+        let executor = std::sync::Arc::new(CountingExecutor::default());
+        let service = service(
+            store.clone(),
+            registry_with(&tool, RiskLevel::R1, &["home:control"]),
+            // The creator has been revoked since it was created.
+            Authority(None),
+            executor.clone(),
+        );
+
+        let fired = service
+            .sweep_clock(419, 420, at(1_000))
+            .await
+            .expect("sweeps");
+        assert_eq!(fired.len(), 1);
+        assert!(matches!(fired[0].outcome, ExecutionOutcome::Denied { .. }));
+        assert_eq!(
+            *executor.0.lock().expect("lock"),
+            0,
+            "a denied automation must not reach the world"
+        );
+        let recorded = store.recorded.lock().expect("lock");
+        assert_eq!(
+            recorded.len(),
+            1,
+            "the refusal must be recorded, not swallowed"
+        );
+        assert!(matches!(
+            recorded[0].outcome,
+            ExecutionOutcome::Denied { .. }
+        ));
+    }
+
+    /// A state trigger fires on its entity and not on somebody else's.
+    #[tokio::test]
+    async fn a_state_trigger_fires_only_for_its_own_entity() {
+        let tool = ToolId::home_set_light();
+        let store = std::sync::Arc::new(MemStore::default());
+        let mut watcher = automation_for(tool.clone());
+        watcher = Automation::from_parts(
+            watcher.id().clone(),
+            AutomationName::new("arrive home").expect("name"),
+            Trigger::HomeAssistantState {
+                entity_id: "person.owner".into(),
+                state: "home".into(),
+            },
+            watcher.action().clone(),
+            true,
+            watcher.created_by().clone(),
+            watcher.created_at(),
+            None,
+        );
+        store.automations.lock().expect("lock").push(watcher);
+        let executor = std::sync::Arc::new(CountingExecutor::default());
+        let service = service(
+            store.clone(),
+            registry_with(&tool, RiskLevel::R1, &["home:control"]),
+            Authority(Some(scopes(&["home:control"]))),
+            executor.clone(),
+        );
+
+        assert!(
+            service
+                .sweep_state("person.guest", "home", at(1_000))
+                .await
+                .expect("sweeps")
+                .is_empty(),
+            "another entity's transition is not this automation's"
+        );
+        assert!(
+            service
+                .sweep_state("person.owner", "away", at(1_000))
+                .await
+                .expect("sweeps")
+                .is_empty(),
+            "the wrong state is not a trigger either"
+        );
+        let fired = service
+            .sweep_state("person.owner", "home", at(1_000))
+            .await
+            .expect("sweeps");
+        assert_eq!(fired.len(), 1);
+        assert_eq!(*executor.0.lock().expect("lock"), 1);
     }
 
     /// The positive case, so the tests are not all refusals: a creator who

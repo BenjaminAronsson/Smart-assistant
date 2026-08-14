@@ -8,6 +8,7 @@ pub mod approvals;
 pub mod apptool;
 pub mod artifacts;
 pub mod auth;
+pub mod automations;
 pub mod cards;
 pub mod config;
 pub mod deepdive;

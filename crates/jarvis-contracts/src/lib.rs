@@ -11,6 +11,7 @@ pub mod approvals;
 pub mod appspec;
 pub mod artifacts;
 pub mod auth;
+pub mod automations;
 pub mod cards;
 pub mod content;
 pub mod deepdive;

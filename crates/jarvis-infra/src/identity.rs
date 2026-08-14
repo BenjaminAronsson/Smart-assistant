@@ -85,6 +85,40 @@ impl IdentityStore for PgIdentityStore {
         tx.commit().await.map_err(storage)
     }
 
+    async fn find_active_device_by_id(
+        &self,
+        id: &jarvis_domain::ids::DeviceId,
+    ) -> Result<Option<Device>, RepositoryError> {
+        let row = sqlx::query!(
+            r#"
+            SELECT id, user_id, name, token_hash, device_class, public_key, created_at,
+                   last_seen_at, revoked_at, revoked_reason
+            FROM identity.devices
+            WHERE id = $1 AND revoked_at IS NULL
+            "#,
+            id.as_str(),
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
+
+        row.map(|r| {
+            Ok(Device {
+                id: parse_id(&r.id, "device id")?,
+                user_id: parse_id(&r.user_id, "user id")?,
+                name: r.name,
+                token_hash: r.token_hash,
+                public_key: r.public_key,
+                class: parse_class(&r.device_class)?,
+                created_at: r.created_at.into(),
+                last_seen_at: r.last_seen_at.map(Into::into),
+                revoked_at: r.revoked_at.map(Into::into),
+                revoked_reason: r.revoked_reason,
+            })
+        })
+        .transpose()
+    }
+
     async fn find_active_device_by_token_hash(
         &self,
         token_hash: &str,
