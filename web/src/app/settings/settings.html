@@ -1,0 +1,127 @@
+<!--
+  Settings (F8.8). Keyboard-first per NFR-11: every action is a real button in
+  tab order, the revoke confirmation is inline rather than a focus-trapping
+  modal, and status changes are announced through aria-live regions.
+-->
+<main class="settings" aria-labelledby="settings-heading">
+  <h1 id="settings-heading">Settings</h1>
+
+  <p class="error" role="alert" aria-live="assertive" [hidden]="!error()">{{ error() }}</p>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section aria-labelledby="devices-heading">
+    <h2 id="devices-heading">Devices</h2>
+
+    <div class="actions">
+      <button type="button" (click)="pairNode()">Pair a new node</button>
+      <button type="button" (click)="refresh()" [disabled]="busy()">Refresh</button>
+    </div>
+
+    @if (pairingWindow(); as window) {
+      <div class="pairing" role="status" aria-live="polite">
+        <p>
+          Read this code out at the node, then run
+          <code>jarvis-agent pair</code> there.
+        </p>
+        <!-- The code is short-lived and single-use; it is shown once, here. -->
+        <p class="code">{{ window.pairingCode }}</p>
+        <p class="expiry">Expires {{ timeOnly(window.expiresAt) }}</p>
+        <button type="button" (click)="checkForNewDevice()">Check if it appeared</button>
+      </div>
+    }
+
+    <ul class="devices">
+      @for (device of sortedDevices(); track device.deviceId) {
+        <li [class.revoked]="isRevoked(device)">
+          <div class="row">
+            <span class="name">{{ device.name }}</span>
+            <span class="class">{{ device.deviceClass }}</span>
+            <!--
+              Rendered from the server's own answer, never inferred here: a
+              satellite is toolless by construction and the list says so.
+            -->
+            <span class="tools">
+              {{ device.executesTools ? 'can run tools' : 'presents and listens only' }}
+            </span>
+          </div>
+          <div class="row secondary">
+            <span>
+              @if (device.lastSeenAt) {
+                Last seen {{ when(device.lastSeenAt) }}
+              } @else {
+                Never connected
+              }
+            </span>
+            @if (isRevoked(device)) {
+              <span class="revoked-at">Revoked {{ when(device.revokedAt) }}</span>
+            } @else if (confirmingRevoke() === device.deviceId) {
+              <span role="group" aria-label="Confirm revoking {{ device.name }}">
+                <button type="button" class="danger" (click)="confirmRevoke(device.deviceId)">
+                  Yes, revoke {{ device.name }}
+                </button>
+                <button type="button" (click)="cancelRevoke()">Keep it</button>
+              </span>
+            } @else {
+              <button type="button" (click)="askToRevoke(device.deviceId)">Revoke…</button>
+            }
+          </div>
+        </li>
+      } @empty {
+        <li class="empty">No devices yet.</li>
+      }
+    </ul>
+  </section>
+
+  <!-- ---------------------------------------------------------------- -->
+  <section aria-labelledby="automations-heading">
+    <h2 id="automations-heading">Automations</h2>
+
+    <ul class="automations">
+      @for (automation of automations(); track automation.id) {
+        <li>
+          <div class="row">
+            <span class="name">{{ automation.name }}</span>
+            <span class="trigger">{{ triggerLabel(automation) }}</span>
+            <button
+              type="button"
+              (click)="toggleAutomation(automation)"
+              [attr.aria-pressed]="automation.enabled"
+            >
+              {{ automation.enabled ? 'Enabled' : 'Disabled' }}
+            </button>
+          </div>
+          <div class="row secondary">
+            <span class="tool">{{ automation.toolId }}</span>
+            <button
+              type="button"
+              (click)="toggleHistory(automation)"
+              [attr.aria-expanded]="expanded() === automation.id"
+            >
+              History
+            </button>
+          </div>
+
+          @if (expanded() === automation.id) {
+            <ul class="history">
+              @for (run of historyFor(automation.id); track run.occurredAt) {
+                <li>
+                  <span class="outcome" [class.refused]="run.outcome !== 'executed'">
+                    {{ outcomeLabel(run.outcome) }}
+                  </span>
+                  <span>{{ when(run.occurredAt) }}</span>
+                  @if (run.detail) {
+                    <span class="detail">{{ run.detail }}</span>
+                  }
+                </li>
+              } @empty {
+                <li class="empty">It has not fired yet.</li>
+              }
+            </ul>
+          }
+        </li>
+      } @empty {
+        <li class="empty">No automations yet.</li>
+      }
+    </ul>
+  </section>
+</main>
