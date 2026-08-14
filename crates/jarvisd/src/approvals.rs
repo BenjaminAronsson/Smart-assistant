@@ -37,6 +37,7 @@ use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::ids::{ApprovalId, RunId};
 use jarvis_domain::tools::{CanonicalValue, ToolId};
 use jarvis_infra::approvals::{ApprovalPersistError, record_approval_event};
+use jarvis_infra::canonical::{canonical_to_json, json_to_canonical};
 use sqlx::PgPool;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -263,58 +264,6 @@ fn resolved_audit(
         target: format!("approval:{approval_id}"),
         correlation_id: Some(run_id.as_str().to_owned()),
         payload_json: payload.to_string(),
-    }
-}
-
-/// Project a domain [`CanonicalValue`] to display JSON for the approval card.
-/// The card's `proposedArguments` is what the human reads; the arguments that
-/// actually *bind* come from the gate's stored `CanonicalValue` (or from
-/// [`json_to_canonical`] on an edit), so this direction is display-only.
-fn canonical_to_json(value: &CanonicalValue) -> serde_json::Value {
-    use serde_json::Value;
-    match value {
-        CanonicalValue::Null => Value::Null,
-        CanonicalValue::Bool(b) => Value::Bool(*b),
-        CanonicalValue::Int(n) => Value::Number((*n).into()),
-        CanonicalValue::Float(text) => text
-            .parse::<f64>()
-            .ok()
-            .and_then(serde_json::Number::from_f64)
-            .map(Value::Number)
-            .unwrap_or(Value::Null),
-        CanonicalValue::Str(s) => Value::String(s.clone()),
-        CanonicalValue::Array(items) => Value::Array(items.iter().map(canonical_to_json).collect()),
-        CanonicalValue::Object(map) => Value::Object(
-            map.iter()
-                .map(|(k, v)| (k.clone(), canonical_to_json(v)))
-                .collect(),
-        ),
-    }
-}
-
-/// Lift edited JSON arguments back into a domain [`CanonicalValue`] so the grant
-/// binds them. Object keys sort (via `CanonicalValue::Object`'s `BTreeMap`), so
-/// the same edit in any key order yields the same canonical form and hash
-/// (docs/06 §4/§5). An integer that does not fit `i64` degrades to a `Float`
-/// string — still deterministic, so re-validation of the same edit binds.
-fn json_to_canonical(value: serde_json::Value) -> CanonicalValue {
-    use serde_json::Value;
-    match value {
-        Value::Null => CanonicalValue::Null,
-        Value::Bool(b) => CanonicalValue::Bool(b),
-        Value::Number(n) => match n.as_i64() {
-            Some(i) => CanonicalValue::Int(i),
-            None => CanonicalValue::Float(n.to_string()),
-        },
-        Value::String(s) => CanonicalValue::Str(s),
-        Value::Array(items) => {
-            CanonicalValue::Array(items.into_iter().map(json_to_canonical).collect())
-        }
-        Value::Object(map) => CanonicalValue::Object(
-            map.into_iter()
-                .map(|(k, v)| (k, json_to_canonical(v)))
-                .collect(),
-        ),
     }
 }
 

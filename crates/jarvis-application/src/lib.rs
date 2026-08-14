@@ -3,6 +3,7 @@
 //! engine, and the ports (traits) adapters implement (docs/02 §3).
 
 pub mod appbridge;
+pub mod automations;
 pub mod calendar;
 pub mod deepdive;
 pub mod deterministic;
