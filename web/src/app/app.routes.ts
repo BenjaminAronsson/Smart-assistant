@@ -19,4 +19,12 @@ export const routes: Routes = [
     loadComponent: () => import('./artifacts/artifact-canvas').then((m) => m.ArtifactCanvas),
     data: { surface: 'hud' },
   },
+  {
+    // The settings surface (F8.8): devices, automations, voice. An ops
+    // surface, and its own lazy chunk — nothing here loads unless somebody
+    // actually opens settings (angular-shell bundle discipline).
+    path: 'settings',
+    loadComponent: () => import('./settings/settings').then((m) => m.Settings),
+    data: { surface: 'ops' },
+  },
 ];

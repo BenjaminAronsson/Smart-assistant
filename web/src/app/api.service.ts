@@ -18,6 +18,10 @@ import type {
   MediaCommandResponse,
   MediaStateResponse,
   MapCoverageResponse,
+  DeviceListResponse,
+  PairingWindowDto,
+  AutomationListResponse,
+  AutomationHistoryResponse,
 } from '../generated/api-types';
 
 const TOKEN_KEY = 'jarvis.deviceToken';
@@ -203,6 +207,66 @@ export class ApiService {
       }
       throw e;
     }
+  }
+
+  // --- settings surface (F8.8) ------------------------------------------
+
+  /** Every device, revoked ones included — a revoked device is history, not a gap. */
+  listDevices(): Promise<DeviceListResponse> {
+    return firstValueFrom(
+      this.http.get<DeviceListResponse>('/api/v1/devices', { headers: this.authHeaders() }),
+    );
+  }
+
+  /**
+   * Open a pairing window and get the one-time code to read out (ADR-031 §5).
+   * The owner is already authenticated at a keyboard when they pair a
+   * satellite; that is the ceremony.
+   */
+  openPairingWindow(): Promise<PairingWindowDto> {
+    return firstValueFrom(
+      this.http.post<PairingWindowDto>(
+        '/api/v1/devices/pairing-window',
+        {},
+        { headers: this.authHeaders() },
+      ),
+    );
+  }
+
+  revokeDevice(id: string, reason: string): Promise<void> {
+    return firstValueFrom(
+      this.http.post<void>(
+        `/api/v1/devices/${id}/revoke`,
+        { reason },
+        { headers: this.authHeaders() },
+      ),
+    );
+  }
+
+  listAutomations(): Promise<AutomationListResponse> {
+    return firstValueFrom(
+      this.http.get<AutomationListResponse>('/api/v1/automations', {
+        headers: this.authHeaders(),
+      }),
+    );
+  }
+
+  setAutomationEnabled(id: string, enabled: boolean): Promise<void> {
+    return firstValueFrom(
+      this.http.patch<void>(
+        `/api/v1/automations/${id}`,
+        { enabled },
+        { headers: this.authHeaders() },
+      ),
+    );
+  }
+
+  automationHistory(id: string): Promise<AutomationHistoryResponse> {
+    return firstValueFrom(
+      this.http.get<AutomationHistoryResponse>(`/api/v1/automations/${id}/history`, {
+        headers: this.authHeaders(),
+      }),
+    );
   }
 
   private authHeaders(): HttpHeaders {

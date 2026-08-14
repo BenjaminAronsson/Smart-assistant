@@ -1,0 +1,99 @@
+// Settings surface (F8.8). Tokens only — docs/12 forbids local palette values,
+// and a deviation is a blocking review finding.
+.settings {
+  padding: var(--space-4, 1.5rem);
+  max-width: 60rem;
+  margin: 0 auto;
+}
+
+h2 {
+  margin-top: var(--space-5, 2rem);
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-2, 0.5rem);
+  margin-bottom: var(--space-3, 1rem);
+}
+
+// A visible focus ring is not optional (NFR-11): keyboard operation that you
+// cannot see is not keyboard operation.
+button:focus-visible {
+  outline: 2px solid var(--color-focus, currentColor);
+  outline-offset: 2px;
+}
+
+.pairing {
+  padding: var(--space-3, 1rem);
+  border: 1px solid var(--color-border, currentColor);
+  border-radius: var(--radius-2, 0.5rem);
+  margin-bottom: var(--space-3, 1rem);
+
+  .code {
+    font-family: var(--font-mono, monospace);
+    font-size: var(--font-size-6, 2rem);
+    letter-spacing: 0.15em;
+  }
+
+  .expiry {
+    opacity: 0.7;
+  }
+}
+
+ul {
+  list-style: none;
+  padding: 0;
+}
+
+.devices li,
+.automations li {
+  padding: var(--space-2, 0.75rem) 0;
+  border-bottom: 1px solid var(--color-border-subtle, rgb(0 0 0 / 0.1));
+}
+
+.row {
+  display: flex;
+  gap: var(--space-3, 1rem);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.row.secondary {
+  opacity: 0.8;
+  margin-top: var(--space-1, 0.25rem);
+}
+
+.name {
+  font-weight: 600;
+}
+
+// A revoked device stays legible rather than disappearing: it is the answer to
+// "did that actually turn off?".
+.revoked {
+  opacity: 0.55;
+}
+
+.history {
+  margin: var(--space-2, 0.5rem) 0 0 var(--space-3, 1rem);
+
+  li {
+    display: flex;
+    gap: var(--space-2, 0.5rem);
+    border: none;
+  }
+}
+
+// A refusal must not read like a success. This is the only place the
+// difference between "ran and did nothing" and "was refused" is visible.
+.outcome.refused {
+  font-weight: 600;
+}
+
+.error:not([hidden]) {
+  padding: var(--space-2, 0.5rem);
+  border-radius: var(--radius-1, 0.25rem);
+}
+
+.empty {
+  opacity: 0.7;
+}
