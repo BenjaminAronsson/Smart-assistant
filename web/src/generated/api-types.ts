@@ -90,6 +90,29 @@ export type ArtifactSensitivityDto = "normal" | "sensitive";
  */
 export type ArtifactSourceKindDto = "message" | "run" | "web";
 /**
+ * What makes an automation fire. A closed vocabulary — an open-ended
+ * predicate would be a path from client (or model) text to a tool call.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "TriggerDto".
+ */
+export type TriggerDto =
+  | {
+      /**
+       * 0–1439. Minutes rather than an instant: "07:00" means seven tomorrow
+       * as well as today.
+       */
+      minutesSinceMidnight: number;
+      type: "daily_at";
+      [k: string]: unknown;
+    }
+  | {
+      entityId: string;
+      state: string;
+      type: "ha_state";
+      [k: string]: unknown;
+    };
+/**
  * What this turn does to the materialization canvas (FR-24/FR-27, docs/12
  * §2.5/§4) — the wire mirror of `jarvis_application::deepdive::CanvasAction`.
  *
@@ -904,6 +927,80 @@ export interface ArtifactVersionsResponse {
   [k: string]: unknown;
 }
 /**
+ * One automation, as the settings surface renders it.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "AutomationDto".
+ */
+export interface AutomationDto {
+  /**
+   * The arguments it proposes, as JSON.
+   */
+  arguments: {
+    [k: string]: unknown;
+  };
+  /**
+   * RFC 3339 UTC.
+   */
+  createdAt: string;
+  /**
+   * ULID: 26 chars of uppercase Crockford base32
+   */
+  createdByDeviceId: string;
+  enabled: boolean;
+  id: UlidString;
+  lastFiredAt?: string | null;
+  /**
+   * Human label, sanitized. Rendered as text, never as markup.
+   */
+  name: string;
+  /**
+   * The tool it proposes. Naming a tool is not authorizing it.
+   */
+  toolId: string;
+  trigger: TriggerDto;
+  [k: string]: unknown;
+}
+/**
+ * One past firing. A **denial is the most important row here**: "it ran and
+ * nothing happened" and "it was refused" are otherwise identical.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "AutomationExecutionDto".
+ */
+export interface AutomationExecutionDto {
+  /**
+   * Why it was refused, or how it failed. Closed-vocabulary policy reasons
+   * and adapter-neutral failure text — never raw provider strings.
+   */
+  detail?: string | null;
+  /**
+   * RFC 3339 UTC.
+   */
+  occurredAt: string;
+  /**
+   * `executed` | `needs_approval` | `denied` | `failed`.
+   */
+  outcome: string;
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "AutomationHistoryResponse".
+ */
+export interface AutomationHistoryResponse {
+  executions: AutomationExecutionDto[];
+  [k: string]: unknown;
+}
+/**
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "AutomationListResponse".
+ */
+export interface AutomationListResponse {
+  automations: AutomationDto[];
+  [k: string]: unknown;
+}
+/**
  * What the operation produced. Deliberately narrow: a content string and
  * whether it was truncated. No grant, no policy decision, no audit id — an app
  * learns the answer to its question and nothing about the machinery that
@@ -956,6 +1053,25 @@ export interface CapabilityTokenDto {
  */
 export interface CheckListItemRequest {
   checked: boolean;
+  [k: string]: unknown;
+}
+/**
+ * `POST /api/v1/automations`.
+ *
+ * Creating an automation is itself an R2 action: it is a durable, unattended
+ * capability to act, and the owner approves it the same way they approve
+ * anything else that changes the world.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "CreateAutomationRequest".
+ */
+export interface CreateAutomationRequest {
+  arguments?: {
+    [k: string]: unknown;
+  };
+  name: string;
+  toolId: string;
+  trigger: TriggerDto;
   [k: string]: unknown;
 }
 /**
@@ -2275,5 +2391,19 @@ export interface TimerListResponse {
    */
   now: string;
   timers: TimerDto[];
+  [k: string]: unknown;
+}
+/**
+ * `PATCH /api/v1/automations/{id}` — the one mutation, deliberately.
+ *
+ * Enabling and disabling is all an edit can do. Changing what an automation
+ * *does* is creating a different automation, which keeps the execution
+ * history joined to a thing that never silently changed meaning.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "UpdateAutomationRequest".
+ */
+export interface UpdateAutomationRequest {
+  enabled: boolean;
   [k: string]: unknown;
 }

@@ -204,6 +204,16 @@ pub trait IdentityStore: Send + Sync {
         device: &jarvis_domain::identity::Device,
         audit: &AuditEvent,
     ) -> Result<(), RepositoryError>;
+    /// The device with this id, if it exists and has not been revoked.
+    ///
+    /// Used at automation fire time (F8.6): authority is resolved from the live
+    /// row every time, so a revoked device's automations fail closed rather
+    /// than acting forever on a decision made when they were created.
+    async fn find_active_device_by_id(
+        &self,
+        id: &jarvis_domain::ids::DeviceId,
+    ) -> Result<Option<jarvis_domain::identity::Device>, RepositoryError>;
+
     async fn find_active_device_by_token_hash(
         &self,
         token_hash: &str,

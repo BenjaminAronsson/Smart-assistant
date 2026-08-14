@@ -327,6 +327,109 @@
       ],
       "type": "object"
     },
+    "AutomationDto": {
+      "description": "One automation, as the settings surface renders it.",
+      "properties": {
+        "arguments": {
+          "description": "The arguments it proposes, as JSON."
+        },
+        "createdAt": {
+          "description": "RFC 3339 UTC.",
+          "type": "string"
+        },
+        "createdByDeviceId": {
+          "$ref": "#/definitions/UlidString",
+          "description": "Whose authority is consulted **at fire time**. Returned so the owner can\nsee which device an automation depends on — revoke that device and this\nautomation stops, by design."
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "id": {
+          "$ref": "#/definitions/UlidString"
+        },
+        "lastFiredAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Human label, sanitized. Rendered as text, never as markup.",
+          "type": "string"
+        },
+        "toolId": {
+          "description": "The tool it proposes. Naming a tool is not authorizing it.",
+          "type": "string"
+        },
+        "trigger": {
+          "$ref": "#/definitions/TriggerDto"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "trigger",
+        "toolId",
+        "arguments",
+        "enabled",
+        "createdByDeviceId",
+        "createdAt"
+      ],
+      "type": "object"
+    },
+    "AutomationExecutionDto": {
+      "description": "One past firing. A **denial is the most important row here**: \"it ran and\nnothing happened\" and \"it was refused\" are otherwise identical.",
+      "properties": {
+        "detail": {
+          "description": "Why it was refused, or how it failed. Closed-vocabulary policy reasons\nand adapter-neutral failure text — never raw provider strings.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "occurredAt": {
+          "description": "RFC 3339 UTC.",
+          "type": "string"
+        },
+        "outcome": {
+          "description": "`executed` | `needs_approval` | `denied` | `failed`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "occurredAt",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "AutomationHistoryResponse": {
+      "properties": {
+        "executions": {
+          "items": {
+            "$ref": "#/definitions/AutomationExecutionDto"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "executions"
+      ],
+      "type": "object"
+    },
+    "AutomationListResponse": {
+      "properties": {
+        "automations": {
+          "items": {
+            "$ref": "#/definitions/AutomationDto"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "automations"
+      ],
+      "type": "object"
+    },
     "BuildNetworkDto": {
       "description": "The network policy under which the artifact was built (docs/04 §4).",
       "enum": [
@@ -486,6 +589,29 @@
           "type": "object"
         }
       ]
+    },
+    "CreateAutomationRequest": {
+      "description": "`POST /api/v1/automations`.\n\nCreating an automation is itself an R2 action: it is a durable, unattended\ncapability to act, and the owner approves it the same way they approve\nanything else that changes the world.",
+      "properties": {
+        "arguments": {
+          "default": null
+        },
+        "name": {
+          "type": "string"
+        },
+        "toolId": {
+          "type": "string"
+        },
+        "trigger": {
+          "$ref": "#/definitions/TriggerDto"
+        }
+      },
+      "required": [
+        "name",
+        "trigger",
+        "toolId"
+      ],
+      "type": "object"
     },
     "CreateListRequest": {
       "description": "`POST /api/v1/lists` — create a named list, or return the existing one with\nthe same normalized name (creation is idempotent on the name key, because\n\"add milk to the shopping list\" must work before a shopping list exists).",
@@ -3643,6 +3769,53 @@
         }
       ]
     },
+    "TriggerDto": {
+      "description": "What makes an automation fire. A closed vocabulary — an open-ended\npredicate would be a path from client (or model) text to a tool call.",
+      "oneOf": [
+        {
+          "description": "Every day at a wall-clock time, local to the daemon.",
+          "properties": {
+            "minutesSinceMidnight": {
+              "description": "0–1439. Minutes rather than an instant: \"07:00\" means seven tomorrow\nas well as today.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "daily_at",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "minutesSinceMidnight"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A Home Assistant entity entering a state (presence, zone).",
+          "properties": {
+            "entityId": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "type": {
+              "const": "ha_state",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "entityId",
+            "state"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "UiSettingsDto": {
       "description": "Non-sensitive HUD presentation settings surfaced to the paired shell.\nThese are display policy, not credentials or filesystem paths (docs/09 §1,\ndocs/12 §5–§6).",
       "properties": {
@@ -3672,6 +3845,18 @@
       "description": "ULID: 26 chars of uppercase Crockford base32",
       "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
       "type": "string"
+    },
+    "UpdateAutomationRequest": {
+      "description": "`PATCH /api/v1/automations/{id}` — the one mutation, deliberately.\n\nEnabling and disabling is all an edit can do. Changing what an automation\n*does* is creating a different automation, which keeps the execution\nhistory joined to a thing that never silently changed meaning.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "type": "object"
     },
     "VoiceControlDto": {
       "description": "JSON control frames that bracket a voice PCM stream.",

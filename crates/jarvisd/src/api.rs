@@ -130,6 +130,7 @@ pub struct Wiring {
     /// a 404 on coverage as "no local map" and takes the docs/12 §3 fallback).
     pub maps: Option<crate::maps::MapApi>,
     pub timers: Option<crate::timers::TimerApi>,
+    pub automations: Option<crate::automations::AutomationApi>,
     /// Lists and quick notes (F3b.8, FR-34, ADR-024).
     pub lists: Option<crate::lists::ListApi>,
     /// Deep-dive threads (F3b.6, FR-27, ADR-017). The same handle is given to
@@ -165,6 +166,7 @@ impl Default for Wiring {
             media: None,
             maps: None,
             timers: None,
+            automations: None,
             lists: None,
             deepdive: None,
             memories: None,
@@ -196,6 +198,7 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
         media,
         maps,
         timers,
+        automations,
         lists,
         deepdive,
         memories,
@@ -372,6 +375,25 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
                     .route(
                         "/api/v1/timers/{id}/action",
                         axum::routing::post(crate::timers::act),
+                    )
+                    .with_state(api),
+            );
+        }
+        if let Some(api) = automations {
+            protected = protected.merge(
+                Router::new()
+                    .route(
+                        "/api/v1/automations",
+                        get(crate::automations::index).post(crate::automations::create),
+                    )
+                    .route(
+                        "/api/v1/automations/{id}",
+                        axum::routing::patch(crate::automations::update)
+                            .delete(crate::automations::delete),
+                    )
+                    .route(
+                        "/api/v1/automations/{id}/history",
+                        get(crate::automations::history),
                     )
                     .with_state(api),
             );

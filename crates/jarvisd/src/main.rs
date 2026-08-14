@@ -42,6 +42,9 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
 
     let identity = Arc::new(jarvis_infra::identity::PgIdentityStore::new(pool.clone()));
     let identity_for_display = identity.clone();
+    // The automation driver resolves a creator's authority from the live device
+    // row on every firing (F8.6), so it holds its own handle.
+    let identity_for_automations = identity.clone();
     // One presence registry: the socket loop marks devices present, the
     // placement route reads it (F7.5).
     let connected = jarvisd::devices::ConnectedDevices::new();
@@ -616,6 +619,34 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         None
     };
 
+    // Automations (FR-17, F8.6/F8.7). The store is shared between the REST
+    // surface and the sweep driver, so what the owner sees in the settings
+    // list is exactly what the daemon sweeps.
+    let automation_store: Arc<dyn jarvis_application::ports::AutomationStore> = Arc::new(
+        jarvis_infra::automations::PgAutomationStore::new(pool.clone()),
+    );
+    let automation_api = Some(jarvisd::automations::AutomationApi::new(
+        automation_store.clone(),
+    ));
+
+    // The sweep driver (F8.7) — the half that makes an automation something
+    // that happens rather than something that is stored. It shares the same
+    // registry every other tool call uses, so an automation is not a second
+    // execution path (invariant 1).
+    let automation_scheduler = tokio::spawn(jarvisd::automations::run_scheduler(
+        Arc::new(jarvis_application::automations::AutomationService::new(
+            automation_store,
+            bridge_registry.clone(),
+            Arc::new(jarvisd::automations::StoreAuthority::new(
+                identity_for_automations,
+            )),
+            Arc::new(jarvisd::automations::RegistryExecutor::new(
+                bridge_registry.clone(),
+            )),
+        )),
+        serve_shutdown.clone(),
+    ));
+
     let state = jarvisd::api::AppState::with_database(pool.clone(), auth).with_ui_settings(
         jarvis_contracts::health::UiSettingsDto {
             background: config.ui.background.clone(),
@@ -651,6 +682,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             media: media_api,
             maps,
             timers: timer_api,
+            automations: automation_api,
             lists: list_api,
             memories: Some(jarvisd::memories::MemoryApi::new(
                 memory_store,
@@ -737,6 +769,9 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         // this only waits for the pass in flight to unwind.
         let _ = tokio::time::timeout(DRAIN_DEADLINE, scheduler).await;
     }
+    // Same for the automation sweep: a firing in flight has already written its
+    // execution row, and this only waits for it to unwind (invariant 4).
+    let _ = tokio::time::timeout(DRAIN_DEADLINE, automation_scheduler).await;
     dispatch_shutdown.cancel();
     let _ = tokio::time::timeout(DRAIN_DEADLINE, dispatcher_task).await;
 
