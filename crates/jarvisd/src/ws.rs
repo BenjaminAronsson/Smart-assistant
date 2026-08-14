@@ -626,6 +626,40 @@ pub(crate) fn delivers_to(
     }
 }
 
+/// Ask the delivery filter a question from an integration test.
+///
+/// [`delivers_to`] is `pub(crate)` and takes types an integration test cannot
+/// easily build; this is a thin string-to-type translation over the **same**
+/// function, so golden 12 exercises the production rule rather than a copy of
+/// it. Deliberately narrow: it answers, it cannot deliver anything.
+#[doc(hidden)]
+pub fn delivers_to_for_test(
+    channel: &str,
+    event_type: &str,
+    payload: &serde_json::Value,
+    class: &str,
+    device_id: Option<&str>,
+    owned_stream: Option<&str>,
+) -> bool {
+    let channel = match channel {
+        "voice" => Channel::Voice,
+        "display" => Channel::Display,
+        _ => Channel::Session,
+    };
+    let envelope = EventEnvelope {
+        v: CONTRACT_VERSION,
+        seq: 0,
+        channel,
+        event_type: event_type.to_owned(),
+        occurred_at: now_rfc3339(),
+        trace_id: None,
+        resource_version: None,
+        payload: payload.clone(),
+    };
+    let class: DeviceClass = class.parse().expect("a real device class");
+    delivers_to(&envelope, class, device_id, owned_stream)
+}
+
 /// How many capture streams one socket is remembered as owning. A socket that
 /// opens more than a handful of streams is a long-lived UI; the oldest are no
 /// longer receiving events anyone is waiting for.
