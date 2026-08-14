@@ -289,9 +289,40 @@ fn minutes_since_midnight(now: OffsetDateTime) -> u16 {
 ///
 /// A storage failure logs and continues rather than killing the loop: the whole
 /// point of this task is that it is still here tomorrow morning.
-pub async fn run_scheduler(service: Arc<AutomationService>, shutdown: CancellationToken) {
+pub async fn run_scheduler(
+    service: Arc<AutomationService>,
+    // Wall-clock minute the daemon was last known to be running, if the
+    // previous process left one. `None` on a first start — there is no
+    // downtime to report when there was no uptime before it.
+    down_since_minutes: Option<u16>,
+    shutdown: CancellationToken,
+) {
     tracing::info!("automation scheduler started");
     let mut previous = minutes_since_midnight(OffsetDateTime::now_utc());
+
+    // The restart sweep, in the same shape timers already use (M8b): anything
+    // whose moment passed while this process was not running is ANNOUNCED, not
+    // fired. Acting on "turn the lights on at 07:00" at 11:00 is worse than
+    // not acting — the reason the owner wanted it has passed — but saying
+    // nothing is worse still, because "the automation is broken" and "the
+    // daemon was off" need very different responses from them.
+    if let Some(down_since) = down_since_minutes {
+        match service.missed_since(down_since, previous).await {
+            Ok(missed) => {
+                for item in &missed {
+                    tracing::warn!(
+                        automation_id = %item.automation_id,
+                        name = %item.name,
+                        "automation was missed while the daemon was down; not run late"
+                    );
+                }
+                if missed.is_empty() {
+                    tracing::info!("no automations were missed while the daemon was down");
+                }
+            }
+            Err(e) => tracing::error!(error = %e, "could not check for missed automations"),
+        }
+    }
 
     while !shutdown.is_cancelled() {
         tokio::select! {
