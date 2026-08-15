@@ -20,6 +20,34 @@
 
 use crate::audio::{FRAME_BYTES, SAMPLE_RATE_HZ};
 
+/// The word this node answers to.
+///
+/// **`Andy`** by default (ADR-032 §1, owner's choice). Configuration rather
+/// than code: changing it is an owner decision plus a model swap, never a
+/// rebuild — which is also why the *pipeline* never hardcodes it and only the
+/// engine and the listening indicator ever read it.
+pub const DEFAULT_WAKE_WORD: &str = "andy";
+
+/// Normalises a configured wake word to the name of its model.
+///
+/// Lowercased and trimmed: it names an openWakeWord model file, and an owner
+/// typing "Andy" must reach the same model as one typing "andy". A blank
+/// setting is not a wake word and falls back to the default.
+///
+/// Pure, taking the raw value rather than reading the environment itself —
+/// which is what lets it be tested without mutating process state (`set_var`
+/// is `unsafe` in edition 2024, and this crate stays free of `unsafe`).
+pub fn normalise_wake_word(raw: Option<&str>) -> String {
+    raw.map(|value| value.trim().to_lowercase())
+        .filter(|word| !word.is_empty())
+        .unwrap_or_else(|| DEFAULT_WAKE_WORD.to_owned())
+}
+
+/// The wake word this node is configured with.
+pub fn configured_wake_word() -> String {
+    normalise_wake_word(std::env::var("JARVIS_AGENT_WAKE_WORD").ok().as_deref())
+}
+
 /// How eager the detector is. Higher fires more often, on less.
 ///
 /// A single knob, deliberately: openWakeWord exposes several, and a satellite
@@ -252,6 +280,30 @@ impl WakeWordDetector for NeverWakes {
     }
 }
 
+#[cfg(test)]
+mod word_tests {
+    use super::*;
+
+    #[test]
+    fn the_default_wake_word_is_andy() {
+        // ADR-032 §1. Not the product's name: the house answers to a person's
+        // name, not to its own brand.
+        assert_eq!(DEFAULT_WAKE_WORD, "andy");
+    }
+
+    #[test]
+    fn a_configured_word_is_normalised_to_its_model_name() {
+        // "Andy" and "andy" must reach the same model.
+        assert_eq!(normalise_wake_word(Some("  Andy  ")), "andy");
+        assert_eq!(normalise_wake_word(Some("ANDY")), "andy");
+        // A blank setting is not a wake word.
+        assert_eq!(normalise_wake_word(Some("   ")), DEFAULT_WAKE_WORD);
+        assert_eq!(normalise_wake_word(None), DEFAULT_WAKE_WORD);
+        // And an owner may genuinely choose another one.
+        assert_eq!(normalise_wake_word(Some("Hey Jarvis")), "hey jarvis");
+    }
+}
+
 /// Frames per second of capture, for turning a frame count into a duration in
 /// the gate report.
 pub const FRAMES_PER_SECOND: usize = SAMPLE_RATE_HZ as usize * 2 / FRAME_BYTES;
@@ -282,7 +334,7 @@ mod tests {
             self.at.contains(&index)
         }
         fn word(&self) -> &str {
-            "jarvis"
+            "andy"
         }
     }
 

@@ -283,8 +283,10 @@ fn open_wake_gate() -> WakeGate<Box<dyn WakeWordDetector>> {
         .and_then(|raw| raw.parse::<f32>().ok())
         .map_or(Sensitivity::DEFAULT, Sensitivity::new);
 
+    let word = jarvis_agent::wake::configured_wake_word();
     let detector: Box<dyn WakeWordDetector> = Box::new(NeverWakes);
     tracing::warn!(
+        wake_word = %word,
         sensitivity = sensitivity.value(),
         "no wake-word engine is compiled into this build: this node will not answer to \
          its name. Push-to-talk is unaffected (ADR-032, last consequence)."
