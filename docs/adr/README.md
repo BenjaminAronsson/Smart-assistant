@@ -907,7 +907,10 @@ detection runs, and what the node is allowed to send before it fires.
 
 **Decision.**
 
-1. **openWakeWord** as the engine, `"jarvis"` as the word. It is Apache-2.0, the pre-trained
+1. **openWakeWord** as the engine, **`"Andy"`** as the word (owner's choice, 2026-08-15 — the
+   product is not named after the wake word, and a two-syllable given name with a stressed first
+   vowel is easier for a detector to separate from household speech than a brand). It is
+   Apache-2.0, the pre-trained
    models are Apache-2.0/CC-BY, it runs on CPU well inside the 8 GB profile's budget
    (docs/01 §4.1), and it needs no per-user training or cloud enrolment. **Licence review:** the
    openWakeWord code is Apache-2.0; the bundled `melspectrogram` and `embedding` feature
@@ -925,7 +928,9 @@ detection runs, and what the node is allowed to send before it fires.
    local push-to-talk control, and by nothing else. Stated as a decision rather than an
    implementation detail so that adding such a frame later is visibly a change to this ADR.
 
-4. **The engine sits behind a `WakeWordDetector` port**, like every other adapter. The
+4. **The engine sits behind a `WakeWordDetector` port**, like every other adapter. The *word*
+   is configuration, not code — `[wake].word` / `JARVIS_AGENT_WAKE_WORD`, defaulting to `andy` —
+   so changing it is an owner decision and a model swap, never a rebuild. The
    pipeline — pre-roll, gating, one-detection-per-utterance, barge-in — is engine-independent and
    tested against a scripted detector; the engine is what is swappable.
 

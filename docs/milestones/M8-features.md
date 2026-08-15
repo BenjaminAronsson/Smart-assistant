@@ -62,7 +62,8 @@ down.** FR-13 now requires wake-word invocation **and keeps push-to-talk as an e
 from Should to **Must**. Wake word stops being a docs/08 §6 deferred decision and becomes a
 requirement with a milestone behind it.
 
-**2. ✅ openWakeWord**, with the asset licence reviewed in ADR-032, `"jarvis"` as the word,
+**2. ✅ openWakeWord**, with the asset licence reviewed in ADR-032, **`"Andy"`** as the word
+(owner's choice, 2026-08-15; configurable — see ADR-032 §4),
 and a documented swap path — it sits behind a port like every other adapter.
 
 **3. ✅ Detection runs on the node.** The satellite streams nothing until the word fires.
