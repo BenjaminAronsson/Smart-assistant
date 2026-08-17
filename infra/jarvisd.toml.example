@@ -40,12 +40,37 @@ wyoming_stt = "tcp://127.0.0.1:10300"
 # voice enabled below — an alarm must sound with the network down (ADR-023).
 wyoming_tts = "tcp://127.0.0.1:10200"
 
+# The word satellites answer to (ADR-032 §1). Configuration, not code: changing
+# it is this setting plus a model, never a rebuild. It can also be changed from
+# Settings -> Voice in the shell, which stores an override that wins over this
+# value.
+#
+# It MUST be a word you have a model for. openWakeWord publishes six:
+#   alexa, hey jarvis, hey mycroft, hey rhasspy, timer, weather
+# Anything else needs a model trained for it — openWakeWord's own pipeline
+# synthesises the training clips from TTS, so it needs no recordings of your
+# voice, but it does need a GPU session. A node configured for a word it has no
+# model for says so at startup and falls back to push-to-talk; it never fails to
+# boot, and it never silently goes deaf.
+wake_word = "hey jarvis"
+
+# What the settings surface offers, i.e. the models you have actually installed
+# on your satellites with infra/install/fetch-wake-assets.sh.
+#
+# Declared rather than discovered: the models live on the nodes and the daemon
+# cannot see their filesystems. A word missing from this list cannot be chosen
+# from the UI, which is what stops one typo taking every satellite in the house
+# deaf.
+wake_words_available = ["alexa", "hey jarvis", "hey mycroft"]
+
 [voice.elevenlabs]
 # A third-party voice. OFF BY DEFAULT, and switching it on IS the consent
 # (ADR-033 §2): it is the moment spoken output starts leaving the house.
 #
 # Requires [voice].wyoming_tts above — jarvisd refuses to start otherwise,
-# because there would be nothing to fall back to.
+# because there would be nothing to fall back to. It can also be switched on and
+# off from Settings -> Voice, which takes effect on the next sentence rather
+# than the next restart; that toggle is refused under the same conditions.
 #
 # Message bodies and calendar entries are never routed here regardless of this
 # setting (ADR-033 §4): sensitivity is a routing constraint, not a preference.
@@ -53,8 +78,13 @@ enabled = false
 # api_key_ref = "keyring:jarvis/elevenlabs"
 # voice_id = "…"
 # model_id = "eleven_flash_v2_5"
-# Characters per process lifetime. Exhaustion falls back to Piper rather than
-# failing a turn — running out of a nicety must not cost an answer.
+# Characters per CALENDAR MONTH, counted durably in the database and rolled
+# over on its own (ADR-033 §5). It was per-process until F8.8; that made
+# "monthly" untrue in the direction that matters, since a daemon restarted daily
+# had no ceiling at all.
+#
+# Exhaustion falls back to Piper rather than failing a turn — running out of a
+# nicety must not cost an answer. The spend is visible in Settings -> Voice.
 # character_budget = 100000
 
 [timers]
