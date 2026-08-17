@@ -1,10 +1,12 @@
-/* MapLibre's control CSS (F3b.5, docs/12 §3). It has to be global: MapLibre
- * creates its controls imperatively at runtime, so they never carry the
- * `_ngcontent-*` attribute that emulated encapsulation scopes component styles
- * to — see the note in `hud/cards/map-gl-view.scss`. The heavy part of the
- * dependency (~955 kB of JS) stays lazy behind MapCard's `@defer`; this is the
- * stylesheet only, ~10 kB gzipped. */
-@import 'maplibre-gl/dist/maplibre-gl.css';
+/* MapLibre's control CSS is NOT imported here any more — `map-gl-view.ts`
+ * fetches it at runtime from `vendor/maplibre-gl.css` the first time a map is
+ * mounted. It still has to end up *global* (MapLibre builds its controls
+ * imperatively, so they never carry the `_ngcontent-*` attribute emulated
+ * encapsulation scopes to), but global does not have to mean eager.
+ *
+ * At 70 kB raw it was the whole of the 73 kB styles bundle, and it was what
+ * pushed the initial bundle 2.5 kB past the 500 kB budget — a map stylesheet
+ * charged to every page load, including the ones with no map on them. */
 
 /* Global design tokens for the HUD face (docs/12 §2/§5/§7).
  *
