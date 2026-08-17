@@ -4,6 +4,7 @@ import type {
   AutomationExecutionDto,
   DeviceDto,
   PairingWindowDto,
+  VoiceSettingsDto,
 } from '../../generated/api-types';
 import { ApiService } from '../api.service';
 
@@ -36,6 +37,9 @@ export class Settings implements OnInit {
   readonly automations = signal<AutomationDto[]>([]);
   readonly history = signal<Record<string, AutomationExecutionDto[]>>({});
   readonly pairingWindow = signal<PairingWindowDto | null>(null);
+  readonly voice = signal<VoiceSettingsDto | null>(null);
+  /** Asked once before consent is granted, never before it is withdrawn. */
+  readonly confirmingElevenLabs = signal(false);
   readonly error = signal<string | null>(null);
   readonly busy = signal(false);
 
@@ -64,12 +68,14 @@ export class Settings implements OnInit {
     this.busy.set(true);
     this.error.set(null);
     try {
-      const [devices, automations] = await Promise.all([
+      const [devices, automations, voice] = await Promise.all([
         this.api.listDevices(),
         this.api.listAutomations(),
+        this.api.getVoiceSettings(),
       ]);
       this.devices.set(devices.devices);
       this.automations.set(automations.automations);
+      this.voice.set(voice);
     } catch {
       // Never the raw error: an adapter/transport string has no business on a
       // settings page (docs/06 §5).
@@ -124,6 +130,92 @@ export class Settings implements OnInit {
     } catch {
       this.error.set('Could not revoke that device.');
     }
+  }
+
+  /**
+   * Choose the word the house answers to (ADR-032 §4).
+   *
+   * A `<select>` over what the server says is provisioned, never free text: a
+   * word with no model is a node that has gone deaf, and the shell should not
+   * be able to cause that by typing.
+   */
+  async setWakeWord(word: string): Promise<void> {
+    this.error.set(null);
+    try {
+      this.voice.set(await this.api.updateVoiceSettings({ wakeWord: word }));
+    } catch {
+      this.error.set('Could not change the wake word.');
+    }
+  }
+
+  /**
+   * Granting consent is asked about once; withdrawing it is immediate.
+   *
+   * Deliberately asymmetric. Turning this on is the moment the house's voice
+   * starts leaving the house (ADR-033 §2), and that deserves a beat. Turning
+   * it off is the owner protecting themselves, and putting a confirmation in
+   * front of that would be the interface arguing with them.
+   */
+  async toggleElevenLabs(): Promise<void> {
+    const current = this.voice();
+    if (!current) return;
+    if (current.elevenlabs.enabled) {
+      await this.applyElevenLabs(false);
+      return;
+    }
+    this.confirmingElevenLabs.set(true);
+  }
+
+  cancelElevenLabs(): void {
+    this.confirmingElevenLabs.set(false);
+  }
+
+  async confirmElevenLabs(): Promise<void> {
+    this.confirmingElevenLabs.set(false);
+    await this.applyElevenLabs(true);
+  }
+
+  private async applyElevenLabs(enabled: boolean): Promise<void> {
+    this.error.set(null);
+    try {
+      this.voice.set(await this.api.updateVoiceSettings({ elevenlabsEnabled: enabled }));
+    } catch {
+      // The daemon refuses this when it is unconfigured or has no local voice
+      // to fall back to (ADR-033 §3). Say which, without echoing a raw error.
+      this.error.set(
+        enabled
+          ? 'Could not enable ElevenLabs. It needs an API key and a local voice to fall back to.'
+          : 'Could not disable ElevenLabs.',
+      );
+    }
+  }
+
+  /** Spend as a percentage of the ceiling, for the meter. */
+  readonly spendPercent = computed(() => {
+    const eleven = this.voice()?.elevenlabs;
+    if (!eleven || eleven.characterBudget === 0) return 0;
+    return Math.min(100, Math.round((eleven.spentCharacters / eleven.characterBudget) * 100));
+  });
+
+  /**
+   * Group digits without Angular's `DecimalPipe`.
+   *
+   * Same reason `when()` avoids `DatePipe`: the number pipe pulls the i18n
+   * formatting machinery into the initial bundle even from this lazy route.
+   * `toLocaleString` is in the browser and costs nothing.
+   */
+  thousands(value: number): string {
+    return value.toLocaleString();
+  }
+
+  /** `2026-08` reads as `August 2026`. */
+  periodLabel(period: string): string {
+    const [year, month] = period.split('-').map(Number);
+    if (!year || !month) return period;
+    return new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString(undefined, {
+      month: 'long',
+      year: 'numeric',
+    });
   }
 
   async toggleAutomation(automation: AutomationDto): Promise<void> {

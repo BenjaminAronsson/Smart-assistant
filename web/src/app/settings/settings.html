@@ -124,4 +124,88 @@
       }
     </ul>
   </section>
+
+  <!-- Voice (F8.8, F8.11). The wake word and the consent gate for a
+       third-party voice, plus what that voice has cost this month. -->
+  <section class="panel">
+    <h2>Voice</h2>
+
+    @if (voice(); as v) {
+      <div class="row">
+        <label for="wake-word">Wake word</label>
+        <select
+          id="wake-word"
+          [value]="v.wakeWord"
+          (change)="setWakeWord($any($event.target).value)"
+        >
+          @if (!v.availableWakeWords.includes(v.wakeWord)) {
+            <option [value]="v.wakeWord">{{ v.wakeWord }} (no model)</option>
+          }
+          @for (word of v.availableWakeWords; track word) {
+            <option [value]="word">{{ word }}</option>
+          }
+        </select>
+      </div>
+
+      @if (v.wakeWordWarning) {
+        <p class="warning" role="status">{{ v.wakeWordWarning }}</p>
+      }
+
+      <div class="row">
+        <span id="eleven-label">ElevenLabs voice</span>
+        <button
+          type="button"
+          (click)="toggleElevenLabs()"
+          [disabled]="!v.elevenlabs.configured"
+          [attr.aria-pressed]="v.elevenlabs.enabled"
+          aria-describedby="eleven-label"
+        >
+          {{ v.elevenlabs.enabled ? 'On' : 'Off' }}
+        </button>
+      </div>
+
+      @if (!v.elevenlabs.configured) {
+        <p class="muted">
+          Not configured on this daemon. Set an API key reference and a voice in
+          <code>jarvisd.toml</code> first.
+        </p>
+      }
+
+      @if (confirmingElevenLabs()) {
+        <div class="confirm" role="group" aria-label="Confirm ElevenLabs">
+          <p>
+            This sends spoken replies to ElevenLabs. Messages and calendar entries
+            are never sent, and {{ v.elevenlabs.localFallback }} still speaks when
+            the network or the budget runs out.
+          </p>
+          <button type="button" (click)="confirmElevenLabs()">Turn it on</button>
+          <button type="button" (click)="cancelElevenLabs()">Cancel</button>
+        </div>
+      }
+
+      <div class="row">
+        <span id="spend-label">Spend</span>
+        <span>
+          {{ thousands(v.elevenlabs.spentCharacters) }} /
+          {{ thousands(v.elevenlabs.characterBudget) }} characters
+        </span>
+      </div>
+      <div
+        class="meter"
+        role="meter"
+        aria-labelledby="spend-label"
+        [attr.aria-valuenow]="spendPercent()"
+        aria-valuemin="0"
+        aria-valuemax="100"
+      >
+        <div class="meter-fill" [style.inline-size.%]="spendPercent()"></div>
+      </div>
+      <p class="muted">
+        {{ periodLabel(v.elevenlabs.period) }} · falls back to
+        {{ v.elevenlabs.localFallback }}
+      </p>
+    } @else {
+      <p class="empty">Voice settings unavailable.</p>
+    }
+  </section>
 </main>

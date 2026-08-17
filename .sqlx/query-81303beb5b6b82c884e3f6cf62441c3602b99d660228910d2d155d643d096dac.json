@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE settings.elevenlabs_spend\n            SET spent_characters = GREATEST(0, spent_characters - $2)\n            WHERE period = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "81303beb5b6b82c884e3f6cf62441c3602b99d660228910d2d155d643d096dac"
+}

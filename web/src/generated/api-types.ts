@@ -1356,6 +1356,40 @@ export interface TimerDto {
   [k: string]: unknown;
 }
 /**
+ * The third-party speech synthesiser's consent gate and spend (ADR-033).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ElevenLabsSettingsDto".
+ */
+export interface ElevenLabsSettingsDto {
+  characterBudget: number;
+  /**
+   * Whether this daemon is configured for it at all — an API key reference
+   * and a voice. The toggle is refused when this is false, because consent
+   * to use something that is not configured would be consent to nothing.
+   */
+  configured: boolean;
+  /**
+   * ADR-033 §2's opt-in gate. Off by default, always.
+   */
+  enabled: boolean;
+  /**
+   * The voice that speaks when this is off, the network is down, or the
+   * budget is spent. Never absent (ADR-033 §3): an alarm must still ring.
+   */
+  localFallback: string;
+  /**
+   * `YYYY-MM`, UTC — the period `spent_characters` covers.
+   */
+  period: string;
+  /**
+   * Characters spent this month, and the ceiling. Durable across restarts —
+   * a budget that resets whenever the daemon does is not a monthly budget.
+   */
+  spentCharacters: number;
+  [k: string]: unknown;
+}
+/**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "EventEnvelope".
  */
@@ -2044,6 +2078,18 @@ export interface NodePairStartRequest {
   [k: string]: unknown;
 }
 /**
+ * What a node asks for at startup so it answers to the configured word
+ * (ADR-032 §4 — the word is configuration, so it cannot live only in the
+ * node's own environment).
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "NodeVoiceSettingsDto".
+ */
+export interface NodeVoiceSettingsDto {
+  wakeWord: string;
+  [k: string]: unknown;
+}
+/**
  * `POST /api/v1/artifacts/{id}/open` (FR-09/10): request that an artifact be
  * rendered on a selected display. `display` names a monitor connector; when
  * omitted, the server falls back to the display profile's `ArtifactCanvas`
@@ -2405,5 +2451,51 @@ export interface TimerListResponse {
  */
 export interface UpdateAutomationRequest {
   enabled: boolean;
+  [k: string]: unknown;
+}
+/**
+ * A change to the voice settings.
+ *
+ * Every field optional and absent-means-unchanged, so the shell can send one
+ * toggle without restating the rest and racing another tab.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "UpdateVoiceSettingsRequest".
+ */
+export interface UpdateVoiceSettingsRequest {
+  /**
+   * Turning this **on** is consent to send spoken text to a third party
+   * (ADR-033). It is refused unless the daemon is configured for it and a
+   * local fallback exists.
+   */
+  elevenlabsEnabled?: boolean | null;
+  wakeWord?: string | null;
+  [k: string]: unknown;
+}
+/**
+ * What the shell shows in Settings → Voice.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "VoiceSettingsDto".
+ */
+export interface VoiceSettingsDto {
+  /**
+   * The words this installation actually has a model for.
+   *
+   * Sent rather than hardcoded in the client because it depends on what the
+   * installer provisioned (ADR-032 consequence 3), and because offering a
+   * word with no model would be offering a node that goes deaf.
+   */
+  availableWakeWords: string[];
+  elevenlabs: ElevenLabsSettingsDto;
+  /**
+   * The word a node answers to (ADR-032 §1).
+   */
+  wakeWord: string;
+  /**
+   * Empty when every offered word has a model. Names the configured word
+   * when it has none — the "Andy" case (ADR-032 §1).
+   */
+  wakeWordWarning?: string | null;
   [k: string]: unknown;
 }

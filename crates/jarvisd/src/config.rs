@@ -152,9 +152,39 @@ pub struct VoiceConfig {
     pub wyoming_tts: Option<String>,
     #[serde(default)]
     pub audio: VoiceAudioConfig,
+    /// The word nodes answer to (ADR-032 §1/§4). Configuration rather than
+    /// code; the shell may change it, but only to one of
+    /// [`Self::wake_words_available`].
+    #[serde(default = "default_wake_word")]
+    pub wake_word: String,
+    /// The words this household has **provisioned models for**.
+    ///
+    /// Declared here rather than discovered, because the models live on the
+    /// satellites and the daemon cannot see their filesystems. It is what the
+    /// settings surface offers, so a word absent from this list cannot be
+    /// chosen — the failure it prevents is a house that silently goes deaf
+    /// because somebody picked a word nothing has a model for.
+    ///
+    /// Defaults to what `infra/install/fetch-wake-assets.sh` installs. Note
+    /// that the default *word* (`andy`) is deliberately NOT in it: openWakeWord
+    /// publishes no model for it, and the settings surface says so rather than
+    /// pretending otherwise (ADR-032 §1).
+    #[serde(default = "default_wake_words_available")]
+    pub wake_words_available: Vec<String>,
     /// `[voice.elevenlabs]` (F8.11, ADR-033). Absent means never.
     #[serde(default)]
     pub elevenlabs: ElevenLabsConfig,
+}
+
+fn default_wake_word() -> String {
+    "andy".to_owned()
+}
+
+fn default_wake_words_available() -> Vec<String> {
+    ["alexa", "hey jarvis", "hey mycroft"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
 }
 
 /// `[voice.elevenlabs]` — a third-party voice, off unless switched on.
@@ -251,6 +281,12 @@ impl Default for VoiceConfig {
             wyoming_stt: default_wyoming_stt(),
             wyoming_tts: None,
             audio: VoiceAudioConfig::default(),
+            // Hand-written to match the `serde(default = …)` above, for the
+            // reason recorded on `ElevenLabsConfig::default`: `from_figment`
+            // serializes these defaults in as a base layer, so a field left out
+            // here would put an empty list *under* the annotation and win.
+            wake_word: default_wake_word(),
+            wake_words_available: default_wake_words_available(),
             elevenlabs: ElevenLabsConfig::default(),
         }
     }

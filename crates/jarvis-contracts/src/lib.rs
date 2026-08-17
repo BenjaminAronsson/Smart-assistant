@@ -31,6 +31,7 @@ pub mod providers;
 pub mod runs;
 pub mod schema;
 pub mod sessions;
+pub mod settings;
 pub mod timeline;
 pub mod timers;
 pub mod voice;

@@ -1109,6 +1109,47 @@
         }
       ]
     },
+    "ElevenLabsSettingsDto": {
+      "description": "The third-party speech synthesiser's consent gate and spend (ADR-033).",
+      "properties": {
+        "characterBudget": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "configured": {
+          "description": "Whether this daemon is configured for it at all — an API key reference\nand a voice. The toggle is refused when this is false, because consent\nto use something that is not configured would be consent to nothing.",
+          "type": "boolean"
+        },
+        "enabled": {
+          "description": "ADR-033 §2's opt-in gate. Off by default, always.",
+          "type": "boolean"
+        },
+        "localFallback": {
+          "description": "The voice that speaks when this is off, the network is down, or the\nbudget is spent. Never absent (ADR-033 §3): an alarm must still ring.",
+          "type": "string"
+        },
+        "period": {
+          "description": "`YYYY-MM`, UTC — the period `spent_characters` covers.",
+          "type": "string"
+        },
+        "spentCharacters": {
+          "description": "Characters spent this month, and the ceiling. Durable across restarts —\na budget that resets whenever the daemon does is not a monthly budget.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "configured",
+        "enabled",
+        "spentCharacters",
+        "characterBudget",
+        "period",
+        "localFallback"
+      ],
+      "type": "object"
+    },
     "ErrorCode": {
       "oneOf": [
         {
@@ -2670,6 +2711,18 @@
       ],
       "type": "object"
     },
+    "NodeVoiceSettingsDto": {
+      "description": "What a node asks for at startup so it answers to the configured word\n(ADR-032 §4 — the word is configuration, so it cannot live only in the\nnode's own environment).",
+      "properties": {
+        "wakeWord": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "wakeWord"
+      ],
+      "type": "object"
+    },
     "OpenArtifactRequest": {
       "description": "`POST /api/v1/artifacts/{id}/open` (FR-09/10): request that an artifact be\nrendered on a selected display. `display` names a monitor connector; when\nomitted, the server falls back to the display profile's `ArtifactCanvas`\nassignment and fails closed (409) if neither resolves a monitor.",
       "properties": {
@@ -3858,6 +3911,25 @@
       ],
       "type": "object"
     },
+    "UpdateVoiceSettingsRequest": {
+      "description": "A change to the voice settings.\n\nEvery field optional and absent-means-unchanged, so the shell can send one\ntoggle without restating the rest and racing another tab.",
+      "properties": {
+        "elevenlabsEnabled": {
+          "description": "Turning this **on** is consent to send spoken text to a third party\n(ADR-033). It is refused unless the daemon is configured for it and a\nlocal fallback exists.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "wakeWord": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "VoiceControlDto": {
       "description": "JSON control frames that bracket a voice PCM stream.",
       "oneOf": [
@@ -4012,6 +4084,38 @@
           "type": "string"
         }
       ]
+    },
+    "VoiceSettingsDto": {
+      "description": "What the shell shows in Settings → Voice.",
+      "properties": {
+        "availableWakeWords": {
+          "description": "The words this installation actually has a model for.\n\nSent rather than hardcoded in the client because it depends on what the\ninstaller provisioned (ADR-032 consequence 3), and because offering a\nword with no model would be offering a node that goes deaf.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "elevenlabs": {
+          "$ref": "#/definitions/ElevenLabsSettingsDto"
+        },
+        "wakeWord": {
+          "description": "The word a node answers to (ADR-032 §1).",
+          "type": "string"
+        },
+        "wakeWordWarning": {
+          "description": "Empty when every offered word has a model. Names the configured word\nwhen it has none — the \"Andy\" case (ADR-032 §1).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "wakeWord",
+        "availableWakeWords",
+        "elevenlabs"
+      ],
+      "type": "object"
     },
     "VoiceSpeakEndDto": {
       "description": "Why spoken output for one utterance ended (F5.2).",
