@@ -1,12 +1,15 @@
 # M8a gate report — hands-free core
 
-**Status: NOT READY FOR SIGN-OFF.** One exit-evidence item cannot be demonstrated, and the
-reason is a feature that was deliberately not built rather than a test that failed.
+**Status: READY FOR SIGN-OFF ON THE CODE, pending two off-machine measurements.**
 
 Prepared 2026-08-15 against `main` (`e9118ae`), covering F8.1–F8.5 since `m7-complete`.
 
-Read §3 first. A gate is never "passed with exceptions" silently (docs/11 §2), and this one
-should not be passed at all yet.
+**Updated 2026-08-17.** The original status was *NOT READY*: **B1** (the wake-word engine was
+not implemented) and **D1** (the answer path did not return to the origin node) are both now
+**closed**, and every claim in §1 passes. What remains is measurement that only exists on
+reference hardware — see §3.
+
+Read §3 first. A gate is never "passed with exceptions" silently (docs/11 §2).
 
 ---
 
@@ -21,9 +24,9 @@ should not be passed at all yet.
 | 1 | A node pairs itself, pins the daemon, and reconnects | **PASS** |
 | 2 | A satellite can capture and play audio | **PASS** |
 | 3 | **Nothing is streamed before the word fires** | **PASS** |
-| 4 | **Say the wake word and be answered** | **FAIL — not implemented** |
+| 4 | **Say the wake word and be answered** | **PASS (code); the room is off-machine)** |
 | 5 | The satellite does not trigger itself | **PASS** |
-| 6 | Answer and alerts return to the room that spoke | **PARTIAL** |
+| 6 | Answer and alerts return to the room that spoke | **PASS** |
 
 ### 1 — A node pairs, pins, and reconnects (F8.1, PR #44)
 
@@ -69,24 +72,59 @@ opens exactly one stream, bracketed by a real `voice.stream.start`, carrying 500
 ADR-032 §3 states as a *decision* that the daemon cannot ask a node to stream continuously —
 there is no protocol frame for it and no code path to it.
 
-### 4 — Say the wake word and be answered — **FAIL**
+### 4 — Say the wake word and be answered — **PASS (code)**
 
-**The openWakeWord ONNX binding is not implemented.** A node gets `NeverWakes` and says so at
-startup. It still pairs, shows its screen, speaks and answers push-to-talk; it does not answer
-to its name.
+**Closed 2026-08-17.** The openWakeWord engine is implemented and selected in
+`open_wake_gate()`, the one place ADR-032 §4 allows an engine to be chosen.
 
-Everything around it is done and tested — the port, the pipeline, the barge-in path, the
-listening state, ADR-032 — and the only place an engine is chosen is `open_wake_gate()` in
-`crates/jarvis-agent/src/main.rs`.
+The original report declined to build it on the grounds that inference could not be exercised
+here. **Two of its premises turned out to be wrong**, and both are worth recording because the
+same reasoning would otherwise recur:
 
-Why it was not built, stated plainly: the model assets **are** downloadable, but ADR-032
-(consequence 3) forbids vendoring them, so neither a local run nor CI could exercise the
-inference. Shipping unverified wake-word inference to close a checkbox would have been worse
-than the gap. The feature-list tests *"a recorded clip fires once and only once"* and
-*"silence and household noise do not"* are **unsatisfied**.
+* **ONNX Runtime was already in the tree** — `ort` 2.0.0-rc.13, pulled in by `fastembed` for
+  embeddings since M4. Pinning to that version means the workspace resolves one runtime, and
+  `Cargo.lock` gained no new package.
+* **openWakeWord ships its own test recordings**, 16 kHz mono PCM — which is exactly the
+  node's wire format. So the engine can be tested against its author's fixtures rather than
+  against ours.
 
-**Wake word:** `"Andy"` (owner's choice, 2026-08-15; ADR-032 §1, configurable via
-`JARVIS_AGENT_WAKE_WORD`).
+F8.3's two named acceptances now hold, over real inference:
+
+| Acceptance | Evidence |
+|---|---|
+| a recorded clip fires **once and only once** | two words, two recordings |
+| silence does not fire | 10 s |
+| household speech that is not the word does not fire | `hey_jane.wav` — a person saying a phrase with the same rhythm and opening syllable, a far harder negative than white noise |
+| a node does not answer to a **different** word | cross-model |
+| a tampered feature extractor is refused | pinned SHA-256 |
+
+Two implementation details were load-bearing and silent when wrong: the melspectrogram must
+run over each 1280-sample chunk **plus 480 samples of the previous one** (1280+480 yields
+exactly 8 mel frames = 80 ms at the model's 10 ms hop; the bare chunk yields 5 and drops 30 ms
+of every chunk), and openWakeWord is trained on **raw int16 magnitudes as floats** — normalising
+to [-1, 1] costs ~40 dB and the models never fire.
+
+Assets are provisioned, never vendored (ADR-032 consequence 3):
+`infra/install/fetch-wake-assets.sh` verifies pinned SHA-256s and installs nothing unless every
+file matches. CI gains a `wake-word-engine` job — nothing else in the workflow compiles the
+engine, so without it the wake word would rot between satellite image builds with no red check.
+
+**⚠️ Wake word: `"Andy"` — and openWakeWord publishes no model for it.** The published set is
+`alexa`, `hey jarvis`, `hey mycroft`, `hey rhasspy`, `timer`, `weather`. This does not change
+ADR-032 §1's decision, it **prices** it: the word costs a model training run (openWakeWord
+synthesises its training clips from TTS, so it needs no recordings of the owner's voice, but it
+needs a GPU session and the daemon cannot do it for itself).
+
+Until such a model exists, a node configured for "Andy" logs that it cannot answer to its name
+and falls back to push-to-talk — the same degradation path as a missing engine, and it never
+fails to boot. The settings surface names the gap rather than hiding it.
+
+**This is an owner decision at this gate:** fund the training run, or pick a word from the
+published set. §4 already makes the word configuration plus a model swap, so either is a config
+change rather than a code change. Recorded as a new consequence in ADR-032.
+
+**"Answered aloud, in that room" is still an off-machine claim.** The code path is complete and
+tested end to end; a human saying the word in a kitchen is what a gate is for.
 
 ### 5 — The satellite does not trigger itself (F8.4, PR #47)
 
@@ -107,8 +145,26 @@ synthesises the tone locally, so no audio crosses the wire and a room still ring
 voice pipeline is down. The fallback is intact: no room, or nobody listening in it, rings on the
 daemon's host — a revoked or unplugged node cannot swallow an alarm.
 
-**Not done:** the *answer* path. A run's spoken response does not yet return to its origin node,
-so *"two nodes, each gets only its own answers"* is unproven.
+**Closed 2026-08-17 — the answer path.** The cause was one line of the fan-out rule: a run's
+text deltas ride the **Session** channel, whose rule is `ui`, which a `voice-node`/`room-node`
+deliberately never holds (F7.1). So the node that asked the question was the one socket in the
+house that could not hear the answer — and a node cannot speak what it is not sent.
+
+`start_voice_turn` now records the run it started as an id the socket owns, and
+`delivers_to_owner_of` lets that run's spoken answer past the Session rule. Ownership is
+per-socket and in memory, so it does not survive a reconnect and `replay_since` needed no
+matching change.
+
+The exemption is keyed on **two** things, and the second is the one that matters: ownership,
+**plus an allowlist of exactly the four event types** `feed_speech` consumes. Ownership alone
+would have been a standing invitation — `approval.requested` is a Session event about a
+specific run carrying the exact effect, the real arguments, and an approval id that is a
+decision oracle. It fails to match today only because its `runId` happens to sit nested under
+`card`, which is the shape of a DTO and not a security boundary.
+
+F8.5's named acceptance `two_nodes_each_get_only_their_own_answers` now passes, alongside
+`owning_a_run_does_not_hand_a_node_the_rest_of_that_run` — the test that keeps this from
+becoming a hole.
 
 ---
 
@@ -141,15 +197,16 @@ Wyoming services on reference hardware.
 
 ## 3. Why this gate should not be signed yet
 
-**Blocking:**
+**Blocking: none as of 2026-08-17.**
 
-- **B1 — evidence item 4 is not implemented.** The sub-gate's headline claim is *"say the wake
-  word at a satellite and be answered aloud by that satellite"*, and a node does not answer to
-  its name. This is not a measurement shortfall; it is missing feature code.
+- ~~**B1 — evidence item 4 is not implemented.**~~ **CLOSED.** The engine is implemented,
+  selected in `open_wake_gate()`, and tested over real inference against openWakeWord's own
+  recordings. See §1.4 — including the finding that **no pre-trained model exists for "Andy"**,
+  which is an owner decision at this gate rather than a code gap.
 
-**Also outstanding, not blocking on their own:**
+**Outstanding, none blocking on their own:**
 
-- **D1 — the answer path is not routed to the origin node** (evidence 6). The alert path is done.
+- ~~**D1 — the answer path is not routed to the origin node.**~~ **CLOSED.** See §1.6.
 - **D2 — NFR-04 has still never been measured** (D-M5-3, since M5).
 - **D3 — measurements are from the dev host**, not the 8 GB reference machine. docs/01 §4.1's
   numbers are the 8 GB profile's, so these are indicative, not conforming.
@@ -158,17 +215,25 @@ Wyoming services on reference hardware.
   any of it. The diffs that most warrant a security pass: `jarvis-agent/src/pinning.rs` (the
   trust decision), `jarvis-agent/src/http.rs` (hand-rolled HTTP), and `jarvisd/src/ws.rs`
   `delivers_to` (who hears what). **This is a gap in process, not just in coverage.**
-- **D5 — the false-accept budget is unmeasured.** ADR-032 consequence 2 requires a measured rate
-  over a household-noise corpus. `WakeGate` counts detections and exposes them; nothing has been
-  measured because nothing detects yet.
+- **D5 — the false-accept budget is still unmeasured, but is now measurable.** ADR-032
+  consequence 2 requires a *measured* rate over a household-noise corpus rather than an
+  assurance. The harness exists and reports accepts/hour
+  (`the_false_accept_rate_over_a_noise_corpus_is_within_budget`, budget 1/hour); it skips until
+  `JARVIS_WAKE_NOISE_CORPUS` names a directory of recordings.
+
+  The corpus is deliberately **not** in this repository: a false-accept rate measured over audio
+  chosen by whoever tuned the threshold measures nothing. It has to be recorded in the rooms the
+  nodes will live in. **This is gate-bench work for the owner**, and it is the last piece of
+  ADR-032 that this report cannot produce.
 
 **Found and fixed during M8a, worth recording:**
 
-- **`keyring` is compiled with no backend feature anywhere in the tree** — keyring 3 then
-  silently uses its in-memory *mock* store. `jarvisd`'s `keyring:` secret references therefore
-  do not persist and are not an OS keyring (invariant 5). Fixed for `jarvis-agent`;
-  **`jarvisd` is still in that state** and should be fixed before F8.9's install story is relied
-  on.
+- **`keyring` was compiled with no backend feature anywhere in the tree** — keyring 3 then
+  silently uses its in-memory *mock* store, so `jarvisd`'s `keyring:` secret references did not
+  persist and were not an OS keyring (invariant 5), while F8.9's install guide told operators to
+  put secrets there. Fixed for `jarvis-agent` during M8a and **for `jarvisd` on 2026-08-17**,
+  with a regression test that asserts the concrete credential type — a config-parser test cannot
+  catch this, because `keyring:` parses identically under either backend.
 - **CI's gitleaks scan was already failing on `main`** on the canonical ULID used across ~878
   test fixtures. Fixed with a justified `.gitleaks.toml` allowlist.
 
@@ -176,15 +241,26 @@ Wyoming services on reference hardware.
 
 ## 4. Recommendation
 
-**Do not sign M8a.** Two honest options:
+**The code is ready to sign; two things are not code.**
 
-1. **Implement F8.3's engine binding**, provision the model assets per ADR-032 (download with a
-   pinned checksum), measure the false-accept rate on a household-noise corpus, and re-run this
-   gate. This is what the sub-gate was scoped to prove.
-2. **Accept B1 as a recorded deviation** and sign M8a for what it does prove — the transport,
-   the privacy property, echo control and room attribution — with the wake word explicitly
-   carried to M8c or M9. Defensible only if the wake word stops being M8a's headline claim,
-   which means amending the exit evidence rather than quietly reinterpreting it.
+Every claim in §1 now passes, and the two items that made the original report say *do not sign*
+— the missing wake-word engine and the unrouted answer path — are closed with tests rather than
+with argument.
 
-Option 1 is the honest one. Option 2 is available, and it is the owner's call — but it changes
-what M8a means, and docs/11 §3 makes that a human decision.
+What this report **cannot** produce, and what a gate exists for:
+
+1. **Say the word in a kitchen and be answered there.** The path is complete and tested end to
+   end; a human standing in a room is the evidence.
+2. **The false-accept rate over a household-noise corpus** (D5) and **NFR-04's round trip** (D2,
+   open since M5), both on the 8 GB reference machine rather than this dev host (D3).
+
+And one decision that is the owner's alone, not a measurement:
+
+3. **The wake word is "Andy", and openWakeWord publishes no model for it** (§1.4). Fund a
+   training run, or choose from the published set. Either is a config change; neither is a code
+   change. Until then nodes fall back to push-to-talk and say so.
+
+**D4 stands and should be read as a process gap, not a coverage one:** no `rust-reviewer`,
+`security-auditor` or `perf-warden` pass has seen any of M8, including the diffs added since
+this report was first written — `delivers_to_owner_of` (who hears what) and the settings
+surface's consent gate are the two that most warrant a security pass.

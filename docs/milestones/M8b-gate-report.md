@@ -1,8 +1,10 @@
 # M8b gate report — scheduling
 
-**Status: READY FOR SIGN-OFF, with two recorded deviations.**
+**Status: READY FOR SIGN-OFF, with one recorded deviation.**
 
 Prepared 2026-08-15 against `main` (`e69bd83`), covering F8.6–F8.7 and D-M4-1.
+**Updated 2026-08-17:** D2 is **closed** — the restart sweep now reads a persisted last-seen
+stamp, so evidence item 3 holds in production as well as in its tests. D1 stands.
 
 ---
 
@@ -16,7 +18,7 @@ Prepared 2026-08-15 against `main` (`e69bd83`), covering F8.6–F8.7 and D-M4-1.
 |---|---|---|
 | 1 | An automation the owner created fires on its own | **PASS** |
 | 2 | Policy is re-evaluated **at fire time** | **PASS** |
-| 3 | A missed run is announced, not silently skipped | **PASS (with D2)** |
+| 3 | A missed run is announced, not silently skipped | **PASS** |
 
 ### 1 — It fires on its own (F8.6/F8.7, PRs #51/#52)
 
@@ -95,11 +97,29 @@ would burn wakeups on an 8 GB target for a trigger that cannot express anything 
   automations, enables/disables them and shows history, but **creating** one is API-only. The
   domain models creation as an R2 action; no UI drives it yet. Not blocking: the exit evidence
   is about firing, not authoring.
-- **D2 — the restart sweep reports nothing in production.** `missed_since` is wired and tested,
-  but jarvisd passes `None` because **no last-seen stamp is persisted**. So evidence item 3 is
-  proven at the service level and inert at the daemon level. A small persistence change; it
-  belongs with the surface that would display it. **This is the one item where the test passes
-  and the deployed behaviour does not yet follow.**
+- ~~**D2 — the restart sweep reports nothing in production.**~~ **CLOSED 2026-08-17.** It was
+  the one item in M8 where the test passed and the deployed behaviour did not follow: the sweep
+  was correct and jarvisd had nowhere to read *"when was I last running"* from, so it passed
+  `None` forever.
+
+  Migration 0019 adds `automations.daemon_heartbeat` — one row by construction, stamped on each
+  sweep tick *after* the sweep, so the recorded instant is one the daemon actually reached.
+  Written on the tick rather than at shutdown deliberately: **the downtime worth reporting is
+  the one nobody planned**, and a daemon that was killed is exactly the case a shutdown hook
+  does not cover.
+
+  Fixing it surfaced a second defect worth recording. The sweep reasons in minutes-since-
+  midnight, which cannot express "down for three days": a daemon off all weekend and back at
+  the same time of day computes an **empty** window and reports nothing — the same *"cannot
+  tell broken from off"* failure this report exists to prevent, in a more convincing disguise.
+  `missed_between` now takes two instants and, past 24 hours, reports every enabled daily
+  automation.
+
+  Evidence: `the_last_seen_stamp_survives_a_restart` asserts through a **fresh store over the
+  same database** (a value returned by the object that just wrote it would prove only that a
+  field was set); `downtime_longer_than_a_day_reports_every_daily_automation` covers the case
+  the naive window silently dropped. Reported, never fired — the executor count stays at zero
+  throughout.
 
 ## 4. Open risks
 
@@ -112,7 +132,10 @@ would burn wakeups on an 8 GB target for a trigger that cannot express anything 
 
 ## 5. Recommendation
 
-**Sign M8b**, accepting D1 and D2 as recorded. The exit evidence is demonstrated: an automation
-fires on its own, policy is re-evaluated at fire time from live authority, and a missed run is
-reported rather than skipped — with D2 noting the last mile of that third item is not yet wired
-into the daemon.
+**Sign M8b**, accepting D1 as recorded. All three exit-evidence items are demonstrated: an
+automation fires on its own, policy is re-evaluated at fire time from live authority, and a
+missed run is reported rather than skipped — the last of these now in production as well as in
+its tests.
+
+D1 (creating an automation is API-only) is the remaining gap, and it is an authoring
+convenience rather than an exit-evidence item: the sub-gate is about firing.

@@ -1,9 +1,13 @@
 # M8c gate report — the seam
 
-**Status: NOT READY FOR SIGN-OFF.** The exit evidence is a fresh-machine install demonstrated
-end to end, and that has not been done on a fresh machine.
+**Status: NOT READY FOR SIGN-OFF — for one reason, and it is not a code reason.** The exit
+evidence is a fresh-machine install demonstrated end to end, and that has not been done on a
+fresh machine.
 
 Prepared 2026-08-15 against `main` (`e69bd83`), covering F8.8–F8.11.
+**Updated 2026-08-17:** **D1, D2 and D3 are all closed** (voice section + config-write API,
+durable monthly spend, bundle back under budget), and the hands-free claim it inherited from
+M8a's B1 is closed too. What is left is a human at a clean machine.
 
 ---
 
@@ -15,10 +19,10 @@ Prepared 2026-08-15 against `main` (`e69bd83`), covering F8.8–F8.11.
 
 | # | Claim | Result |
 |---|---|---|
-| 1 | Administrable from the UI | **PASS (with D1)** |
+| 1 | Administrable from the UI | **PASS** |
 | 2 | A documented install | **PARTIAL — never run on a fresh machine** |
 | 3 | Golden 12 proves it end to end | **PARTIAL** |
-| 4 | *Hands-free* house | **FAIL — inherits M8a B1** |
+| 4 | *Hands-free* house | **PASS (code) — M8a B1 closed** |
 | — | ElevenLabs (F8.11, added by owner direction) | **PASS** |
 
 ### 1 — Administrable from the UI (F8.8, PR #54)
@@ -68,9 +72,14 @@ than implying otherwise.
 **The first real NFR-04 measurement (D-M5-3, open since M5) is not here.** It needs Wyoming on
 reference hardware; `cargo xtask perf --voice` measures only the daemon's own share.
 
-### 4 — Hands-free — **FAIL**
+### 4 — Hands-free — **PASS (code)**
 
-Inherits M8a's B1: no wake-word engine, so the house is not hands-free. Push-to-talk works.
+**M8a's B1 is closed** (2026-08-17): the openWakeWord engine is implemented and tested over real
+inference. See the M8a report §1.4 — including the finding that openWakeWord publishes **no
+model for "Andy"**, which is an owner decision rather than a code gap. Until such a model is
+provisioned a node falls back to push-to-talk and says so, and the settings surface names it.
+
+Standing in a kitchen and being answered there remains off-machine evidence.
 
 ### ElevenLabs (F8.11, PR #53) — **PASS**
 
@@ -110,14 +119,37 @@ from a lazy route**, because it drags the i18n machinery in. Replaced with `Intl
 
 ## 3. Deviations requested
 
-- **D1 — no voice section in settings.** Wake word, audio devices, and the **ElevenLabs toggle
-  and spend counter** are not in the UI: they are daemon config and there is no config-write API.
-  F8.9 gave `jarvisd.toml` its real shape, which is the prerequisite; exposing it is a further
-  step. ADR-033's durable monthly counter needs the same.
-- **D2 — the ElevenLabs budget is per-process** and resets on restart. The ceiling makes runaway
-  spend impossible; it does not bill accurately. Recorded in ADR-033.
-- **D3 — the web bundle is over its 500 kB budget** (pre-existing). A budget relaxation or a fix
-  is a human decision (docs/11 §3); flagging rather than assuming.
+- ~~**D1 — no voice section in settings.**~~ **CLOSED 2026-08-17**, by owner direction to build
+  the full config-write API rather than a read-only surface. Settings → Voice now shows the wake
+  word (chosen from **provisioned models**, never free text — a word with no model is a node
+  that has gone deaf), the ElevenLabs toggle, and the spend against its ceiling.
+
+  Because this **relocates ADR-033 §2's consent gate** from a config file to an HTTP toggle,
+  ADR-033 is amended rather than quietly reinterpreted. The conditions that keep it a gate:
+  `ui` scope only (a satellite must not grant or withdraw the household's consent, nor read its
+  spend); audited in the same transaction as the change; **refused unless it could be honoured**
+  (a key reference *and* a voice *and* a local fallback — the same condition `main.rs` refuses
+  to start under); the API key never moves from the keyring; and **withdrawal is immediate**,
+  because the adapter reads the gate per utterance rather than at construction.
+
+  Granting asks once, withdrawing does not ask at all — deliberately asymmetric.
+
+- ~~**D2 — the ElevenLabs budget is per-process.**~~ **CLOSED 2026-08-17.** It is now durable
+  and monthly, keyed `YYYY-MM`. The old behaviour made "monthly budget" untrue in the direction
+  that matters: a daemon restarted daily had **no ceiling at all**. Storage returns the running
+  total on each reservation, so two concurrent utterances cannot both pass the same figure, and
+  the rollover is a new key rather than a scheduled job. A ledger that cannot be read spends
+  locally — an unknown ceiling is not permission.
+
+- ~~**D3 — the web bundle is over its 500 kB budget.**~~ **CLOSED 2026-08-17**, with a fix
+  rather than a budget relaxation. The whole overage was MapLibre's 70 kB control stylesheet
+  `@import`ed into `styles.scss` — charged to every page load, including every page with no map
+  on it. It is now fetched with the map chunk it belongs to.
+
+  ```
+  initial total   502.51 kB  ->  432.60 kB     (67 kB headroom)
+  styles bundle    73.30 kB  ->    3.38 kB
+  ```
 
 ## 4. Open risks
 
@@ -129,13 +161,22 @@ from a lazy route**, because it drags the i18n machinery in. Replaced with `Intl
 
 ## 5. Recommendation
 
-**Do not sign M8c yet.** It needs, in order:
+**Do not sign M8c yet — but everything still open is off-machine.**
 
-1. `jarvisd`'s keyring backend fixed — the install guide currently gives advice the daemon does
-   not honour;
-2. the first-run script run on an actual clean machine, watched by a human;
-3. the NFR-04 measurement (D-M5-3, open since M5) on reference hardware;
-4. M8a's B1 resolved, or the "hands-free" claim explicitly amended.
+The three code deviations this report was written around (D1, D2, D3) are closed, and so is the
+`jarvisd` keyring defect it depended on: the daemon now resolves `keyring:` references through
+a real Secret Service backend instead of keyring 3's silent in-memory mock, with a regression
+that asserts the credential type. The install guide's advice is finally true of the daemon.
 
-Items 2 and 3 are inherently off-machine — they are what a gate is *for*. Item 1 is a small fix
-and should not wait.
+What is left, and none of it is code:
+
+1. **The first-run script, run on an actual clean machine, watched by a human** — including a
+   `keyring:` lookup under the production service account. Whether that account can reach a
+   Secret Service session is deployment reachability, and no code-only run can claim it.
+2. **The NFR-04 measurement** (D-M5-3, open since M5) on reference hardware, and the same for
+   ADR-032's false-accept rate (M8a D5) over a corpus recorded in the rooms the nodes live in.
+3. **The wake-word model decision** for "Andy" (M8a §1.4) — fund a training run or choose from
+   the published set. A config change either way.
+
+Item 1 *is* this sub-gate's exit evidence, so it cannot be delegated to a report. That is not a
+gap in the work; it is what a gate is for.
