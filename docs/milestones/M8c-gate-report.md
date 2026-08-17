@@ -123,19 +123,21 @@ from a lazy route**, because it drags the i18n machinery in. Replaced with `Intl
 
 - **No subagent review passes** on any of M8. F8.11 adds the voice pipeline's **only**
   `DataEgress::External` path — the clearest `security-auditor` candidate in M8c.
-- `jarvisd`'s `keyring` still resolves to an in-memory **mock** store (see the M8a report). F8.9's
-  production config tells operators to put secrets in the keyring; **that instruction is not
-  currently true for jarvisd.** This should be fixed before anyone follows the install guide.
+- **Resolved after this report:** `jarvisd` now enables keyring's real Linux Secret Service
+  backend (`async-secret-service` + pure-Rust crypto) and has a regression that rejects the mock
+  credential type. Lookups run on awaited blocking workers, as required by keyring's Tokio
+  integration. Whether the production service account can reach its Secret Service session is
+  still part of the clean-machine install evidence below; this code-only run does not claim it.
 
 ## 5. Recommendation
 
 **Do not sign M8c yet.** It needs, in order:
 
-1. `jarvisd`'s keyring backend fixed — the install guide currently gives advice the daemon does
-   not honour;
-2. the first-run script run on an actual clean machine, watched by a human;
-3. the NFR-04 measurement (D-M5-3, open since M5) on reference hardware;
-4. M8a's B1 resolved, or the "hands-free" claim explicitly amended.
+1. the first-run script run on an actual clean machine, watched by a human, including a
+   `keyring:` lookup under the production service account;
+2. the NFR-04 measurement (D-M5-3, open since M5) on reference hardware;
+3. M8a's B1 resolved, or the "hands-free" claim explicitly amended.
 
-Items 2 and 3 are inherently off-machine — they are what a gate is *for*. Item 1 is a small fix
-and should not wait.
+Items 1 and 2 are inherently off-machine — they are what a gate is *for*. The code-level keyring
+backend defect that previously preceded them is fixed; deployment reachability is not yet
+demonstrated.

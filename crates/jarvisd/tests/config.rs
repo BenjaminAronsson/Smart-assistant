@@ -125,6 +125,25 @@ fn keyring_secret_reference_is_accepted() {
     assert_eq!(config.database.url_secret, "keyring:jarvis/db-url");
 }
 
+// keyring 3 has no platform store enabled by default: on Linux it silently
+// falls back to an in-memory mock. A config parser test cannot catch that,
+// because `keyring:` is valid syntax under either backend. Assert the concrete
+// credential selected for jarvisd instead, without touching a real secret or
+// requiring a D-Bus session in CI.
+#[cfg(target_os = "linux")]
+#[test]
+fn jarvisd_uses_the_linux_secret_service_not_the_mock_keyring() {
+    let entry = keyring::Entry::new("jarvis-backend-test", "unused")
+        .expect("constructing a Secret Service credential does not access the service");
+
+    assert!(
+        entry
+            .get_credential()
+            .is::<keyring::secret_service::SsCredential>(),
+        "jarvisd must never compile keyring references against the in-memory mock backend"
+    );
+}
+
 // --- resolve_secret_ref -----------------------------------------------
 
 // Happy path: an `env:` reference to a variable that is actually set
@@ -137,6 +156,22 @@ fn resolve_secret_ref_env_set_exposes_value() {
     let resolved = jarvisd::config::resolve_secret_ref_with("env:JARVIS_TEST_SECRET", lookup)
         .expect("set env var must resolve");
     assert_eq!(resolved.expose(), "s3cr3t-value");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn async_secret_resolution_preserves_fail_closed_errors() {
+    // Production uses this path for both env and keyring references. The env
+    // case is deterministic in CI and proves the awaited spawn-blocking seam
+    // completes without mutating process-global state and preserves failures.
+    let resolved =
+        jarvisd::config::resolve_secret_ref_async("env:JARVIS_TEST_SECRET_ENV_NOT_SET_XYZZY")
+            .await
+            .expect_err("the deliberately absent variable must still fail closed");
+
+    assert!(
+        resolved.to_string().contains("is not set"),
+        "the async seam must preserve the resolver's actionable error"
+    );
 }
 
 // Malformed/missing input: an `env:` reference to a variable that is not set
