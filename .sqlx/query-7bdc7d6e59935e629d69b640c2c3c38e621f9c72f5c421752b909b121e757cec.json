@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT event_type, prev_hash, hash FROM audit.audit_events ORDER BY seq ASC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "prev_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "hash",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7bdc7d6e59935e629d69b640c2c3c38e621f9c72f5c421752b909b121e757cec"
+}
