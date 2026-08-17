@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT spent_characters FROM settings.elevenlabs_spend WHERE period = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "spent_characters",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9fa08ec25be570ac4e2efccdf9dae5047df6bb0aa4bcac63e21ade4a4c89dee0"
+}

@@ -20,6 +20,7 @@ pub mod memory;
 pub mod messages;
 pub mod runs;
 pub mod sessions;
+pub mod settings;
 pub mod timers;
 
 /// Embedded migration stream (docs/04 §3); applied by ops (`sqlx migrate run`)

@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO settings.voice\n                (only_row, wake_word, elevenlabs_enabled, updated_at, updated_by_device_id)\n            VALUES (TRUE, $1, $2, $3, $4)\n            ON CONFLICT (only_row) DO UPDATE SET\n                wake_word = COALESCE($1, settings.voice.wake_word),\n                elevenlabs_enabled = COALESCE($2, settings.voice.elevenlabs_enabled),\n                updated_at = EXCLUDED.updated_at,\n                updated_by_device_id = EXCLUDED.updated_by_device_id\n            RETURNING wake_word, elevenlabs_enabled\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "wake_word",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "elevenlabs_enabled",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bool",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "14be13a9b8cc1f5d1f40175ee181f8ca24600525ccd449d9af7633cd8b9402b3"
+}

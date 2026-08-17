@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT wake_word, elevenlabs_enabled FROM settings.voice WHERE only_row",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "wake_word",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "elevenlabs_enabled",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "9fccefefd493c9d9f28fbe6f0ea5397a2291169a5ba594d871eaf65b180bcaf5"
+}

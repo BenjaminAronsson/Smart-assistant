@@ -54,6 +54,11 @@ pub fn export() -> Value {
     generator.subschema_for::<crate::sessions::SessionDto>();
     generator.subschema_for::<crate::sessions::CreateSessionRequest>();
     generator.subschema_for::<crate::sessions::SessionListResponse>();
+    // Owner-tunable runtime settings (F8.8's voice section, F8.11's spend).
+    generator.subschema_for::<crate::settings::VoiceSettingsDto>();
+    generator.subschema_for::<crate::settings::ElevenLabsSettingsDto>();
+    generator.subschema_for::<crate::settings::UpdateVoiceSettingsRequest>();
+    generator.subschema_for::<crate::settings::NodeVoiceSettingsDto>();
     generator.subschema_for::<crate::content::ContentBlock>();
     // M1 run/message/timeline/provider surface + typed WS events (F1.1).
     generator.subschema_for::<crate::runs::RunDto>();

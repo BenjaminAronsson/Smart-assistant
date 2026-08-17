@@ -1093,6 +1093,31 @@ everything said in it.
    switches it on. The switch is the consent, so there is no second prompt and no per-utterance
    dialogue: one deliberate act, reversible, in the settings surface.
 
+   **Amended 2026-08-17 (F8.8, owner direction).** The switch was originally a `jarvisd.toml`
+   field, which made "in the settings surface" aspirational: consent could only be given or —
+   more importantly — *withdrawn* by editing a file and restarting the daemon. It is now also a
+   `PATCH /api/v1/settings/voice` toggle, under these conditions, which are what keep the gate a
+   gate:
+
+   - **`ui` scope only.** A room satellite is a paired, authenticated device and must not be
+     able to grant or withdraw the household's consent, nor read its spend.
+   - **Audited in the same transaction as the change** (invariant 6). Consenting to a
+     third-party egress path must not be possible to do unrecorded. The payload is closed
+     vocabulary and carries no credential.
+   - **Refused unless it could be honoured**: the daemon must already hold an API key reference
+     and a voice, *and* a local voice must exist to fall back to (§3). Consent to something that
+     cannot work is consent to nothing, and it is the same condition `main.rs` refuses to start
+     under.
+   - **The API key never moves.** It stays a keyring reference in `jarvisd.toml` (§6). What the
+     surface stores is whether the owner consented, never the credential.
+   - **Withdrawal is immediate.** The adapter reads the gate per utterance rather than at
+     construction, so the next sentence is already local. A house that kept talking to a third
+     party until someone found a terminal would not have honoured the switch.
+
+   Asymmetric on purpose: granting asks once, withdrawing does not ask at all. Turning it on is
+   the moment the house's voice starts leaving the house; turning it off is the owner protecting
+   themselves, and a confirmation there would be the interface arguing with them.
+
 3. **The local voice is the fallback, always.** Unreachable, rate-limited, quota-exhausted,
    mid-stream failure — every one of them degrades to Piper. ADR-023 requires that an alarm
    sounds; a cloud voice that can fail to silence would quietly revoke that guarantee for
@@ -1108,6 +1133,14 @@ everything said in it.
    counted afterwards, because a limit that notices overspend once the bytes are sent is an
    accounting record. Exhaustion falls back to Piper rather than failing the turn — running
    out of a *nicety* must never cost the user an *answer*.
+
+   **Amended 2026-08-17 (F8.8/F8.11).** The budget is now **durable and monthly**, keyed by
+   `YYYY-MM` in `settings.elevenlabs_spend`. As first shipped it was an in-process `AtomicU64`,
+   which made "monthly budget" untrue in the direction that matters: a daemon restarted daily
+   had no ceiling at all. The database returns the running total on each reservation, so two
+   concurrent utterances cannot both squeeze past the same figure, and the rollover is a new key
+   rather than a scheduled job. A ledger that cannot be read spends **locally** — an unknown
+   ceiling is not permission.
 
 6. **The API key is a keyring reference**, resolved at the adapter boundary (invariant 5).
 

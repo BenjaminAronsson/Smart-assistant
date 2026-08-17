@@ -2,7 +2,12 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { Settings } from './settings';
 import { ApiService } from '../api.service';
-import type { AutomationDto, DeviceDto } from '../../generated/api-types';
+import type {
+  AutomationDto,
+  DeviceDto,
+  UpdateVoiceSettingsRequest,
+  VoiceSettingsDto,
+} from '../../generated/api-types';
 
 function device(over: Partial<DeviceDto> = {}): DeviceDto {
   return {
@@ -31,8 +36,52 @@ function automation(over: Partial<AutomationDto> = {}): AutomationDto {
   } as AutomationDto;
 }
 
+function voiceSettings(over: Partial<VoiceSettingsDto> = {}): VoiceSettingsDto {
+  return {
+    // A word with no provisioned model. The shipped default is `hey jarvis`,
+    // which has one — but an owner can still configure a word that does not,
+    // and the surface must say so rather than look healthy.
+    wakeWord: 'andy',
+    availableWakeWords: ['alexa', 'hey jarvis'],
+    wakeWordWarning: 'no wake-word model is provisioned for "andy"',
+    elevenlabs: {
+      configured: true,
+      enabled: false,
+      spentCharacters: 12_480,
+      characterBudget: 100_000,
+      period: '2026-08',
+      localFallback: 'wyoming-tts',
+    },
+    ...over,
+  } as VoiceSettingsDto;
+}
+
 class FakeApi {
   devices: DeviceDto[] = [device()];
+  voice: VoiceSettingsDto = voiceSettings();
+  voicePatches: UpdateVoiceSettingsRequest[] = [];
+  /** Set to make the daemon refuse, as it does when unconfigured. */
+  refuseVoice = false;
+
+  getVoiceSettings() {
+    return Promise.resolve(this.voice);
+  }
+  updateVoiceSettings(patch: UpdateVoiceSettingsRequest) {
+    this.voicePatches.push(patch);
+    if (this.refuseVoice) return Promise.reject(new Error('refused'));
+    const word = patch.wakeWord;
+    if (typeof word === 'string') {
+      this.voice = { ...this.voice, wakeWord: word, wakeWordWarning: undefined };
+    }
+    const enabled = patch.elevenlabsEnabled;
+    if (typeof enabled === 'boolean') {
+      this.voice = {
+        ...this.voice,
+        elevenlabs: { ...this.voice.elevenlabs, enabled },
+      };
+    }
+    return Promise.resolve(this.voice);
+  }
   automations: AutomationDto[] = [automation()];
   revoked: { id: string; reason: string }[] = [];
   toggled: { id: string; enabled: boolean }[] = [];
@@ -189,4 +238,75 @@ describe('Settings', () => {
     expect(component.error()).toBe('Could not load settings. Is the daemon running?');
     expect((fixture.nativeElement as HTMLElement).textContent).not.toContain('ECONNREFUSED');
   });
+
+  describe('voice', () => {
+    it('shows the wake word, the spend and the fallback', () => {
+      const text = fixture.nativeElement.textContent as string;
+      expect(text).toContain('12,480');
+      expect(text).toContain('100,000');
+      expect(text).toContain('wyoming-tts');
+      expect(component.spendPercent()).toBe(12);
+    });
+
+    // The "Andy" case: openWakeWord publishes no model for it, so a node
+    // configured that way answers to nothing while looking perfectly healthy.
+    it('names a wake word that has no model rather than hiding it', () => {
+      const text = fixture.nativeElement.textContent as string;
+      expect(text).toContain('no wake-word model is provisioned');
+    });
+
+    it('changes the wake word to one that has a model', async () => {
+      await component.setWakeWord('hey jarvis');
+      expect(api.voicePatches).toEqual([{ wakeWord: 'hey jarvis' }]);
+      expect(component.voice()?.wakeWord).toBe('hey jarvis');
+    });
+
+    // Granting consent is the moment the house's voice starts leaving the
+    // house (ADR-033 §2), so it is asked about once rather than toggled.
+    it('asks before granting consent, and sends nothing until confirmed', async () => {
+      await component.toggleElevenLabs();
+      expect(component.confirmingElevenLabs()).toBe(true);
+      expect(api.voicePatches).toEqual([]);
+
+      await component.confirmElevenLabs();
+      expect(component.confirmingElevenLabs()).toBe(false);
+      expect(api.voicePatches).toEqual([{ elevenlabsEnabled: true }]);
+      expect(component.voice()?.elevenlabs.enabled).toBe(true);
+    });
+
+    it('cancelling leaves it off and sends nothing', async () => {
+      await component.toggleElevenLabs();
+      component.cancelElevenLabs();
+      expect(component.confirmingElevenLabs()).toBe(false);
+      expect(api.voicePatches).toEqual([]);
+      expect(component.voice()?.elevenlabs.enabled).toBe(false);
+    });
+
+    // Deliberately asymmetric: withdrawing consent is the owner protecting
+    // themselves, and a confirmation there would be the interface arguing.
+    it('withdraws consent immediately, without asking', async () => {
+      await component.toggleElevenLabs();
+      await component.confirmElevenLabs();
+      api.voicePatches = [];
+
+      await component.toggleElevenLabs();
+      expect(component.confirmingElevenLabs()).toBe(false);
+      expect(api.voicePatches).toEqual([{ elevenlabsEnabled: false }]);
+      expect(component.voice()?.elevenlabs.enabled).toBe(false);
+    });
+
+    it('reports a refusal without echoing a raw error', async () => {
+      api.refuseVoice = true;
+      await component.toggleElevenLabs();
+      await component.confirmElevenLabs();
+      expect(component.error()).toContain('local voice');
+      expect(component.error()).not.toContain('refused');
+    });
+
+    it('reads the period as a month', () => {
+      expect(component.periodLabel('2026-08')).toContain('2026');
+      expect(component.periodLabel('nonsense')).toBe('nonsense');
+    });
+  });
+
 });

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO settings.elevenlabs_spend (period, spent_characters)\n            VALUES ($1, $2)\n            ON CONFLICT (period) DO UPDATE SET\n                spent_characters =\n                    settings.elevenlabs_spend.spent_characters + EXCLUDED.spent_characters\n            RETURNING spent_characters\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "spent_characters",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2b80ed6d9aeb5d6775153ad106decd839c4b8b299d4c514ff1121354a58d0970"
+}

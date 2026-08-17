@@ -11,7 +11,7 @@
 //! or environment layering (fixture-driven, docs/07 discipline).
 
 use figment::Figment;
-use figment::providers::Serialized;
+use figment::providers::{Format as _, Serialized};
 use jarvisd::config::{Config, resolve_secret_ref};
 
 fn empty_figment() -> Figment {
@@ -378,4 +378,78 @@ fn spotify_volume_cap_must_be_a_real_percentage() {
             "max_volume_pct {cap} must be rejected"
         );
     }
+}
+
+// A fresh install must answer to its name. The default wake word has to be one
+// of the words the default asset list provisions, or a brand-new house comes up
+// reporting a missing model — which is exactly the state ADR-032 §1 was amended
+// on 2026-08-17 to get out of ("Andy" had no published model).
+//
+// It cannot assert against `jarvis_agent::wake::DEFAULT_WAKE_WORD` directly:
+// jarvisd does not depend on the agent crate, and adding that dependency to
+// share a constant would invert the daemon/node relationship. The property that
+// matters is checkable here on its own.
+#[test]
+fn the_default_wake_word_is_one_the_default_assets_provide() {
+    let config = Config::from_figment(empty_figment()).expect("defaults must validate");
+    assert!(
+        config
+            .voice
+            .wake_words_available
+            .contains(&config.voice.wake_word),
+        "default wake word {:?} is not in the default provisioned set {:?}",
+        config.voice.wake_word,
+        config.voice.wake_words_available
+    );
+}
+
+// The shipped example must actually be loadable.
+//
+// `Config` is `deny_unknown_fields`, so a key renamed or added in the struct
+// silently makes `infra/jarvisd.toml.example` a file the daemon rejects — and
+// nothing would notice until an operator followed the install guide and could
+// not start. That is the same class of defect as the keyring backend: the
+// documentation was true of nothing.
+//
+// Parsed, not resolved: `env:`/`keyring:` references stay references here, so
+// this needs no secrets, no keyring and no network.
+#[test]
+fn the_shipped_example_config_still_loads() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../infra/jarvisd.toml.example"
+    );
+    // `Toml::file` on a missing path yields no data rather than an error, so
+    // without this the whole test would pass vacuously against defaults if the
+    // example were ever moved or renamed.
+    assert!(
+        std::path::Path::new(path).is_file(),
+        "the example config is missing from {path}"
+    );
+    let figment = Figment::from(figment::providers::Toml::file(path));
+
+    let config = Config::from_figment(figment)
+        .unwrap_or_else(|e| panic!("infra/jarvisd.toml.example must load: {e}"));
+
+    // Values that only come from the file, so a silently-empty figment cannot
+    // satisfy this test with defaults (voice is off by default; the example
+    // turns it on).
+    assert!(config.voice.enabled, "the example enables voice");
+    assert_eq!(
+        config.voice.wyoming_tts.as_deref(),
+        Some("tcp://127.0.0.1:10200"),
+        "the example names a local TTS endpoint"
+    );
+
+    // And the voice section it documents has to agree with itself: the example
+    // offers a wake word it also claims to have provisioned.
+    assert!(
+        config
+            .voice
+            .wake_words_available
+            .contains(&config.voice.wake_word),
+        "the example's wake_word {:?} is not in its own wake_words_available {:?}",
+        config.voice.wake_word,
+        config.voice.wake_words_available
+    );
 }

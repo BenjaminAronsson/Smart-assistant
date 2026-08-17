@@ -23,7 +23,7 @@
 //! platform, which would take over the loop and break invariants 1–2.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -157,6 +157,15 @@ impl ElevenLabsConfig {
 pub struct ElevenLabsSynthesizer {
     config: ElevenLabsConfig,
     budget: Arc<CharacterBudget>,
+    /// ADR-033 §2's consent gate, readable at *speaking* time rather than only
+    /// at construction (F8.8): the owner can withdraw consent from the shell
+    /// and the next sentence is already local. Withdrawing consent should not
+    /// require a restart — a house that keeps talking to a third party until
+    /// someone finds a terminal has not honoured the switch.
+    consent: Arc<AtomicBool>,
+    /// Durable spend, when wired. `None` keeps the in-process ceiling, which is
+    /// what the adapter's own tests use.
+    ledger: Option<Arc<dyn jarvis_application::ports::SpendLedger>>,
     local: Arc<dyn SpeechSynthesizer>,
     http: reqwest::Client,
 }
@@ -164,16 +173,31 @@ pub struct ElevenLabsSynthesizer {
 impl ElevenLabsSynthesizer {
     pub fn new(config: ElevenLabsConfig, local: Arc<dyn SpeechSynthesizer>) -> Self {
         let budget = Arc::new(CharacterBudget::new(config.monthly_character_budget));
+        let consent = Arc::new(AtomicBool::new(config.enabled));
         Self {
             config,
             budget,
+            consent,
+            ledger: None,
             local,
             http: reqwest::Client::new(),
         }
     }
 
+    /// Back the budget with durable storage (F8.11). Without this the ceiling
+    /// is per-process, and a daemon restarted daily has no monthly ceiling.
+    pub fn with_ledger(mut self, ledger: Arc<dyn jarvis_application::ports::SpendLedger>) -> Self {
+        self.ledger = Some(ledger);
+        self
+    }
+
     pub fn budget(&self) -> Arc<CharacterBudget> {
         self.budget.clone()
+    }
+
+    /// The live consent gate, shared with the settings surface that flips it.
+    pub fn consent(&self) -> Arc<AtomicBool> {
+        self.consent.clone()
     }
 
     /// The routing decision, separated from the I/O so it is testable without a
@@ -184,7 +208,10 @@ impl ElevenLabsSynthesizer {
     /// (which is exactly what an earlier draft did, and what its own test
     /// caught). The reservation happens once, in [`Self::synthesize`].
     pub fn bypass_reason(&self, text: &str, sensitivity: SpeechSensitivity) -> Option<Bypass> {
-        if !self.config.enabled {
+        // Read live, not from the config this was built with: consent can be
+        // withdrawn from the shell mid-session (F8.8) and must take effect on
+        // the next sentence, not the next restart.
+        if !self.consent.load(Ordering::Relaxed) {
             return Some(Bypass::NotEnabled);
         }
         // Checked before the budget on purpose: a sensitive utterance must not
@@ -221,7 +248,7 @@ impl SpeechSynthesizer for ElevenLabsSynthesizer {
         // concurrent utterances both squeezing past the same allowance — the
         // pure check above cannot, and is not meant to.
         let reserved = text.chars().count() as u64;
-        if !self.budget.try_reserve(reserved) {
+        if !self.reserve(reserved).await {
             tracing::debug!(
                 reason = Bypass::BudgetExhausted.as_str(),
                 "speaking locally"
@@ -235,7 +262,7 @@ impl SpeechSynthesizer for ElevenLabsSynthesizer {
                 // The condition that matters most: a cloud voice that fails
                 // must degrade to the local one, never to silence. An alarm
                 // must sound (ADR-023).
-                self.budget.refund(reserved);
+                self.refund(reserved).await;
                 tracing::warn!(
                     error = %e,
                     "ElevenLabs synthesis failed; falling back to the local voice"
@@ -247,6 +274,43 @@ impl SpeechSynthesizer for ElevenLabsSynthesizer {
 }
 
 impl ElevenLabsSynthesizer {
+    /// Reserve against the budget, durably when a ledger is wired.
+    ///
+    /// A ledger failure spends **locally** rather than externally: if the
+    /// database cannot say how much has been spent, the honest reading is that
+    /// the ceiling is unknown, and an unknown ceiling is not permission.
+    async fn reserve(&self, characters: u64) -> bool {
+        let Some(ledger) = self.ledger.as_ref() else {
+            return self.budget.try_reserve(characters);
+        };
+        match ledger.reserve(characters).await {
+            Ok(total) if total <= self.budget.limit() => true,
+            Ok(_) => {
+                // Over the ceiling: hand it straight back, so a refusal costs
+                // nothing and next month is not started in arrears.
+                self.refund(characters).await;
+                false
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "spend ledger unavailable; speaking locally");
+                false
+            }
+        }
+    }
+
+    async fn refund(&self, characters: u64) {
+        match self.ledger.as_ref() {
+            Some(ledger) => {
+                if let Err(e) = ledger.refund(characters).await {
+                    // Nothing to escalate to: the utterance is already being
+                    // spoken locally, and over-counting spend fails safe.
+                    tracing::warn!(error = %e, "could not refund unused characters");
+                }
+            }
+            None => self.budget.refund(characters),
+        }
+    }
+
     async fn request(
         &self,
         text: &str,
@@ -320,6 +384,47 @@ mod tests {
                 Box::pin(stream::once(async { Ok(vec![0_u8; 32]) })),
             ))
         }
+    }
+
+    /// Consent is read at *speaking* time, not construction time (F8.8).
+    ///
+    /// The withdraw direction is the one that matters: a house that keeps
+    /// talking to a third party until someone finds a terminal and restarts
+    /// the daemon has not honoured the switch the owner just flipped.
+    #[tokio::test]
+    async fn consent_is_read_live_in_both_directions() {
+        let (synth, _local) = synth(false, 10_000);
+        assert_eq!(
+            synth.bypass_reason("hello", SpeechSensitivity::Normal),
+            Some(Bypass::NotEnabled),
+            "off is off"
+        );
+
+        synth.consent().store(true, Ordering::Relaxed);
+        assert_eq!(
+            synth.bypass_reason("hello", SpeechSensitivity::Normal),
+            None,
+            "granting consent takes effect on the next utterance"
+        );
+
+        synth.consent().store(false, Ordering::Relaxed);
+        assert_eq!(
+            synth.bypass_reason("hello", SpeechSensitivity::Normal),
+            Some(Bypass::NotEnabled),
+            "and withdrawing it takes effect just as immediately"
+        );
+    }
+
+    /// Consent does not override sensitivity. Switching the third-party voice
+    /// on is not permission to read the owner's messages aloud through it.
+    #[tokio::test]
+    async fn consent_does_not_unlock_sensitive_text() {
+        let (synth, _local) = synth(true, 10_000);
+        synth.consent().store(true, Ordering::Relaxed);
+        assert_eq!(
+            synth.bypass_reason("your bank called", SpeechSensitivity::Sensitive),
+            Some(Bypass::Sensitive)
+        );
     }
 
     fn config(enabled: bool, budget: u64) -> ElevenLabsConfig {

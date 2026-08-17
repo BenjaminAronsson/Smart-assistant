@@ -131,6 +131,9 @@ pub struct Wiring {
     pub maps: Option<crate::maps::MapApi>,
     pub timers: Option<crate::timers::TimerApi>,
     pub automations: Option<crate::automations::AutomationApi>,
+    /// The owner-tunable settings surface (F8.8's voice section, F8.11's
+    /// spend). `None` without a database — there is no override layer to read.
+    pub settings: Option<crate::settings::SettingsApi>,
     /// Lists and quick notes (F3b.8, FR-34, ADR-024).
     pub lists: Option<crate::lists::ListApi>,
     /// Deep-dive threads (F3b.6, FR-27, ADR-017). The same handle is given to
@@ -167,6 +170,7 @@ impl Default for Wiring {
             maps: None,
             timers: None,
             automations: None,
+            settings: None,
             lists: None,
             deepdive: None,
             memories: None,
@@ -199,6 +203,7 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
         maps,
         timers,
         automations,
+        settings,
         lists,
         deepdive,
         memories,
@@ -316,6 +321,31 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
                 Router::new()
                     .route("/ws/v1", get(crate::ws::ws_upgrade))
                     .with_state(ws),
+            );
+        }
+        if let Some(api) = settings {
+            // Read and write are `ui`-scoped inside the handlers, like device
+            // management: a room satellite must not be able to withdraw the
+            // household's consent settings or read its spend.
+            protected = protected.merge(
+                Router::new()
+                    .route(
+                        "/api/v1/settings/voice",
+                        get(crate::settings::get_voice).patch(crate::settings::update_voice),
+                    )
+                    .with_state(api.clone()),
+            );
+            // The one setting a node is *about*, on its own route rather than
+            // as a scope exception on the one above: a satellite needs the
+            // wake word and has no business with the spend, the consent state,
+            // or the list of what else could be configured (ADR-032 §4).
+            node_reachable = node_reachable.merge(
+                Router::new()
+                    .route(
+                        "/api/v1/settings/node-voice",
+                        get(crate::settings::get_node_voice),
+                    )
+                    .with_state(api),
             );
         }
         if let Some(api) = artifacts {

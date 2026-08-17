@@ -123,46 +123,82 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             _ => None,
         };
 
-    // ElevenLabs (F8.11, ADR-033), off unless switched on. It *wraps* the local
-    // voice rather than replacing it: the local synthesizer stays the fallback
-    // for every refusal, failure and exhausted budget, so an alarm still sounds
-    // with the network down (ADR-023).
+    // The spend ledger makes the budget durable (F8.11): an in-process counter
+    // reset on every restart, so a daemon restarted daily had no monthly
+    // ceiling at all.
+    let spend_ledger: Arc<dyn jarvis_application::ports::SpendLedger> =
+        Arc::new(jarvis_infra::settings::PgSpendLedger::new(pool.clone()));
+    let settings_store: Arc<dyn jarvis_application::ports::SettingsStore> =
+        Arc::new(jarvis_infra::settings::PgSettingsStore::new(pool.clone()));
+
+    // The stored consent overrides the file's, because it is the more recent
+    // act of the same person (F8.8). Read once at startup; the live gate below
+    // is what the synthesiser consults per utterance thereafter.
+    let stored_voice = settings_store
+        .voice_overrides()
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "could not read stored voice settings; using the config file");
+            jarvis_application::ports::VoiceOverrides::default()
+        });
+    let elevenlabs_consent = stored_voice
+        .elevenlabs_enabled
+        .unwrap_or(config.voice.elevenlabs.enabled);
+    let elevenlabs_configured =
+        config.voice.elevenlabs.api_key_ref.is_some() && config.voice.elevenlabs.voice_id.is_some();
+    if config.voice.elevenlabs.enabled && !elevenlabs_configured {
+        anyhow::bail!("[voice.elevenlabs] is enabled but api_key_ref or voice_id is missing");
+    }
+
+    let local_voice_id = synthesizer.as_ref().map(|s| s.id().to_owned());
+
+    // ElevenLabs (F8.11, ADR-033). It *wraps* the local voice rather than
+    // replacing it: the local synthesizer stays the fallback for every refusal,
+    // failure and exhausted budget, so an alarm still sounds with the network
+    // down (ADR-023).
+    //
+    // Constructed whenever it is *configured*, not only when it is switched on,
+    // so the shell's consent toggle takes effect on the next sentence rather
+    // than the next restart (F8.8). Being constructed grants nothing: the
+    // adapter reads `consent` on every utterance and routes locally while it is
+    // false, which is the same path as not existing.
     //
     // Deliberately impossible to enable without a local voice underneath —
     // there would be nothing to fall back to, which would make an internet
     // outage a mute house.
+    let mut elevenlabs_gate: Option<Arc<std::sync::atomic::AtomicBool>> = None;
     let synthesizer: Option<Arc<dyn SpeechSynthesizer>> = match (
         synthesizer,
         &config.voice.elevenlabs,
     ) {
-        (Some(local), eleven) if eleven.enabled => {
+        (Some(local), eleven) if elevenlabs_configured => {
             let (Some(api_key_ref), Some(voice_id)) =
                 (eleven.api_key_ref.as_deref(), eleven.voice_id.as_deref())
             else {
-                anyhow::bail!(
-                    "[voice.elevenlabs] is enabled but api_key_ref or voice_id is missing"
-                );
+                unreachable!("elevenlabs_configured checked both");
             };
             // The key is a keyring reference resolved here, at the boundary —
             // never a literal in config, never an argv entry (invariant 5).
             let api_key = jarvisd::config::resolve_secret_ref_async(api_key_ref).await?;
             tracing::info!(
                 budget = eleven.character_budget,
-                "ElevenLabs speech synthesis enabled; the local voice remains the fallback"
+                enabled = elevenlabs_consent,
+                "ElevenLabs speech synthesis configured; the local voice remains the fallback"
             );
-            Some(Arc::new(
-                jarvis_adapters::elevenlabs::ElevenLabsSynthesizer::new(
-                    jarvis_adapters::elevenlabs::ElevenLabsConfig {
-                        enabled: true,
-                        voice_id: voice_id.to_owned(),
-                        model_id: eleven.model_id.clone(),
-                        api_key: api_key.expose().to_owned(),
-                        monthly_character_budget: eleven.character_budget,
-                        base_url: jarvis_adapters::elevenlabs::ElevenLabsConfig::api_base(),
-                    },
-                    local,
-                ),
-            ))
+            let adapter = jarvis_adapters::elevenlabs::ElevenLabsSynthesizer::new(
+                jarvis_adapters::elevenlabs::ElevenLabsConfig {
+                    enabled: elevenlabs_consent,
+                    voice_id: voice_id.to_owned(),
+                    model_id: eleven.model_id.clone(),
+                    api_key: api_key.expose().to_owned(),
+                    monthly_character_budget: eleven.character_budget,
+                    base_url: jarvis_adapters::elevenlabs::ElevenLabsConfig::api_base(),
+                },
+                local,
+            )
+            .with_ledger(spend_ledger.clone());
+            elevenlabs_gate = Some(adapter.consent());
+            Some(Arc::new(adapter))
         }
         (local, eleven) => {
             if eleven.enabled {
@@ -716,6 +752,23 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     let app = jarvisd::api::router_with(
         state,
         jarvisd::api::Wiring {
+            settings: Some({
+                let api = jarvisd::settings::SettingsApi::new(
+                    settings_store.clone(),
+                    jarvisd::settings::VoiceCapabilities {
+                        configured_wake_word: config.voice.wake_word.clone(),
+                        available_wake_words: config.voice.wake_words_available.clone(),
+                        elevenlabs_configured,
+                        local_fallback: local_voice_id.clone(),
+                        character_budget: config.voice.elevenlabs.character_budget,
+                    },
+                )
+                .with_ledger(spend_ledger.clone());
+                match elevenlabs_gate.clone() {
+                    Some(gate) => api.with_consent(gate),
+                    None => api,
+                }
+            }),
             // The same instance the pairing routes were built from (F7.2).
             pairing: pairing.clone(),
             server_fingerprint: server_fingerprint.clone(),

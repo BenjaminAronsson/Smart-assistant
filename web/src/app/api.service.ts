@@ -22,6 +22,8 @@ import type {
   PairingWindowDto,
   AutomationListResponse,
   AutomationHistoryResponse,
+  VoiceSettingsDto,
+  UpdateVoiceSettingsRequest,
 } from '../generated/api-types';
 
 const TOKEN_KEY = 'jarvis.deviceToken';
@@ -258,6 +260,27 @@ export class ApiService {
         { enabled },
         { headers: this.authHeaders() },
       ),
+    );
+  }
+
+  /** The owner-tunable voice settings (F8.8, F8.11). */
+  getVoiceSettings(): Promise<VoiceSettingsDto> {
+    return firstValueFrom(
+      this.http.get<VoiceSettingsDto>('/api/v1/settings/voice', {
+        headers: this.authHeaders(),
+      }),
+    );
+  }
+
+  /**
+   * Change them. Absent fields mean unchanged, so one toggle does not restate
+   * — and overwrite — whatever another tab just set.
+   */
+  updateVoiceSettings(patch: UpdateVoiceSettingsRequest): Promise<VoiceSettingsDto> {
+    return firstValueFrom(
+      this.http.patch<VoiceSettingsDto>('/api/v1/settings/voice', patch, {
+        headers: this.authHeaders(),
+      }),
     );
   }
 
