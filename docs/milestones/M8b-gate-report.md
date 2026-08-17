@@ -78,7 +78,8 @@ the sleep, and prompt shutdown (tested — it fails if the worker waits out its 
 
 | Metric | Result |
 |---|---|
-| Workspace tests | **1488 pass**, 0 fail |
+| Workspace tests (as prepared, 2026-08-15) | **1488 pass**, 0 fail |
+| Workspace tests (all six M8 branches merged, 2026-08-17) | **1520 pass**, 0 fail |
 | `cargo xtask golden` | all traces, **exit 0** (golden 12 included) |
 | arch-test | 9 crates, rules hold |
 | clippy `-D warnings`, fmt, codegen `--check` | clean |

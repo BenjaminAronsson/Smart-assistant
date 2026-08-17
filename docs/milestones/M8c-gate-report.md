@@ -110,7 +110,8 @@ invariants 1 and 2 in one step).
 |---|---|
 | Web tests | **265 pass** (10 new) |
 | Web bundle, initial | **502.51 kB** — over the 500 kB budget by 2.51 kB |
-| Workspace tests | **1488 pass**, 0 fail |
+| Workspace tests (as prepared, 2026-08-15) | **1488 pass**, 0 fail |
+| Workspace tests (all six M8 branches merged, 2026-08-17) | **1520 pass**, 0 fail |
 | lint / build / arch-test / clippy / fmt / codegen | clean |
 
 **The bundle was already over budget on `main` (502.29 kB) before M8c.** F8.8 added 0.22 kB —

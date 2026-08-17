@@ -187,8 +187,8 @@ Run on the dev host (not the reference 8 GB machine — see §3).
 | jarvisd idle RSS | **22.1 MB** | 40–80 MB typical, 120 MB ceiling | PASS |
 | `jarvis-agent` release binary, no engine | **10.63 MB** | — | noted |
 | `jarvis-agent` release binary, `wake-word-onnx` | **37.18 MB** | — | **noted — see below** |
-| Workspace tests (all six branches merged) | **1519 pass**, 0 fail | — | PASS |
-| Workspace tests | **1488 pass**, 81 binaries, 0 fail | — | PASS |
+| Workspace tests, as first prepared (2026-08-15) | **1488 pass**, 81 binaries, 0 fail | — | PASS |
+| Workspace tests, all six branches merged (2026-08-17) | **1520 pass**, 0 fail | — | PASS |
 | `jarvis-agent` tests | **90 pass** (was 3 at M7) | — | PASS |
 | `cargo xtask arch-test` | 9 crates, rules hold | — | PASS |
 | `cargo clippy -D warnings` | clean | — | PASS |
