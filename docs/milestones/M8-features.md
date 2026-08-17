@@ -2,9 +2,18 @@
 
 Status: **APPROVED — owner sign-off 2026-08-13**, including the requirement amendment and
 the roadmap reshuffle. Decomposed the same day on Opus 5 after M7 shipped (tag
-`m7-complete`). Split into **three sub-gates** as approved. Nothing implemented yet;
-**F8.1 is the next feature loop.** Check items off as their PRs merge, and do not pull a
-later sub-gate's feature forward without an approved change to this list (docs/11 §2).
+`m7-complete`). Split into **three sub-gates** as approved.
+
+**ALL 11 FEATURES COMPLETE (2026-08-17).** Every item below is ticked and every deviation the
+three gate reports raised against *code* is closed. What remains before sign-off is not code
+and cannot be produced by a report (docs/11 §3 makes sign-off human anyway):
+
+1. **A clean-machine install, watched by a human** — M8c's exit evidence, by definition.
+2. **Two measurements on reference hardware** — NFR-04's round trip (D-M5-3, open since M5) and
+   ADR-032's false-accept rate over a household-noise corpus recorded in the rooms the nodes
+   will live in. Both harnesses exist; the corpus deliberately does not live in this repo.
+3. **Subagent review passes** (`rust-reviewer`, `security-auditor`, `perf-warden`) — none ran on
+   any of M8. A process gap, recorded as D4 throughout.
 
 **Resolved at approval:**
 1. **FR-13 amended** (docs/01 §2) — hands-free wake-word invocation on the device, raised
@@ -62,8 +71,10 @@ down.** FR-13 now requires wake-word invocation **and keeps push-to-talk as an e
 from Should to **Must**. Wake word stops being a docs/08 §6 deferred decision and becomes a
 requirement with a milestone behind it.
 
-**2. ✅ openWakeWord**, with the asset licence reviewed in ADR-032, **`"Andy"`** as the word
-(owner's choice, 2026-08-15; configurable — see ADR-032 §4),
+**2. ✅ openWakeWord**, with the asset licence reviewed in ADR-032, **`"hey jarvis"`** as the word
+(owner's choice 2026-08-17, superseding `"Andy"` of 2026-08-15 — openWakeWord publishes no model
+for that word, so it would have cost a training run before any node could answer; configurable —
+see ADR-032 §4),
 and a documented swap path — it sits behind a port like every other adapter.
 
 **3. ✅ Detection runs on the node.** The satellite streams nothing until the word fires.
@@ -115,11 +126,15 @@ satellite*, with no browser involved and nothing streamed before the word fired.
       stops frames at the source, not at the server; oversized/malformed frames rejected.
       Refs: docs/05 §1 (binary frames), F7.6's socket-side routing. Deps: F8.1.
 
-- [ ] **F8.3 — Wake word on the node (FR-13 amended, ADR-032)** · *strong model*
-      ⚠️ **PARTIAL — PR #46.** Port, pipeline and ADR-032 are merged; the **openWakeWord ONNX
-      binding is not implemented**, so a node does not answer to its name and the recorded-clip /
-      household-noise tests are unsatisfied. **Blocks M8a's exit evidence.** The only place an
-      engine is chosen is `open_wake_gate()` in `crates/jarvis-agent/src/main.rs`.
+- [x] **F8.3 — Wake word on the node (FR-13 amended, ADR-032)** ✅ PRs #46 + #61 · *strong model*
+      Port, pipeline and ADR-032 merged in #46; the **openWakeWord ONNX engine** landed in #61 and
+      both named acceptances now hold over real inference (a recorded clip fires once and only
+      once; silence and near-miss household speech do not). Assets are provisioned with pinned
+      checksums, never vendored, and CI compiles the engine so it cannot rot.
+      The word is **`hey jarvis`** (owner, 2026-08-17): implementing the engine surfaced that
+      openWakeWord publishes no model for `"Andy"`, so that default would have shipped a house
+      unable to hear its own name. Two tests now assert the default is a published word and that
+      it loads against the assets the installer provisions.
       The feature that changes what this product *is*. The engine runs **on the node**;
       audio never leaves the device until the word fires, and the daemon cannot be asked to
       stream continuously. VAD gates end-of-turn as it does today. Includes a visible
@@ -141,13 +156,14 @@ satellite*, with no browser involved and nothing streamed before the word fired.
       still cancels within NFR-04; AEC absent → the node degrades to push-to-talk rather
       than looping. Deps: F8.3.
 
-- [ ] **F8.5 — Room attribution: answer, and ring, where I spoke (FR-13/FR-33)**
-      · *strong model*
-      ⚠️ **PARTIAL — PR #48.** A timer now remembers its room and the fire path is told which one,
-      durable across a restart; **jarvisd still rings on its own host.** Delivering to a node needs
-      a fan-out routing decision — satellites hold `voice-capture`/`display-agent`, never `ui`, so
-      `timer.fired` on the Session channel cannot reach them. No further domain/migration/contract
-      change is needed.
+- [x] **F8.5 — Room attribution: answer, and ring, where I spoke (FR-13/FR-33)**
+      ✅ PRs #48 + #50 + #62 · *strong model*
+      The alert path landed in #48/#50 (a timer remembers its room, rings there, survives a
+      restart); the **answer path** landed in #62. Same root cause both times: a satellite never
+      holds `ui`, so the Session channel's rule kept a run's own text deltas from the node that
+      asked. Ownership of the run it started now lets the answer through — keyed on an allowlist
+      of the four spoken-response events as well, so owning a run buys the answer and nothing
+      else on that channel.
       The run learns its **origin node**, and everything that speaks goes back there: the
       answer, the clarifying question, the timer that fires, the alarm that was missed while
       the daemon was down. This closes the bug M7 made visible — `timer_alert` plays on the
@@ -166,7 +182,7 @@ satellite*, with no browser involved and nothing streamed before the word fired.
 re-evaluated against policy at fire time, and a run missed while the daemon was down is
 announced rather than silently skipped.
 
-- [ ] **F8.6 — Automations: entity, triggers, policy at fire time (FR-17)** · *strong model*
+- [x] **F8.6 — Automations: entity, triggers, policy at fire time (FR-17)** ✅ PR #51 · *strong model*
       The requirement docs/05 §1 has advertised routes for since M0 and that has been parked
       twice. `Automation` + `trigger` + `execution` persistence (the `automation` schema is
       already reserved in docs/04 §3), time and HA presence/zone triggers, `GET/POST/PATCH/
@@ -178,7 +194,10 @@ announced rather than silently skipped.
       creator did not have.
       Refs: docs/02 §11, docs/04 §3, docs/05 §1. Deps: none (assembly over `timers.rs`).
 
-- [ ] **F8.7 — The daemon actually schedules (FR-17, closes D-M4-1)** · *Sonnet*
+- [x] **F8.7 — The daemon actually schedules (FR-17, closes D-M4-1)** ✅ PRs #52 + #56 + #63 · *Sonnet*
+      Routes and sweeps in #52, D-M4-1 closed in #56, and the **restart sweep made real in
+      production** in #63 — it had been reading a `None` the daemon had nothing to fill in with,
+      so the missed-run report was correct, tested, and inert.
       M4's `DeferrableScheduler` is a library nothing calls; the only thing that runs on a
       schedule today is the timer sweep. Wire it: quota-window awareness, attempts and
       `not_before`, health gating, and **missed-run announcements on restart** in the same
@@ -195,7 +214,11 @@ announced rather than silently skipped.
 documented install, administrable from the UI by the person who lives in it — and golden 12
 proves it end to end.
 
-- [ ] **F8.8 — Settings surface: devices, automations, voice (FR-19/FR-17)** · *Sonnet*
+- [x] **F8.8 — Settings surface: devices, automations, voice (FR-19/FR-17)** ✅ PRs #54 + #64 · *Sonnet*
+      Devices and automations in #54; the **voice section** — wake word, ElevenLabs toggle, spend —
+      in #64, together with the narrow config-write API it needed. Relocating ADR-033's consent
+      gate to an HTTP toggle amended that ADR rather than reinterpreting it.
+      ⚠️ **Still open (D1 on the M8b report):** *creating* an automation is API-only.
       Today device management is API-only and pairing a node means curl. The shell gains:
       pair a node (show the code, watch it appear), list devices with class/last-seen/revoke,
       review automations and their history, choose the wake word and audio devices. This is
@@ -205,7 +228,11 @@ proves it end to end.
       appearing mid-pairing updates without a reload; keyboard-first per NFR-11.
       Refs: docs/12, M7's `/api/v1/devices`. Deps: F8.1, F8.6.
 
-- [ ] **F8.9 — It starts on a fresh machine (docs/09)** · *Sonnet*
+- [x] **F8.9 — It starts on a fresh machine (docs/09)** ✅ PRs #55 + #60 · *Sonnet*
+      Compose, systemd, TLS, annotated config and first-run check in #55; #60 fixed the defect
+      that made its install guide untrue — jarvisd resolved `keyring:` references through
+      keyring 3's silent in-memory **mock**, so secrets never reached an OS keyring.
+      ⚠️ **The scripted install on a real clean machine is gate evidence a human produces.**
       Nothing is switched on by default today: the dev config enables server, database, maps
       and observability, and that is all — no voice, no web search, no display profile, no
       integrations. This feature is the deployment story: systemd units for `jarvisd` and
@@ -216,7 +243,10 @@ proves it end to end.
       config validation refuses the half-configured states people actually hit.
       Refs: docs/09, docs/08 §6 (STT size). Deps: F8.2.
 
-- [ ] **F8.11 — ElevenLabs speech synthesis, opt-in (ADR-033)** · *strong model*
+- [x] **F8.11 — ElevenLabs speech synthesis, opt-in (ADR-033)** ✅ PRs #53 + #64 · *strong model*
+      All five conditions in #53; #64 made the **spend observable and the budget genuinely
+      monthly** — it had been an in-process counter that reset on restart, so a daemon restarted
+      daily had no ceiling at all.
       **Added to the list by owner direction 2026-08-13**, superseding "deferred, not
       rejected" in decision 5 above. The deferral's *conditions* stand in full and are this
       feature's acceptance criteria — the owner pulled the timing forward, not the
@@ -240,7 +270,9 @@ proves it end to end.
       Refs: docs/06 §5, ADR-021's spirit, `wyoming.rs` as the shape to follow.
       Deps: F8.2 (node playback), F8.9 (Piper heard first, so the comparison is real).
 
-- [ ] **F8.10 — Golden 12 + M8 acceptance: the house answers** · *Sonnet*
+- [x] **F8.10 — Golden 12 + M8 acceptance: the house answers** ✅ PR #57 · *Sonnet*
+      ⚠️ **The NFR-04 measurement (D-M5-3) is still not taken** — it needs Wyoming on reference
+      hardware. Gate-bench work, carried to the M8a/M8c sign-off.
       The exit evidence, executable. **With no browser open:** the wake word fires in the
       kitchen, a question is answered aloud there, a timer set by voice rings in that room,
       an automation fires on its own, and a revoked node goes quiet mid-sentence. Plus the
