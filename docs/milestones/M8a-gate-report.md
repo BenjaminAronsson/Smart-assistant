@@ -213,8 +213,29 @@ confused. **Resident memory with the engine running has not been measured** — 
 the reference-hardware measurements in §3, and it is the number the 8 GB profile (docs/01 §4.1)
 actually constrains.
 
-**NFR-04 (voice round trip) is NOT measured.** D-M5-3, open since M5, stays open — it needs the
-Wyoming services on reference hardware.
+**NFR-04 is now measured (D-M5-3, open since M5 — first figures ever produced).**
+
+`cargo xtask perf --voice-real` drives the production pipeline against **real** faster-whisper
+`base-int8` and Piper from `infra/compose/voice.yml`, using a **real recorded utterance** rather
+than silence — silence would let an STT model return almost immediately and report the pipeline
+with its expensive part skipped.
+
+| NFR-04 figure | Median | Worst of 5 | Budget | Result |
+|---|---|---|---|---|
+| Final transcript after end of speech | **432.7 ms** | 460.3 ms | 800 ms | **PASS** |
+| First audio after the response text begins | **91.7 ms** | 92.3 ms | 1200 ms | **PASS** |
+
+The first sample of each run is discarded: it pays for the model warming up, and reporting it
+as a latency figure would describe a state the house is in exactly once. A second run agreed
+(523.4 ms / 116.8 ms median), so the figures are reproducible rather than a single lucky pass.
+
+**⚠️ Measured on the dev host, NOT the 8 GB reference profile** — an i7-11850H, 16 threads,
+31 GB. NFR-04 is specified on the reference machine (docs/01 §4.1), so this is evidence that
+the pipeline is the right order of magnitude and that nothing in it is pathologically slow. It
+is **not** evidence that the budget holds on the target, and the headroom here (transcript at
+54% of budget on a machine several times the reference) is exactly the margin that could
+disappear. **The reference-hardware run is still owner evidence** — but it is now a matter of
+re-running one command on that machine rather than of building a harness.
 
 ---
 
