@@ -37,7 +37,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     // Unresolvable secret reference = config error = fail fast (docs/09 §1).
     // An unREACHABLE database is different: the lazy pool lets jarvisd start
     // degraded and the health probe reports it (docs/02 §12).
-    let db_url = jarvisd::config::resolve_secret_ref(&config.database.url_secret)?;
+    let db_url = jarvisd::config::resolve_secret_ref_async(&config.database.url_secret).await?;
     let pool = jarvis_infra::db::connect_lazy(db_url.expose(), config.database.max_connections)?;
 
     let identity = Arc::new(jarvis_infra::identity::PgIdentityStore::new(pool.clone()));
@@ -179,7 +179,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             };
             // The key is a keyring reference resolved here, at the boundary —
             // never a literal in config, never an argv entry (invariant 5).
-            let api_key = jarvisd::config::resolve_secret_ref(api_key_ref)?;
+            let api_key = jarvisd::config::resolve_secret_ref_async(api_key_ref).await?;
             tracing::info!(
                 budget = eleven.character_budget,
                 enabled = elevenlabs_consent,
@@ -252,7 +252,8 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     let grant_store = Arc::new(jarvis_infra::grants::PgGrantStore::new(pool.clone()));
     let smtp = if config.integrations.smtp.enabled {
         let password =
-            jarvisd::config::resolve_secret_ref(&config.integrations.smtp.password_secret)?;
+            jarvisd::config::resolve_secret_ref_async(&config.integrations.smtp.password_secret)
+                .await?;
         Some(jarvis_adapters::smtp::SmtpConfig::new(
             config.integrations.smtp.host.clone(),
             config.integrations.smtp.port,
@@ -265,7 +266,8 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     };
     let calendar = if config.integrations.caldav.enabled {
         let password =
-            jarvisd::config::resolve_secret_ref(&config.integrations.caldav.password_secret)?;
+            jarvisd::config::resolve_secret_ref_async(&config.integrations.caldav.password_secret)
+                .await?;
         let caldav = jarvis_adapters::caldav::CalDavConfig::new(
             config.integrations.caldav.server_url.clone(),
             config.integrations.caldav.username.clone(),
@@ -297,7 +299,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             "integrations.web_search.provider {:?} is not supported (only \"brave\")",
             web.provider
         );
-        let api_key = jarvisd::config::resolve_secret_ref(&web.api_key_secret)?;
+        let api_key = jarvisd::config::resolve_secret_ref_async(&web.api_key_secret).await?;
         jarvisd::tools::register_web_tools(
             &mut registry,
             api_key.expose().to_owned(),
@@ -360,7 +362,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     // config, and an enabled section with empty lists controls nothing.
     if config.integrations.home_assistant.enabled {
         let ha = &config.integrations.home_assistant;
-        let token = jarvisd::config::resolve_secret_ref(&ha.token_secret)?;
+        let token = jarvisd::config::resolve_secret_ref_async(&ha.token_secret).await?;
         let ha_config = jarvis_adapters::home_assistant::HomeAssistantConfig::new(
             &ha.base_url,
             token.expose().to_owned(),
@@ -388,7 +390,8 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     // by the tier, because `policy::evaluate` cannot see arguments.
     if config.integrations.spotify.enabled {
         let spotify = &config.integrations.spotify;
-        let refresh = jarvisd::config::resolve_secret_ref(&spotify.refresh_token_secret)?;
+        let refresh =
+            jarvisd::config::resolve_secret_ref_async(&spotify.refresh_token_secret).await?;
         let max_volume = jarvis_domain::media::VolumePct::new(spotify.max_volume_pct)
             .map_err(|error| anyhow::anyhow!("invalid [integrations.spotify]: {error}"))?;
         let mut spotify_config = jarvis_adapters::spotify::SpotifyConfig::new(

@@ -155,9 +155,11 @@ from a lazy route**, because it drags the i18n machinery in. Replaced with `Intl
 
 - **No subagent review passes** on any of M8. F8.11 adds the voice pipeline's **only**
   `DataEgress::External` path — the clearest `security-auditor` candidate in M8c.
-- `jarvisd`'s `keyring` still resolves to an in-memory **mock** store (see the M8a report). F8.9's
-  production config tells operators to put secrets in the keyring; **that instruction is not
-  currently true for jarvisd.** This should be fixed before anyone follows the install guide.
+- **Resolved after this report:** `jarvisd` now enables keyring's real Linux Secret Service
+  backend (`async-secret-service` + pure-Rust crypto) and has a regression that rejects the mock
+  credential type. Lookups run on awaited blocking workers, as required by keyring's Tokio
+  integration. Whether the production service account can reach its Secret Service session is
+  still part of the clean-machine install evidence below; this code-only run does not claim it.
 
 ## 5. Recommendation
 

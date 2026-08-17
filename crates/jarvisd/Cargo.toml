@@ -59,7 +59,14 @@ hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 # browser exactly as stored.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 sha2 = "0.10"
-keyring = "3"
+# Secret references must resolve through a real OS store. keyring 3 enables no
+# backend by default and otherwise silently uses its process-local mock, which
+# loses every secret at restart. Match jarvis-agent's pure-Rust Secret Service
+# backend: zbus is already in the workspace, and avoiding the synchronous
+# backend keeps libdbus + pkg-config out of the daemon build. The blocking
+# keyring facade is called only through `resolve_secret_ref_async`, which moves
+# it off Tokio's runtime threads as required by keyring's async backend.
+keyring = { version = "3", features = ["async-secret-service", "crypto-rust", "tokio"] }
 hex = "0.4"
 ulid = "1"
 time = { version = "0.3", features = ["formatting"] }

@@ -1248,6 +1248,20 @@ pub fn resolve_secret_ref(reference: &str) -> anyhow::Result<Redacted<String>> {
     resolve_secret_ref_with(reference, |var| std::env::var(var).ok())
 }
 
+/// Resolve a secret without blocking an async runtime worker.
+///
+/// keyring's pure-Rust Secret Service backend presents the crate's synchronous
+/// [`keyring::Entry`] facade by driving async D-Bus work internally. Its own
+/// contract requires those calls to run on a separate thread when the caller
+/// already owns a Tokio runtime; doing otherwise can deadlock during startup.
+/// The task is awaited, so startup neither detaches work nor outlives a lookup.
+pub async fn resolve_secret_ref_async(reference: &str) -> anyhow::Result<Redacted<String>> {
+    let reference = reference.to_owned();
+    tokio::task::spawn_blocking(move || resolve_secret_ref(&reference))
+        .await
+        .map_err(|_| anyhow::anyhow!("secret resolution task failed"))?
+}
+
 /// Injectable-lookup variant so tests never mutate process-global env
 /// (`std::env::set_var` is `unsafe` in Rust 2024 and stays banned here).
 pub fn resolve_secret_ref_with(
