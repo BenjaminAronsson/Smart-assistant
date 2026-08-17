@@ -965,6 +965,17 @@ third party in the path of every sound in the house.
   a node still runs and still answers push-to-talk.
 - Barge-in is now possible from the node side, which F8.4 needs — a wake word detected while the
   assistant is speaking must interrupt it, not start a second turn.
+- **openWakeWord publishes no pre-trained model for `"Andy"`** (found when the engine was
+  implemented, 2026-08-17). The published set is `alexa`, `hey jarvis`, `hey mycroft`,
+  `hey rhasspy`, `timer` and `weather`. §1's choice of word therefore costs a **model training
+  run** — openWakeWord's own pipeline synthesises training clips from TTS, so it needs no
+  recordings of the owner's voice, but it does need a GPU session and it is not something the
+  daemon can do for itself. This does not change the decision; it prices it. Until such a model
+  is provisioned, a node configured for `"Andy"` logs that it cannot answer to its name and falls
+  back to push-to-talk, which is the same degradation path as a missing engine. **The owner's
+  choice at the M8a gate is to fund the training run or to pick a word from the published set** —
+  and because §4 already makes the word configuration plus a model swap, either is a config
+  change rather than a code change.
 
 ## ADR-034 — Internal module structure is a ratcheted, enforced norm, not a review convention {#adr-034}
 

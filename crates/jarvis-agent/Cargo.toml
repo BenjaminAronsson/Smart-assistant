@@ -64,8 +64,31 @@ keyring = { version = "3", features = ["async-secret-service", "crypto-rust", "t
 # nearest-neighbour conversion in `audio.rs` is all a 16 kHz speech path needs,
 # and a satellite is the wrong place for a DSP dependency (low-power rule 5).
 cpal = "0.16"
+# The wake-word engine (F8.3, ADR-032). Optional on purpose: ADR-032's last
+# consequence makes ONNX Runtime a per-satellite-image cost, not a build-time
+# one. CI builds and tests the pipeline without it, and a node with the feature
+# off still pairs, speaks and answers push-to-talk — it just does not answer to
+# its name. Pinned to the version fastembed already locks so the workspace
+# resolves a single ONNX Runtime rather than two.
+#
+# `default-features = false` is load-bearing, not tidiness: ort's default set
+# includes `tls-native`, which resolves `ureq` onto native-tls and drags OpenSSL
+# and a C toolchain onto every satellite — the exact dependency this crate
+# already refuses for the keyring backend two entries up. `tls-rustls` fetches
+# the runtime over the rustls this crate has linked anyway.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = [
+    "std",
+    "download-binaries",
+    "tls-rustls",
+    "copy-dylibs",
+], optional = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+default = []
+# Compiles the openWakeWord engine into the node. A satellite image enables it.
+wake-word-onnx = ["dep:ort"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "io-util"] }

@@ -20,3 +20,8 @@ pub mod pairing;
 pub mod pinning;
 pub mod store;
 pub mod wake;
+/// The openWakeWord engine (ADR-032 §1). Behind a feature because ONNX Runtime
+/// is a heavyweight native dependency; the pipeline in [`wake`] is built and
+/// tested without it.
+#[cfg(feature = "wake-word-onnx")]
+pub mod wake_onnx;
