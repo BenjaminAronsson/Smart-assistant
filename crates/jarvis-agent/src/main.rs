@@ -284,12 +284,44 @@ fn open_wake_gate() -> WakeGate<Box<dyn WakeWordDetector>> {
         .map_or(Sensitivity::DEFAULT, Sensitivity::new);
 
     let word = jarvis_agent::wake::configured_wake_word();
-    let detector: Box<dyn WakeWordDetector> = Box::new(NeverWakes);
-    tracing::warn!(
-        wake_word = %word,
-        sensitivity = sensitivity.value(),
-        "no wake-word engine is compiled into this build: this node will not answer to \
-         its name. Push-to-talk is unaffected (ADR-032, last consequence)."
-    );
+
+    #[cfg(feature = "wake-word-onnx")]
+    let detector: Box<dyn WakeWordDetector> =
+        match jarvis_agent::wake_onnx::OnnxWakeWord::load(&word, sensitivity) {
+            Ok(engine) => {
+                tracing::info!(
+                    wake_word = %word,
+                    sensitivity = sensitivity.value(),
+                    "wake word active: this node answers to its name"
+                );
+                Box::new(engine)
+            }
+            Err(error) => {
+                // Degrade rather than refuse to boot. A satellite whose model
+                // assets are missing is still worth having in the room: it
+                // pairs, it speaks, and push-to-talk still works. Refusing to
+                // start would take the screen and the speaker down with the
+                // microphone.
+                tracing::error!(
+                    %error,
+                    wake_word = %word,
+                    "wake-word engine unavailable: this node will not answer to its name. \
+                     Push-to-talk is unaffected (ADR-032, last consequence)."
+                );
+                Box::new(NeverWakes)
+            }
+        };
+
+    #[cfg(not(feature = "wake-word-onnx"))]
+    let detector: Box<dyn WakeWordDetector> = {
+        tracing::warn!(
+            wake_word = %word,
+            sensitivity = sensitivity.value(),
+            "no wake-word engine is compiled into this build: this node will not answer to \
+             its name. Push-to-talk is unaffected (ADR-032, last consequence)."
+        );
+        Box::new(NeverWakes)
+    };
+
     WakeGate::new(detector)
 }

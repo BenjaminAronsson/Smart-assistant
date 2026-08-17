@@ -22,16 +22,38 @@ use crate::audio::{FRAME_BYTES, SAMPLE_RATE_HZ};
 
 /// The word this node answers to.
 ///
-/// **`Andy`** by default (ADR-032 §1, owner's choice). Configuration rather
-/// than code: changing it is an owner decision plus a model swap, never a
-/// rebuild — which is also why the *pipeline* never hardcodes it and only the
-/// engine and the listening indicator ever read it.
-pub const DEFAULT_WAKE_WORD: &str = "andy";
+/// **`hey jarvis`** by default (ADR-032 §1, owner's choice 2026-08-17).
+///
+/// Configuration rather than code: changing it is an owner decision plus a
+/// model swap, never a rebuild — which is also why the *pipeline* never
+/// hardcodes it and only the engine and the listening indicator ever read it.
+///
+/// It was `"andy"` between 2026-08-15 and 2026-08-17. That changed for one
+/// concrete reason: openWakeWord publishes no model for "Andy", so the word
+/// would have cost a training run before any node could answer to it, and a
+/// house that cannot hear its own name is not a hands-free house. `hey jarvis`
+/// is one of the six words the project ships a pre-trained model for, so it
+/// works the moment the assets are provisioned.
+pub const DEFAULT_WAKE_WORD: &str = "hey jarvis";
+
+/// The words openWakeWord publishes a pre-trained model for (ADR-032 §1).
+///
+/// Here so the *default* can be checked against it in a test: any other word
+/// is a legitimate owner choice, but it costs a training run, and choosing one
+/// by accident should not be possible for the shipped default.
+pub const PRE_TRAINED_WORDS: [&str; 6] = [
+    "alexa",
+    "hey jarvis",
+    "hey mycroft",
+    "hey rhasspy",
+    "timer",
+    "weather",
+];
 
 /// Normalises a configured wake word to the name of its model.
 ///
 /// Lowercased and trimmed: it names an openWakeWord model file, and an owner
-/// typing "Andy" must reach the same model as one typing "andy". A blank
+/// typing "Hey Jarvis" must reach the same model as one typing "hey jarvis". A blank
 /// setting is not a wake word and falls back to the default.
 ///
 /// Pure, taking the raw value rather than reading the environment itself —
@@ -285,17 +307,22 @@ mod word_tests {
     use super::*;
 
     #[test]
-    fn the_default_wake_word_is_andy() {
-        // ADR-032 §1. Not the product's name: the house answers to a person's
-        // name, not to its own brand.
-        assert_eq!(DEFAULT_WAKE_WORD, "andy");
+    fn the_default_wake_word_has_a_pre_trained_model() {
+        // ADR-032 §1, as amended 2026-08-17. The default must be a word
+        // openWakeWord actually publishes a model for — a default that needs a
+        // training run before it works is a house that cannot hear its name.
+        assert_eq!(DEFAULT_WAKE_WORD, "hey jarvis");
+        assert!(
+            PRE_TRAINED_WORDS.contains(&DEFAULT_WAKE_WORD),
+            "the default wake word must be one of the published models"
+        );
     }
 
     #[test]
     fn a_configured_word_is_normalised_to_its_model_name() {
-        // "Andy" and "andy" must reach the same model.
-        assert_eq!(normalise_wake_word(Some("  Andy  ")), "andy");
-        assert_eq!(normalise_wake_word(Some("ANDY")), "andy");
+        // "Hey Jarvis" and "hey jarvis" must reach the same model.
+        assert_eq!(normalise_wake_word(Some("  Hey Jarvis  ")), "hey jarvis");
+        assert_eq!(normalise_wake_word(Some("HEY JARVIS")), "hey jarvis");
         // A blank setting is not a wake word.
         assert_eq!(normalise_wake_word(Some("   ")), DEFAULT_WAKE_WORD);
         assert_eq!(normalise_wake_word(None), DEFAULT_WAKE_WORD);
@@ -334,7 +361,7 @@ mod tests {
             self.at.contains(&index)
         }
         fn word(&self) -> &str {
-            "andy"
+            "hey jarvis"
         }
     }
 

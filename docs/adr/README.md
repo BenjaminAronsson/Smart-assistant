@@ -907,9 +907,22 @@ detection runs, and what the node is allowed to send before it fires.
 
 **Decision.**
 
-1. **openWakeWord** as the engine, **`"Andy"`** as the word (owner's choice, 2026-08-15 — the
-   product is not named after the wake word, and a two-syllable given name with a stressed first
-   vowel is easier for a detector to separate from household speech than a brand). It is
+1. **openWakeWord** as the engine, **`"hey jarvis"`** as the word (owner's choice, 2026-08-17).
+
+   It was `"Andy"` from 2026-08-15, chosen on the reasoning that the product is not named after
+   its wake word and that a two-syllable given name separates well from household speech. That
+   reasoning still holds; what defeated it is supply. **openWakeWord publishes pre-trained
+   models for six words only** — `alexa`, `hey jarvis`, `hey mycroft`, `hey rhasspy`, `timer`,
+   `weather` — and "Andy" is not among them, so it would have cost a model training run before
+   any node could answer to it. A house that cannot hear its own name is not a hands-free house,
+   and the training run buys a preference rather than a capability.
+
+   `hey jarvis` is published, so it works the moment the assets are provisioned. The swap cost
+   nothing but this paragraph, which is itself the evidence for §4: the word is configuration.
+   Should the owner later want a bespoke word, §4's path is unchanged — train a model, drop it
+   in, change the setting.
+
+   openWakeWord is
    Apache-2.0, the pre-trained
    models are Apache-2.0/CC-BY, it runs on CPU well inside the 8 GB profile's budget
    (docs/01 §4.1), and it needs no per-user training or cloud enrolment. **Licence review:** the
@@ -965,6 +978,17 @@ third party in the path of every sound in the house.
   a node still runs and still answers push-to-talk.
 - Barge-in is now possible from the node side, which F8.4 needs — a wake word detected while the
   assistant is speaking must interrupt it, not start a second turn.
+- **openWakeWord publishes no pre-trained model for `"Andy"`** (found when the engine was
+  implemented, 2026-08-17). The published set is `alexa`, `hey jarvis`, `hey mycroft`,
+  `hey rhasspy`, `timer` and `weather`. §1's choice of word therefore costs a **model training
+  run** — openWakeWord's own pipeline synthesises training clips from TTS, so it needs no
+  recordings of the owner's voice, but it does need a GPU session and it is not something the
+  daemon can do for itself. This does not change the decision; it prices it. Until such a model
+  is provisioned, a node configured for `"Andy"` logs that it cannot answer to its name and falls
+  back to push-to-talk, which is the same degradation path as a missing engine. **The owner's
+  choice at the M8a gate is to fund the training run or to pick a word from the published set** —
+  and because §4 already makes the word configuration plus a model swap, either is a config
+  change rather than a code change.
 
 ## ADR-034 — Internal module structure is a ratcheted, enforced norm, not a review convention {#adr-034}
 
