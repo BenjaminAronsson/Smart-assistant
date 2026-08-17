@@ -12,9 +12,7 @@ and cannot be produced by a report (docs/11 §3 makes sign-off human anyway):
 2. **Two measurements on reference hardware** — NFR-04's round trip (D-M5-3, open since M5) and
    ADR-032's false-accept rate over a household-noise corpus recorded in the rooms the nodes
    will live in. Both harnesses exist; the corpus deliberately does not live in this repo.
-3. **The wake-word model for "Andy"** — openWakeWord publishes none. Fund a training run or
-   choose from the published set; either is a config change (ADR-032 §4).
-4. **Subagent review passes** (`rust-reviewer`, `security-auditor`, `perf-warden`) — none ran on
+3. **Subagent review passes** (`rust-reviewer`, `security-auditor`, `perf-warden`) — none ran on
    any of M8. A process gap, recorded as D4 throughout.
 
 **Resolved at approval:**
@@ -73,8 +71,10 @@ down.** FR-13 now requires wake-word invocation **and keeps push-to-talk as an e
 from Should to **Must**. Wake word stops being a docs/08 §6 deferred decision and becomes a
 requirement with a milestone behind it.
 
-**2. ✅ openWakeWord**, with the asset licence reviewed in ADR-032, **`"Andy"`** as the word
-(owner's choice, 2026-08-15; configurable — see ADR-032 §4),
+**2. ✅ openWakeWord**, with the asset licence reviewed in ADR-032, **`"hey jarvis"`** as the word
+(owner's choice 2026-08-17, superseding `"Andy"` of 2026-08-15 — openWakeWord publishes no model
+for that word, so it would have cost a training run before any node could answer; configurable —
+see ADR-032 §4),
 and a documented swap path — it sits behind a port like every other adapter.
 
 **3. ✅ Detection runs on the node.** The satellite streams nothing until the word fires.
@@ -131,8 +131,10 @@ satellite*, with no browser involved and nothing streamed before the word fired.
       both named acceptances now hold over real inference (a recorded clip fires once and only
       once; silence and near-miss household speech do not). Assets are provisioned with pinned
       checksums, never vendored, and CI compiles the engine so it cannot rot.
-      ⚠️ **Open, and it is an owner decision rather than code:** openWakeWord publishes **no model
-      for "Andy"**. Fund a training run or pick from the published set (ADR-032 consequence added).
+      The word is **`hey jarvis`** (owner, 2026-08-17): implementing the engine surfaced that
+      openWakeWord publishes no model for `"Andy"`, so that default would have shipped a house
+      unable to hear its own name. Two tests now assert the default is a published word and that
+      it loads against the assets the installer provisions.
       The feature that changes what this product *is*. The engine runs **on the node**;
       audio never leaves the device until the word fires, and the daemon cannot be asked to
       stream continuously. VAD gates end-of-turn as it does today. Includes a visible

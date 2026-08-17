@@ -76,8 +76,10 @@ reference hardware; `cargo xtask perf --voice` measures only the daemon's own sh
 
 **M8a's B1 is closed** (2026-08-17): the openWakeWord engine is implemented and tested over real
 inference. See the M8a report §1.4 — including the finding that openWakeWord publishes **no
-model for "Andy"**, which is an owner decision rather than a code gap. Until such a model is
-provisioned a node falls back to push-to-talk and says so, and the settings surface names it.
+model for the then-default "Andy"**, which the owner resolved during the gate by moving ADR-032
+§1 to `hey jarvis` — a published word, so a fresh install answers to its name with no training
+run. A node configured for any word without a model still says so and falls back to
+push-to-talk.
 
 Standing in a kitchen and being answered there remains off-machine evidence.
 
@@ -177,8 +179,7 @@ What is left, and none of it is code:
    Secret Service session is deployment reachability, and no code-only run can claim it.
 2. **The NFR-04 measurement** (D-M5-3, open since M5) on reference hardware, and the same for
    ADR-032's false-accept rate (M8a D5) over a corpus recorded in the rooms the nodes live in.
-3. **The wake-word model decision** for "Andy" (M8a §1.4) — fund a training run or choose from
-   the published set. A config change either way.
+   The wake-word decision that stood here is closed — ADR-032 §1 is now `hey jarvis`.
 
 Item 1 *is* this sub-gate's exit evidence, so it cannot be delegated to a report. That is not a
 gap in the work; it is what a gate is for.

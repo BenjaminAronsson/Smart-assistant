@@ -109,19 +109,28 @@ Assets are provisioned, never vendored (ADR-032 consequence 3):
 file matches. CI gains a `wake-word-engine` job — nothing else in the workflow compiles the
 engine, so without it the wake word would rot between satellite image builds with no red check.
 
-**⚠️ Wake word: `"Andy"` — and openWakeWord publishes no model for it.** The published set is
-`alexa`, `hey jarvis`, `hey mycroft`, `hey rhasspy`, `timer`, `weather`. This does not change
-ADR-032 §1's decision, it **prices** it: the word costs a model training run (openWakeWord
-synthesises its training clips from TTS, so it needs no recordings of the owner's voice, but it
-needs a GPU session and the daemon cannot do it for itself).
+**Wake word: `"hey jarvis"`** (ADR-032 §1, owner 2026-08-17). **Resolved during this gate.**
 
-Until such a model exists, a node configured for "Andy" logs that it cannot answer to its name
-and falls back to push-to-talk — the same degradation path as a missing engine, and it never
-fails to boot. The settings surface names the gap rather than hiding it.
+Implementing the engine surfaced that openWakeWord publishes models for six words only —
+`alexa`, `hey jarvis`, `hey mycroft`, `hey rhasspy`, `timer`, `weather` — and the previous
+default, `"Andy"`, was not among them. The shipped default would therefore have been a house
+that could not hear its own name until somebody ran a GPU training job, and nothing in the tree
+said so.
 
-**This is an owner decision at this gate:** fund the training run, or pick a word from the
-published set. §4 already makes the word configuration plus a model swap, so either is a config
-change rather than a code change. Recorded as a new consequence in ADR-032.
+The owner chose `hey jarvis`, which is published, so it works the moment the assets are
+provisioned. The swap cost one paragraph of ADR-032 — which is itself the evidence for §4's
+claim that the word is configuration rather than code.
+
+Two tests keep the class of problem closed rather than just today's instance:
+`the_default_wake_word_has_a_pre_trained_model` checks the default against the published set,
+and `the_default_wake_word_loads_from_provisioned_assets` loads it against exactly the files the
+installer provisions — the test the previous default would have failed. jarvisd carries the
+matching guard (`the_default_wake_word_is_one_the_default_assets_provide`), because the daemon
+serves this word to nodes and a disagreement would have a node answering to one word while the
+shell reported another.
+
+A bespoke word remains available at the cost of a training run, and a node configured for a word
+it has no model for still says so at startup and falls back to push-to-talk.
 
 **"Answered aloud, in that room" is still an off-machine claim.** The code path is complete and
 tested end to end; a human saying the word in a kitchen is what a gate is for.
@@ -215,8 +224,8 @@ Wyoming services on reference hardware.
 
 - ~~**B1 — evidence item 4 is not implemented.**~~ **CLOSED.** The engine is implemented,
   selected in `open_wake_gate()`, and tested over real inference against openWakeWord's own
-  recordings. See §1.4 — including the finding that **no pre-trained model exists for "Andy"**,
-  which is an owner decision at this gate rather than a code gap.
+  recordings. See §1.4 — including the finding that **no pre-trained model existed for the
+  then-default "Andy"**, which the owner resolved during this gate by moving to `hey jarvis`.
 
 **Outstanding, none blocking on their own:**
 
@@ -268,11 +277,9 @@ What this report **cannot** produce, and what a gate exists for:
 2. **The false-accept rate over a household-noise corpus** (D5) and **NFR-04's round trip** (D2,
    open since M5), both on the 8 GB reference machine rather than this dev host (D3).
 
-And one decision that is the owner's alone, not a measurement:
-
-3. **The wake word is "Andy", and openWakeWord publishes no model for it** (§1.4). Fund a
-   training run, or choose from the published set. Either is a config change; neither is a code
-   change. Until then nodes fall back to push-to-talk and say so.
+The wake-word question this report originally left open (§1.4) is **closed**: the owner moved
+ADR-032 §1 to `hey jarvis`, a published word, so a fresh install answers to its name with no
+training run.
 
 **D4 stands and should be read as a process gap, not a coverage one:** no `rust-reviewer`,
 `security-auditor` or `perf-warden` pass has seen any of M8, including the diffs added since
