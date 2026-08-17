@@ -112,6 +112,20 @@ pub struct MissedAutomation {
     pub name: String,
 }
 
+/// Minutes since UTC midnight.
+///
+/// Computed straight off the epoch rather than through a calendar crate: this
+/// crate takes no such dependency (invariant 3), and UTC is already what the
+/// daemon's sweep works in, so the two agree by construction rather than by
+/// coincidence.
+fn minutes_of_day(at: std::time::SystemTime) -> u16 {
+    let secs = at
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    ((secs % 86_400) / 60) as u16
+}
+
 /// What one sweep did, for the daemon's log and the tests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FiredAutomation {
@@ -191,6 +205,65 @@ impl AutomationService {
                 name: a.name().as_str().to_owned(),
             })
             .collect())
+    }
+
+    /// Stamp that the daemon is alive now (M8b). See
+    /// [`crate::ports::AutomationStore::record_heartbeat`].
+    pub async fn record_heartbeat(
+        &self,
+        at: std::time::SystemTime,
+    ) -> Result<(), crate::ports::RepositoryError> {
+        self.store.record_heartbeat(at).await
+    }
+
+    /// When the daemon was last known to be running, if ever.
+    pub async fn last_heartbeat(
+        &self,
+    ) -> Result<Option<std::time::SystemTime>, crate::ports::RepositoryError> {
+        self.store.last_heartbeat().await
+    }
+
+    /// The restart report, from two instants rather than two times of day
+    /// (M8b, closes the M8b gate's D2).
+    ///
+    /// [`Self::missed_since`] takes minutes since midnight, which is the right
+    /// shape for a sweep window but cannot express "down for three days". Given
+    /// only a time of day, a daemon that had been off all weekend would report a
+    /// plausible-looking partial window and silently omit everything else —
+    /// which is the same "cannot tell broken from off" failure the restart
+    /// report exists to prevent, wearing a more convincing disguise.
+    ///
+    /// So: past a day of downtime, **every** enabled daily automation was
+    /// missed, and this says so rather than doing arithmetic on a wrapped clock.
+    pub async fn missed_between(
+        &self,
+        down_since: std::time::SystemTime,
+        now: std::time::SystemTime,
+    ) -> Result<Vec<MissedAutomation>, crate::ports::RepositoryError> {
+        const DAY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+        let downtime = now.duration_since(down_since).unwrap_or_default();
+        if downtime >= DAY {
+            return Ok(self
+                .store
+                .list_enabled()
+                .await?
+                .into_iter()
+                .filter(|a| {
+                    matches!(
+                        a.trigger(),
+                        jarvis_domain::automations::Trigger::DailyAt { .. }
+                    )
+                })
+                .map(|a| MissedAutomation {
+                    automation_id: a.id().clone(),
+                    name: a.name().as_str().to_owned(),
+                })
+                .collect());
+        }
+
+        self.missed_since(minutes_of_day(down_since), minutes_of_day(now))
+            .await
     }
 
     /// Fire every enabled automation watching `entity_id` entering `state`.
@@ -396,6 +469,7 @@ mod tests {
     struct MemStore {
         automations: std::sync::Mutex<Vec<Automation>>,
         recorded: std::sync::Mutex<Vec<jarvis_domain::automations::AutomationExecution>>,
+        heartbeat: std::sync::Mutex<Option<std::time::SystemTime>>,
     }
 
     #[async_trait::async_trait]
@@ -449,6 +523,18 @@ mod tests {
             crate::ports::RepositoryError,
         > {
             Ok(Vec::new())
+        }
+        async fn record_heartbeat(
+            &self,
+            at: std::time::SystemTime,
+        ) -> Result<(), crate::ports::RepositoryError> {
+            *self.heartbeat.lock().expect("lock") = Some(at);
+            Ok(())
+        }
+        async fn last_heartbeat(
+            &self,
+        ) -> Result<Option<std::time::SystemTime>, crate::ports::RepositoryError> {
+            Ok(*self.heartbeat.lock().expect("lock"))
         }
     }
 
@@ -676,6 +762,112 @@ mod tests {
         assert!(
             store.recorded.lock().expect("lock").is_empty(),
             "reporting is not firing; nothing is recorded as having happened"
+        );
+    }
+
+    /// The heartbeat round-trips, and a first start reports nothing.
+    ///
+    /// This is the seam that made M8b's restart report inert in production
+    /// (gate D2): the sweep was correct and tested, and the daemon had nowhere
+    /// to read "when was I last running" from, so it passed `None` forever.
+    #[tokio::test]
+    async fn the_last_seen_stamp_round_trips_and_starts_empty() {
+        let store = std::sync::Arc::new(MemStore::default());
+        let service = service(
+            store.clone(),
+            registry_with(&ToolId::home_set_light(), RiskLevel::R1, &["home:control"]),
+            Authority(Some(scopes(&["home:control"]))),
+            std::sync::Arc::new(CountingExecutor::default()),
+        );
+
+        assert_eq!(
+            service.last_heartbeat().await.expect("reads"),
+            None,
+            "a first start has no downtime to report, only an uptime to begin"
+        );
+
+        let stamp = at(90_000);
+        service.record_heartbeat(stamp).await.expect("stamps");
+        assert_eq!(service.last_heartbeat().await.expect("reads"), Some(stamp));
+    }
+
+    /// Downtime is a duration, and past a day a time-of-day window cannot
+    /// describe it.
+    ///
+    /// A daemon off all weekend that reasoned in minutes-since-midnight would
+    /// report a plausible-looking partial window and silently omit the rest —
+    /// the same "cannot tell broken from off" failure the restart report exists
+    /// to prevent, in a more convincing disguise. Past 24 hours, every daily
+    /// automation was missed and it says so.
+    #[tokio::test]
+    async fn downtime_longer_than_a_day_reports_every_daily_automation() {
+        let tool = ToolId::home_set_light();
+        let store = std::sync::Arc::new(MemStore::default());
+        store
+            .automations
+            .lock()
+            .expect("lock")
+            .push(automation_for(tool.clone()));
+        let executor = std::sync::Arc::new(CountingExecutor::default());
+        let service = service(
+            store.clone(),
+            registry_with(&tool, RiskLevel::R1, &["home:control"]),
+            Authority(Some(scopes(&["home:control"]))),
+            executor.clone(),
+        );
+
+        // Down three days, and back at the *same* time of day — so the naive
+        // time-of-day window is empty and would report nothing at all.
+        let now = at(3 * 86_400 + 43_200);
+        let down_since = at(43_200);
+
+        let missed = service
+            .missed_between(down_since, now)
+            .await
+            .expect("reports");
+
+        assert_eq!(missed.len(), 1, "three days of downtime missed it");
+        assert_eq!(missed[0].name, "evening lights");
+        assert_eq!(
+            *executor.0.lock().expect("lock"),
+            0,
+            "still reported, still not run late"
+        );
+    }
+
+    /// Under a day, the report is the ordinary time-of-day window.
+    #[tokio::test]
+    async fn downtime_within_a_day_uses_the_time_of_day_window() {
+        let tool = ToolId::home_set_light();
+        let store = std::sync::Arc::new(MemStore::default());
+        store
+            .automations
+            .lock()
+            .expect("lock")
+            .push(automation_for(tool.clone()));
+        let service = service(
+            store,
+            registry_with(&tool, RiskLevel::R1, &["home:control"]),
+            Authority(Some(scopes(&["home:control"]))),
+            std::sync::Arc::new(CountingExecutor::default()),
+        );
+
+        // 06:00 → 11:00 on one day: the 07:00 trigger fell inside.
+        assert_eq!(
+            service
+                .missed_between(at(6 * 3_600), at(11 * 3_600))
+                .await
+                .expect("reports")
+                .len(),
+            1
+        );
+        // 08:00 → 09:00: already past.
+        assert!(
+            service
+                .missed_between(at(8 * 3_600), at(9 * 3_600))
+                .await
+                .expect("reports")
+                .is_empty()
         );
     }
 

@@ -232,3 +232,48 @@ async fn execution_history_cannot_be_rewritten(pool: PgPool) {
         .await;
     assert!(deleted.is_err(), "history must not be deletable");
 }
+
+/// The last-seen stamp survives a restart (M8b, closes the gate's D2).
+///
+/// Asserted through a **fresh store over the same database**, because the claim
+/// is about a new process reading what the previous one left — a value returned
+/// by the object that just wrote it would prove only that a field was set.
+///
+/// This is the seam that made the whole restart report inert in production: the
+/// sweep was correct and its tests passed, and the daemon had nowhere to read
+/// "when was I last running" from, so it reported nothing, forever.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn the_last_seen_stamp_survives_a_restart(pool: PgPool) {
+    let before = PgAutomationStore::new(pool.clone());
+    assert_eq!(
+        before.last_heartbeat().await.expect("reads"),
+        None,
+        "a database that has never run the daemon reports no previous run"
+    );
+
+    // Truncated to the second: Postgres keeps microseconds, and the assertion
+    // is about the instant surviving, not about clock resolution.
+    let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_755_000_000);
+    before.record_heartbeat(stamp).await.expect("stamps");
+
+    let after = PgAutomationStore::new(pool);
+    assert_eq!(
+        after.last_heartbeat().await.expect("reads"),
+        Some(stamp),
+        "a restarted daemon must read the stamp the previous process left"
+    );
+}
+
+/// The stamp is a cursor, not history: writing it again moves it rather than
+/// accumulating rows or colliding on the primary key.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn stamping_again_moves_the_cursor_forward(pool: PgPool) {
+    let store = PgAutomationStore::new(pool);
+    let first = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_755_000_000);
+    let second = first + std::time::Duration::from_secs(60);
+
+    store.record_heartbeat(first).await.expect("stamps");
+    store.record_heartbeat(second).await.expect("stamps again");
+
+    assert_eq!(store.last_heartbeat().await.expect("reads"), Some(second));
+}

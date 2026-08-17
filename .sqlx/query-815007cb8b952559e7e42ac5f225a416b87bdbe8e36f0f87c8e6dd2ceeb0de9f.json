@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT last_seen_at FROM automations.daemon_heartbeat WHERE only_row",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "815007cb8b952559e7e42ac5f225a416b87bdbe8e36f0f87c8e6dd2ceeb0de9f"
+}

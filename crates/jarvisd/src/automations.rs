@@ -289,14 +289,7 @@ fn minutes_since_midnight(now: OffsetDateTime) -> u16 {
 ///
 /// A storage failure logs and continues rather than killing the loop: the whole
 /// point of this task is that it is still here tomorrow morning.
-pub async fn run_scheduler(
-    service: Arc<AutomationService>,
-    // Wall-clock minute the daemon was last known to be running, if the
-    // previous process left one. `None` on a first start — there is no
-    // downtime to report when there was no uptime before it.
-    down_since_minutes: Option<u16>,
-    shutdown: CancellationToken,
-) {
+pub async fn run_scheduler(service: Arc<AutomationService>, shutdown: CancellationToken) {
     tracing::info!("automation scheduler started");
     let mut previous = minutes_since_midnight(OffsetDateTime::now_utc());
 
@@ -306,8 +299,24 @@ pub async fn run_scheduler(
     // not acting — the reason the owner wanted it has passed — but saying
     // nothing is worse still, because "the automation is broken" and "the
     // daemon was off" need very different responses from them.
-    if let Some(down_since) = down_since_minutes {
-        match service.missed_since(down_since, previous).await {
+    //
+    // The stamp is read from storage rather than handed in (M8b gate D2). It
+    // used to be a `None` this binary had nothing to fill in with, which made
+    // the whole restart report inert in production while its tests passed.
+    let down_since = match service.last_heartbeat().await {
+        Ok(stamp) => stamp,
+        Err(e) => {
+            tracing::error!(error = %e, "could not read the last-seen stamp");
+            None
+        }
+    };
+    match down_since {
+        // A first start has no downtime to report, only an uptime to begin.
+        None => tracing::info!("no previous run recorded; nothing to report as missed"),
+        Some(down_since) => match service
+            .missed_between(down_since, std::time::SystemTime::now())
+            .await
+        {
             Ok(missed) => {
                 for item in &missed {
                     tracing::warn!(
@@ -321,7 +330,7 @@ pub async fn run_scheduler(
                 }
             }
             Err(e) => tracing::error!(error = %e, "could not check for missed automations"),
-        }
+        },
     }
 
     while !shutdown.is_cancelled() {
@@ -356,6 +365,17 @@ pub async fn run_scheduler(
             Err(e) => tracing::error!(error = %e, "automation sweep failed; continuing"),
         }
         previous = now_minutes;
+
+        // Stamp liveness *after* the sweep, so the recorded instant is one the
+        // daemon actually reached rather than one it merely started. Written on
+        // the tick rather than at shutdown on purpose: the downtime worth
+        // reporting is the one nobody planned, and a daemon that was killed is
+        // exactly the case a shutdown hook does not cover. A failure here is
+        // logged and skipped — losing a minute of resolution on the next
+        // restart report is not worth stopping the scheduler for.
+        if let Err(e) = service.record_heartbeat(SystemTime::now()).await {
+            tracing::warn!(error = %e, "could not record the last-seen stamp");
+        }
     }
     tracing::info!("automation scheduler stopped");
 }

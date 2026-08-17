@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO automations.daemon_heartbeat (only_row, last_seen_at)\n            VALUES (TRUE, $1)\n            ON CONFLICT (only_row) DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c1fd28d881f4582db25e0a4f840bf3ab8f2cefe201b745165ae41a4d2ab885a1"
+}
