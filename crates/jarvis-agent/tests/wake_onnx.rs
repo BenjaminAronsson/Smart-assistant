@@ -22,7 +22,7 @@
 use std::path::{Path, PathBuf};
 
 use jarvis_agent::audio::FRAME_BYTES;
-use jarvis_agent::wake::{Sensitivity, WakeWordDetector};
+use jarvis_agent::wake::{DEFAULT_WAKE_WORD, Sensitivity, WakeWordDetector};
 use jarvis_agent::wake_onnx::OnnxWakeWord;
 
 /// Where `scripts/fetch-wake-assets.sh` puts the models and clips.
@@ -254,6 +254,23 @@ fn the_false_accept_rate_over_a_noise_corpus_is_within_budget() {
     );
 }
 
+/// The shipped default works out of the box.
+///
+/// This is the test the previous default would have failed. `"Andy"` had no
+/// published model, so a node installed straight from the instructions could
+/// not answer to its name until somebody ran a GPU job — and nothing in the
+/// tree said so. Asserting the **default** loads against exactly the assets the
+/// installer provisions is what keeps that from recurring silently.
+#[test]
+fn the_default_wake_word_loads_from_provisioned_assets() {
+    let dir = require_assets!();
+    let engine = OnnxWakeWord::load_from(&dir, DEFAULT_WAKE_WORD, Sensitivity::DEFAULT)
+        .unwrap_or_else(|error| {
+            panic!("the default wake word {DEFAULT_WAKE_WORD:?} must be provisionable: {error}")
+        });
+    assert_eq!(engine.word(), DEFAULT_WAKE_WORD);
+}
+
 /// A tampered feature extractor is refused rather than used.
 ///
 /// This is the failure mode the pinned checksum exists for: a corrupted or
@@ -288,9 +305,10 @@ fn a_tampered_asset_is_refused_by_checksum() {
 
 /// A wake word with no model says so, in terms the owner can act on.
 ///
-/// The owner's configured word is `"Andy"` (ADR-032 §1) and openWakeWord ships
-/// no model for it, so this is the exact message the house will show until one
-/// is trained or the word is changed. It must name both options.
+/// The default is now a published word (ADR-032 §1, amended 2026-08-17), but an
+/// owner may still configure one that has no model — and `"andy"`, the previous
+/// default, is exactly such a word. This is the message they get, and it must
+/// name both ways out rather than leaving a silently deaf node.
 #[test]
 fn a_word_with_no_model_names_both_ways_out() {
     let dir = require_assets!();

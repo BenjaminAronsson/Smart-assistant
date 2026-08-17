@@ -75,8 +75,10 @@ Pre-trained words available: alexa, hey mycroft, hey jarvis.
 Set JARVIS_AGENT_WAKE_WORD to one of them, and build the agent with
   cargo build -p jarvis-agent --features wake-word-onnx
 
-NOTE: the configured default wake word is "Andy" (ADR-032 §1), and openWakeWord
-publishes no pre-trained model for it. Until one is trained, a node configured
-for "Andy" logs that it cannot answer to its name and falls back to
-push-to-talk. See docs/milestones/M8a-gate-report.md.
+The default wake word is "hey jarvis" (ADR-032 §1), which is one of the models
+installed above — so a node answers to its name as soon as it restarts.
+
+Any word outside the published set needs a model trained for it. A node
+configured for a word it has no model for says so at startup and falls back to
+push-to-talk; it never fails to boot.
 EOF

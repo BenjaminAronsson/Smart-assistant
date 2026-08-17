@@ -907,9 +907,22 @@ detection runs, and what the node is allowed to send before it fires.
 
 **Decision.**
 
-1. **openWakeWord** as the engine, **`"Andy"`** as the word (owner's choice, 2026-08-15 — the
-   product is not named after the wake word, and a two-syllable given name with a stressed first
-   vowel is easier for a detector to separate from household speech than a brand). It is
+1. **openWakeWord** as the engine, **`"hey jarvis"`** as the word (owner's choice, 2026-08-17).
+
+   It was `"Andy"` from 2026-08-15, chosen on the reasoning that the product is not named after
+   its wake word and that a two-syllable given name separates well from household speech. That
+   reasoning still holds; what defeated it is supply. **openWakeWord publishes pre-trained
+   models for six words only** — `alexa`, `hey jarvis`, `hey mycroft`, `hey rhasspy`, `timer`,
+   `weather` — and "Andy" is not among them, so it would have cost a model training run before
+   any node could answer to it. A house that cannot hear its own name is not a hands-free house,
+   and the training run buys a preference rather than a capability.
+
+   `hey jarvis` is published, so it works the moment the assets are provisioned. The swap cost
+   nothing but this paragraph, which is itself the evidence for §4: the word is configuration.
+   Should the owner later want a bespoke word, §4's path is unchanged — train a model, drop it
+   in, change the setting.
+
+   openWakeWord is
    Apache-2.0, the pre-trained
    models are Apache-2.0/CC-BY, it runs on CPU well inside the 8 GB profile's budget
    (docs/01 §4.1), and it needs no per-user training or cloud enrolment. **Licence review:** the
