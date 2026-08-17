@@ -345,6 +345,32 @@ impl AutomationStore for PgAutomationStore {
             })
             .collect()
     }
+
+    /// Stamp the daemon's liveness (M8b). One row, upserted.
+    async fn record_heartbeat(&self, at: std::time::SystemTime) -> Result<(), RepositoryError> {
+        sqlx::query!(
+            r#"
+            INSERT INTO automations.daemon_heartbeat (only_row, last_seen_at)
+            VALUES (TRUE, $1)
+            ON CONFLICT (only_row) DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at
+            "#,
+            time::OffsetDateTime::from(at),
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?;
+        Ok(())
+    }
+
+    async fn last_heartbeat(&self) -> Result<Option<std::time::SystemTime>, RepositoryError> {
+        let row =
+            sqlx::query!(r#"SELECT last_seen_at FROM automations.daemon_heartbeat WHERE only_row"#)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(storage)?;
+
+        Ok(row.map(|row| row.last_seen_at.into()))
+    }
 }
 
 fn storage(e: sqlx::Error) -> RepositoryError {

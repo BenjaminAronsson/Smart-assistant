@@ -688,10 +688,10 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     // that happens rather than something that is stored. It shares the same
     // registry every other tool call uses, so an automation is not a second
     // execution path (invariant 1).
-    // Downtime is not persisted anywhere yet, so the restart sweep is given
-    // `None` and reports nothing on a first start. Wiring a last-seen stamp is
-    // a small persistence change and belongs with the settings surface that
-    // would display it; the sweep itself is tested and ready for it.
+    // The restart sweep reads the daemon's own last-seen stamp from storage
+    // (M8b gate D2). It used to be handed a `None` this binary had nothing to
+    // fill in with, which left the whole restart report inert in production
+    // while its tests passed.
     let automation_scheduler = tokio::spawn(jarvisd::automations::run_scheduler(
         Arc::new(jarvis_application::automations::AutomationService::new(
             automation_store,
@@ -703,7 +703,6 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
                 bridge_registry.clone(),
             )),
         )),
-        None,
         serve_shutdown.clone(),
     ));
 

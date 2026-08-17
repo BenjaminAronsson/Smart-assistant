@@ -827,6 +827,20 @@ pub trait AutomationStore: Send + Sync {
         id: &jarvis_domain::ids::AutomationId,
         limit: i64,
     ) -> Result<Vec<jarvis_domain::automations::AutomationExecution>, RepositoryError>;
+
+    /// Stamp "the daemon was alive at this instant" (M8b).
+    ///
+    /// Written on every sweep tick, so the resolution of the restart report is
+    /// the sweep interval. Deliberately not tied to graceful shutdown: the
+    /// downtime worth reporting is the one nobody planned, and a daemon that
+    /// was killed is exactly the case a shutdown hook does not cover.
+    async fn record_heartbeat(&self, at: std::time::SystemTime) -> Result<(), RepositoryError>;
+
+    /// When the daemon was last known to be running, if ever.
+    ///
+    /// `None` on a first start — there is no downtime to report when there was
+    /// no uptime before it.
+    async fn last_heartbeat(&self) -> Result<Option<std::time::SystemTime>, RepositoryError>;
 }
 
 /// The **audible** half of a timer going off (ADR-023): a short tone on a
