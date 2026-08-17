@@ -165,10 +165,11 @@ pub struct VoiceConfig {
     /// chosen — the failure it prevents is a house that silently goes deaf
     /// because somebody picked a word nothing has a model for.
     ///
-    /// Defaults to what `infra/install/fetch-wake-assets.sh` installs. Note
-    /// that the default *word* (`andy`) is deliberately NOT in it: openWakeWord
-    /// publishes no model for it, and the settings surface says so rather than
-    /// pretending otherwise (ADR-032 §1).
+    /// Defaults to what `infra/install/fetch-wake-assets.sh` installs, which
+    /// includes the default word — so a fresh install answers to its name
+    /// rather than reporting a missing model (ADR-032 §1, amended 2026-08-17).
+    /// A word outside this list is a legitimate owner choice that costs a model
+    /// training run; the settings surface will not offer one.
     #[serde(default = "default_wake_words_available")]
     pub wake_words_available: Vec<String>,
     /// `[voice.elevenlabs]` (F8.11, ADR-033). Absent means never.
@@ -177,7 +178,10 @@ pub struct VoiceConfig {
 }
 
 fn default_wake_word() -> String {
-    "andy".to_owned()
+    // Must stay in step with `jarvis_agent::wake::DEFAULT_WAKE_WORD` — the
+    // daemon serves this to nodes, so a disagreement would have a node
+    // answering to one word while the shell reported another.
+    "hey jarvis".to_owned()
 }
 
 fn default_wake_words_available() -> Vec<String> {

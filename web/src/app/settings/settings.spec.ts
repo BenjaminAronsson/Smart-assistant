@@ -38,6 +38,9 @@ function automation(over: Partial<AutomationDto> = {}): AutomationDto {
 
 function voiceSettings(over: Partial<VoiceSettingsDto> = {}): VoiceSettingsDto {
   return {
+    // A word with no provisioned model. The shipped default is `hey jarvis`,
+    // which has one — but an owner can still configure a word that does not,
+    // and the surface must say so rather than look healthy.
     wakeWord: 'andy',
     availableWakeWords: ['alexa', 'hey jarvis'],
     wakeWordWarning: 'no wake-word model is provisioned for "andy"',

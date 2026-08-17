@@ -344,3 +344,26 @@ fn spotify_volume_cap_must_be_a_real_percentage() {
         );
     }
 }
+
+// A fresh install must answer to its name. The default wake word has to be one
+// of the words the default asset list provisions, or a brand-new house comes up
+// reporting a missing model — which is exactly the state ADR-032 §1 was amended
+// on 2026-08-17 to get out of ("Andy" had no published model).
+//
+// It cannot assert against `jarvis_agent::wake::DEFAULT_WAKE_WORD` directly:
+// jarvisd does not depend on the agent crate, and adding that dependency to
+// share a constant would invert the daemon/node relationship. The property that
+// matters is checkable here on its own.
+#[test]
+fn the_default_wake_word_is_one_the_default_assets_provide() {
+    let config = Config::from_figment(empty_figment()).expect("defaults must validate");
+    assert!(
+        config
+            .voice
+            .wake_words_available
+            .contains(&config.voice.wake_word),
+        "default wake word {:?} is not in the default provisioned set {:?}",
+        config.voice.wake_word,
+        config.voice.wake_words_available
+    );
+}

@@ -111,9 +111,11 @@ async fn harness(elevenlabs_configured: bool, local_fallback: Option<&str>) -> H
     let api = SettingsApi::new(
         settings.clone(),
         VoiceCapabilities {
-            // The owner's configured word, which openWakeWord has no model for
-            // (ADR-032 §1) — so the "no model" warning is the default state
-            // rather than a contrived one.
+            // Deliberately a word with no provisioned model. The shipped
+            // default is now `hey jarvis`, which HAS one (ADR-032 §1, amended
+            // 2026-08-17) — but an owner can still configure a word that does
+            // not, and that state must be reported rather than hidden, so the
+            // fixture keeps exercising it.
             configured_wake_word: "andy".to_owned(),
             available_wake_words: vec!["alexa".to_owned(), "hey jarvis".to_owned()],
             elevenlabs_configured,
