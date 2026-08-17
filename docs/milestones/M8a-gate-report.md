@@ -176,7 +176,9 @@ Run on the dev host (not the reference 8 GB machine — see §3).
 |---|---|---|---|
 | Cold start to healthy | **0.051 s** | < 2 s (NFR-15) | PASS |
 | jarvisd idle RSS | **22.1 MB** | 40–80 MB typical, 120 MB ceiling | PASS |
-| `jarvis-agent` release binary | **10.63 MB** | — | noted |
+| `jarvis-agent` release binary, no engine | **10.63 MB** | — | noted |
+| `jarvis-agent` release binary, `wake-word-onnx` | **37.18 MB** | — | **noted — see below** |
+| Workspace tests (all six branches merged) | **1519 pass**, 0 fail | — | PASS |
 | Workspace tests | **1488 pass**, 81 binaries, 0 fail | — | PASS |
 | `jarvis-agent` tests | **90 pass** (was 3 at M7) | — | PASS |
 | `cargo xtask arch-test` | 9 crates, rules hold | — | PASS |
@@ -189,6 +191,18 @@ Run on the dev host (not the reference 8 GB machine — see §3).
 The agent binary grew from 0.46 MB (M3a) to 10.63 MB: cpal, rustls, ed25519, keyring and the
 audio pipeline. It is a per-node cost on a device that exists to do this, not a daemon cost, and
 jarvisd's idle RSS is unchanged.
+
+**With the wake-word engine compiled in it is 37.18 MB** — ONNX Runtime links statically, so
+there is no separate dylib to ship, and this is the whole of it. Recorded rather than waved
+through: it is **+26.6 MB per satellite image**, it is the direct cost of ADR-032's decision 2
+(detection on the node, so audio never leaves until the word fires), and it is charged per
+*node* rather than to the daemon — `jarvisd` does not link `ort` at all through this path.
+
+ADR-032's first consequence budgeted "~20–30 MB resident for the model and its feature
+extractors" per node; this figure is **binary size**, not RSS, and the two should not be
+confused. **Resident memory with the engine running has not been measured** — that belongs with
+the reference-hardware measurements in §3, and it is the number the 8 GB profile (docs/01 §4.1)
+actually constrains.
 
 **NFR-04 (voice round trip) is NOT measured.** D-M5-3, open since M5, stays open — it needs the
 Wyoming services on reference hardware.
