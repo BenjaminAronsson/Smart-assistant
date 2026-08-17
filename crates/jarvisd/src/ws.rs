@@ -660,12 +660,18 @@ pub fn delivers_to_for_test(
     delivers_to(&envelope, class, device_id, owned_stream)
 }
 
-/// How many capture streams one socket is remembered as owning. A socket that
-/// opens more than a handful of streams is a long-lived UI; the oldest are no
-/// longer receiving events anyone is waiting for.
-const MAX_REMEMBERED_STREAMS: usize = 8;
+/// How many ids one socket is remembered as owning. A socket that opens more
+/// than a handful of streams is a long-lived UI; the oldest are no longer
+/// receiving events anyone is waiting for.
+///
+/// A voice turn now claims **three** ids — the capture stream, the utterance,
+/// and (F8.5) the run — so this is 12 rather than 8 to keep the same four turns
+/// of history a satellite could previously rely on. Evicting a run id early
+/// would cut off the answer to the question before last, mid-sentence.
+const MAX_REMEMBERED_STREAMS: usize = 12;
 
-/// Remember an id this socket owns — a capture stream or a spoken utterance.
+/// Remember an id this socket owns — a capture stream, a spoken utterance, or
+/// a run this socket started.
 /// Bounded: the list grows with client behaviour, and the oldest entries are
 /// no longer receiving events anyone is waiting for.
 fn register_owned_stream(owned: &mut std::collections::VecDeque<String>, id: String) {
@@ -678,6 +684,19 @@ fn register_owned_stream(owned: &mut std::collections::VecDeque<String>, id: Str
     }
 }
 
+/// The Session-channel events a satellite is allowed to hear for a run it
+/// started (F8.5) — precisely the ones [`feed_speech`] turns into speech.
+///
+/// Kept next to [`delivers_to_owner_of`] rather than derived from `feed_speech`
+/// so that widening it is a deliberate edit to a security rule with its own
+/// test, not a side effect of teaching the speech assembler a new event.
+const SPOKEN_RUN_EVENTS: [&str; 4] = [
+    "text.delta",
+    "run.completed",
+    "run.queued",
+    "degraded.queued",
+];
+
 /// [`delivers_to`] against every stream this socket owns.
 pub(crate) fn delivers_to_owner_of(
     envelope: &EventEnvelope,
@@ -685,13 +704,41 @@ pub(crate) fn delivers_to_owner_of(
     device_id: &str,
     owned: &std::collections::VecDeque<String>,
 ) -> bool {
-    match envelope.payload.get("streamId").and_then(|v| v.as_str()) {
-        Some(stream) => {
-            owned.iter().any(|s| s == stream)
-                && delivers_to(envelope, class, Some(device_id), Some(stream))
-        }
-        None => delivers_to(envelope, class, Some(device_id), None),
+    if let Some(stream) = envelope.payload.get("streamId").and_then(|v| v.as_str()) {
+        return owned.iter().any(|s| s == stream)
+            && delivers_to(envelope, class, Some(device_id), Some(stream));
     }
+
+    // F8.5, the answer path: the run a satellite started must come back to it.
+    //
+    // A run's text deltas ride the Session channel, and the Session rule is
+    // `ui` — which a `voice-node`/`room-node` deliberately never holds (F7.1;
+    // a satellite is not an operator console). So the node that asked the
+    // question was the one socket that could not hear the answer, and a node
+    // cannot speak what it is not sent.
+    //
+    // Two keys, not one, and the second is the important one:
+    //
+    // * **ownership** — the run *this socket started*, so a node still cannot
+    //   see another room's conversation or any run it did not begin.
+    //   Ownership is per-socket and in memory, so it does not survive a
+    //   reconnect, which is why `replay_since` needs no matching change.
+    // * **an allowlist of event types** — exactly what [`feed_speech`]
+    //   consumes to build the spoken answer, and nothing else. Ownership alone
+    //   would be a standing invitation: `approval.requested` is a Session event
+    //   about a specific run, and it carries the exact effect, the real
+    //   arguments, and an approval id that is a decision oracle. It only fails
+    //   to match today because its `runId` happens to sit nested under `card`,
+    //   which is an accident of a DTO's shape and not a security boundary.
+    if matches!(envelope.channel, Channel::Session)
+        && SPOKEN_RUN_EVENTS.contains(&envelope.event_type.as_str())
+        && let Some(run) = envelope.payload.get("runId").and_then(|v| v.as_str())
+        && owned.iter().any(|owned_id| owned_id == run)
+    {
+        return true;
+    }
+
+    delivers_to(envelope, class, Some(device_id), None)
 }
 
 /// Close code sent when a socket is dropped because its device was revoked
@@ -1721,6 +1768,13 @@ async fn start_voice_turn(
         }
     };
 
+    // This socket started this run, so this socket is the one the answer
+    // belongs to (F8.5). Recorded before synthesis is even considered: it is a
+    // statement about who asked, not about who can speak, and `delivers_to_
+    // owner_of` needs it to let the run's own text deltas past the Session
+    // channel's `ui` rule — which a satellite never satisfies.
+    register_owned_stream(owned_streams, ack.run_id.as_str().to_owned());
+
     if let Some(synthesizer) = state.synthesizer.as_ref() {
         // The utterance's token is a child of the socket's shutdown token, so
         // shutdown, socket loss and barge-in all reach it (invariant #4).
@@ -2338,6 +2392,150 @@ mod delivery_scope_tests {
                 "{class} (owns_mine={owns_mine}) delivery matrix"
             );
         }
+    }
+
+    /// Builds the owned-id list a socket has after starting one voice turn.
+    fn owning(ids: &[&str]) -> std::collections::VecDeque<String> {
+        ids.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// F8.5's named acceptance: **two nodes, each gets only its own answers.**
+    ///
+    /// The kitchen asks a question and the study asks a different one at the
+    /// same time. Each node must hear its own answer and must not hear the
+    /// other's — which is both the feature (an answer comes back to the room
+    /// that spoke) and the privacy property (a satellite is not a household
+    /// broadcast receiver).
+    #[test]
+    fn two_nodes_each_get_only_their_own_answers() {
+        let kitchen_run = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+        let study_run = "01BX5ZZKBKACTAV9WEVGEMMVRZ";
+
+        let kitchen_answer = envelope(
+            Channel::Session,
+            "text.delta",
+            serde_json::json!({ "runId": kitchen_run, "text": "Twenty minutes." }),
+        );
+        let study_answer = envelope(
+            Channel::Session,
+            "text.delta",
+            serde_json::json!({ "runId": study_run, "text": "It is raining." }),
+        );
+
+        for class in [DeviceClass::VoiceNode, DeviceClass::RoomNode] {
+            let kitchen = owning(&[kitchen_run]);
+            let study = owning(&[study_run]);
+
+            assert!(
+                delivers_to_owner_of(&kitchen_answer, class, THIS_DEVICE, &kitchen),
+                "{class} must hear the answer to the run it started"
+            );
+            assert!(
+                !delivers_to_owner_of(&study_answer, class, THIS_DEVICE, &kitchen),
+                "{class} must not hear another room's answer"
+            );
+            assert!(
+                delivers_to_owner_of(&study_answer, class, THIS_DEVICE, &study),
+                "the other node must hear its own answer"
+            );
+        }
+    }
+
+    /// The terminal events matter as much as the deltas: without them the
+    /// clause queue never closes and the node holds an utterance open until the
+    /// socket dies, having spoken everything but never finishing.
+    #[test]
+    fn a_node_hears_its_own_runs_terminal_events() {
+        let run = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+        let owned = owning(&[run]);
+
+        for event_type in ["run.completed", "run.queued", "degraded.queued"] {
+            let terminal = envelope(
+                Channel::Session,
+                event_type,
+                serde_json::json!({ "runId": run }),
+            );
+            assert!(
+                delivers_to_owner_of(&terminal, DeviceClass::RoomNode, THIS_DEVICE, &owned),
+                "{event_type} closes the spoken answer and must reach the node"
+            );
+        }
+    }
+
+    /// Owning a run buys the answer to it and **nothing else on that channel**.
+    ///
+    /// This is the test that keeps F8.5 from becoming a hole: the exemption is
+    /// keyed on an allowlist of event types as well as on ownership, so a
+    /// Session event *about the very run the node started* is still refused
+    /// unless it is part of the spoken answer.
+    #[test]
+    fn owning_a_run_does_not_hand_a_node_the_rest_of_that_run() {
+        let run = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+        let owned = owning(&[run]);
+
+        // An approval card names its run at the payload root here — exactly the
+        // shape the nesting under `card` accidentally protects against today.
+        let approval = envelope(
+            Channel::Session,
+            "approval.requested",
+            serde_json::json!({
+                "runId": run,
+                "approvalId": "01BX5ZZKBKACTAV9WEVGEMMVRZ",
+                "exactEffect": "email landlord@example.com",
+            }),
+        );
+        // And a tool result for the same run, which can carry anything the tool
+        // read.
+        let tool_result = envelope(
+            Channel::Session,
+            "tool.completed",
+            serde_json::json!({ "runId": run, "output": "the safe code is 1234" }),
+        );
+
+        for class in [DeviceClass::VoiceNode, DeviceClass::RoomNode] {
+            assert!(
+                !delivers_to_owner_of(&approval, class, THIS_DEVICE, &owned),
+                "{class} must never receive an approval card, own run or not"
+            );
+            assert!(
+                !delivers_to_owner_of(&tool_result, class, THIS_DEVICE, &owned),
+                "{class} must not receive tool output for a run it started"
+            );
+        }
+    }
+
+    /// A node that started nothing hears nothing, even for a well-formed
+    /// answer — so the exemption cannot be reached by guessing a run id.
+    #[test]
+    fn a_node_that_started_no_run_hears_no_answer() {
+        let answer = envelope(
+            Channel::Session,
+            "text.delta",
+            serde_json::json!({ "runId": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "text": "…" }),
+        );
+        assert!(!delivers_to_owner_of(
+            &answer,
+            DeviceClass::RoomNode,
+            THIS_DEVICE,
+            &owning(&[])
+        ));
+    }
+
+    /// The browser is unaffected: it holds `ui` and still sees the session
+    /// whether or not it owns the run.
+    #[test]
+    fn the_owner_ui_still_sees_runs_it_did_not_start() {
+        let answer = envelope(
+            Channel::Session,
+            "text.delta",
+            serde_json::json!({ "runId": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "text": "…" }),
+        );
+        assert!(delivers_to_owner_of(
+            &answer,
+            DeviceClass::OwnerUi,
+            THIS_DEVICE,
+            &owning(&[])
+        ));
     }
 
     /// The single most important cell, called out on its own so a future edit
