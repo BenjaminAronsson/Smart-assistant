@@ -90,7 +90,13 @@ export class MapGlView implements OnDestroy {
   }
 
   private async mountUnsafe(container: HTMLDivElement): Promise<void> {
-    const maplibregl = await import('maplibre-gl');
+    // Both halves of MapLibre are fetched here, together: the ~955 kB of JS and
+    // the 70 kB stylesheet its controls need. Awaited in parallel, and the CSS
+    // is awaited *before* the map is built so the controls never paint unstyled.
+    const [maplibregl] = await Promise.all([
+      import('maplibre-gl'),
+      loadMapLibreStylesheet(),
+    ]);
     // The component may have been destroyed while the chunk was loading.
     if (this.map || this.destroyed) return;
 
@@ -171,6 +177,51 @@ export class MapGlView implements OnDestroy {
  * palette as the rest of the card grammar (`styles.scss`) instead of a
  * second hardcoded hex living in this file. Falls back to the token's known
  * default when read outside a browser (e.g. a non-DOM test runner). */
+/** Where the build copies MapLibre's stylesheet (see `angular.json` assets). */
+const MAPLIBRE_STYLESHEET = 'vendor/maplibre-gl.css';
+
+/** Set once the stylesheet is in flight, so N map cards fetch it once. */
+let mapLibreStylesheet: Promise<void> | undefined;
+
+/**
+ * Add MapLibre's control CSS to the document, once, on first use.
+ *
+ * It has to be a document-level `<link>` rather than a component style:
+ * MapLibre creates its controls imperatively at runtime, so they never carry
+ * the `_ngcontent-*` attribute Angular's emulated encapsulation scopes
+ * component styles to, and a 70 kB component stylesheet would also be 8x the
+ * `anyComponentStyle` budget that exists to catch exactly that.
+ *
+ * But global never had to mean *eager*. Imported from `styles.scss` it was
+ * charged to every page load, map or no map, and it was the whole of the
+ * styles bundle.
+ *
+ * Resolves rather than rejects if the stylesheet cannot be fetched: an
+ * unstyled zoom control is a worse map, not a broken page.
+ */
+function loadMapLibreStylesheet(): Promise<void> {
+  mapLibreStylesheet ??= new Promise<void>((resolve) => {
+    if (document.querySelector(`link[href="${MAPLIBRE_STYLESHEET}"]`)) {
+      resolve();
+      return;
+    }
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = MAPLIBRE_STYLESHEET;
+    link.addEventListener('load', () => resolve(), { once: true });
+    link.addEventListener(
+      'error',
+      () => {
+        console.warn('map-gl-view: MapLibre stylesheet failed to load');
+        resolve();
+      },
+      { once: true },
+    );
+    document.head.appendChild(link);
+  });
+  return mapLibreStylesheet;
+}
+
 function getComputedColor(token: string, fallback: string): string {
   if (typeof document === 'undefined' || typeof getComputedStyle === 'undefined') return fallback;
   const value = getComputedStyle(document.documentElement).getPropertyValue(token).trim();
