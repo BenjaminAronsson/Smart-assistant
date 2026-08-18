@@ -803,22 +803,41 @@ pub trait AutomationStore: Send + Sync {
         &self,
     ) -> Result<Vec<jarvis_domain::automations::Automation>, RepositoryError>;
 
+    /// Arm or disarm an automation, with its audit row in the same transaction
+    /// (invariant 6).
+    ///
+    /// Enabling is the act that arms an unattended actor holding its creator's
+    /// authority; disabling is how a household silences one. Neither may happen
+    /// unrecorded — `create` audits, and these are the same kind of act.
     async fn set_enabled(
         &self,
         id: &jarvis_domain::ids::AutomationId,
         enabled: bool,
+        audit: &AuditEvent,
     ) -> Result<(), RepositoryError>;
 
-    async fn delete(&self, id: &jarvis_domain::ids::AutomationId) -> Result<(), RepositoryError>;
+    async fn delete(
+        &self,
+        id: &jarvis_domain::ids::AutomationId,
+        audit: &AuditEvent,
+    ) -> Result<(), RepositoryError>;
 
     /// Record one firing and stamp `last_fired_at`, in one transaction.
     ///
     /// Together, because a firing that is rate-limited but not recorded — or
     /// recorded but not rate-limited — is a bug that only shows up as a
     /// flapping sensor turning the lights on forty times.
+    /// Record one firing, stamp `last_fired_at`, and append the audit event —
+    /// all in one transaction.
+    ///
+    /// The audit row is the third thing that must not drift from the other two:
+    /// an automation is the one surface in the system that acts on the world
+    /// with nobody watching, so "it ran" has to be answerable from the
+    /// append-only trail and not only from a table the automation module owns.
     async fn record_execution(
         &self,
         execution: &jarvis_domain::automations::AutomationExecution,
+        audit: &AuditEvent,
     ) -> Result<(), RepositoryError>;
 
     /// Most recent firings first — the history FR-17 asks for.

@@ -245,7 +245,13 @@ impl AutomationStore for PgAutomationStore {
             .collect()
     }
 
-    async fn set_enabled(&self, id: &AutomationId, enabled: bool) -> Result<(), RepositoryError> {
+    async fn set_enabled(
+        &self,
+        id: &AutomationId,
+        enabled: bool,
+        audit: &AuditEvent,
+    ) -> Result<(), RepositoryError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
         sqlx::query!(
             r#"
             UPDATE automations.automations
@@ -255,26 +261,36 @@ impl AutomationStore for PgAutomationStore {
             id.as_str(),
             enabled,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(storage)?;
+        crate::audit::append(&mut tx, audit)
+            .await
+            .map_err(|e| RepositoryError::Storage(format!("automation set_enabled: audit: {e}")))?;
+        tx.commit().await.map_err(storage)?;
         Ok(())
     }
 
-    async fn delete(&self, id: &AutomationId) -> Result<(), RepositoryError> {
+    async fn delete(&self, id: &AutomationId, audit: &AuditEvent) -> Result<(), RepositoryError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
         sqlx::query!(
             "DELETE FROM automations.automations WHERE id = $1",
             id.as_str()
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(storage)?;
+        crate::audit::append(&mut tx, audit)
+            .await
+            .map_err(|e| RepositoryError::Storage(format!("automation delete: audit: {e}")))?;
+        tx.commit().await.map_err(storage)?;
         Ok(())
     }
 
     async fn record_execution(
         &self,
         execution: &AutomationExecution,
+        audit: &AuditEvent,
     ) -> Result<(), RepositoryError> {
         let (outcome, detail) = outcome_columns(&execution.outcome);
         let occurred_at = utc(execution.occurred_at);
@@ -308,6 +324,9 @@ impl AutomationStore for PgAutomationStore {
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
+        crate::audit::append(&mut tx, audit)
+            .await
+            .map_err(|e| RepositoryError::Storage(format!("automation firing: audit: {e}")))?;
         tx.commit().await.map_err(storage)?;
         Ok(())
     }

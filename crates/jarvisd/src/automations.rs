@@ -232,14 +232,32 @@ pub async fn create(
 }
 
 /// `PATCH /api/v1/automations/{id}` — enable or disable, and nothing else.
+///
+/// Audited like creation is. Enabling arms an unattended actor that will run on
+/// its creator's authority; disabling is how a household silences one. Both are
+/// answers somebody may need later, so neither happens unrecorded (invariant 6).
 pub async fn update(
     State(api): State<AutomationApi>,
+    axum::Extension(device): axum::Extension<crate::auth::DeviceContext>,
     Path(id): Path<String>,
     Json(request): Json<UpdateAutomationRequest>,
 ) -> Result<StatusCode, Response> {
     let id: AutomationId = id.parse().map_err(|_| not_found())?;
+    let audit = AuditEvent {
+        occurred_at: SystemTime::now(),
+        actor: format!("device:{}", device.device_id),
+        event_type: if request.enabled {
+            "automation.enabled"
+        } else {
+            "automation.disabled"
+        }
+        .into(),
+        target: format!("automation:{id}"),
+        correlation_id: None,
+        payload_json: format!(r#"{{"enabled":{}}}"#, request.enabled),
+    };
     api.store
-        .set_enabled(&id, request.enabled)
+        .set_enabled(&id, request.enabled, &audit)
         .await
         .map_err(storage_problem)?;
     Ok(StatusCode::NO_CONTENT)
@@ -248,10 +266,22 @@ pub async fn update(
 /// `DELETE /api/v1/automations/{id}`
 pub async fn delete(
     State(api): State<AutomationApi>,
+    axum::Extension(device): axum::Extension<crate::auth::DeviceContext>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, Response> {
     let id: AutomationId = id.parse().map_err(|_| not_found())?;
-    api.store.delete(&id).await.map_err(storage_problem)?;
+    let audit = AuditEvent {
+        occurred_at: SystemTime::now(),
+        actor: format!("device:{}", device.device_id),
+        event_type: "automation.deleted".into(),
+        target: format!("automation:{id}"),
+        correlation_id: None,
+        payload_json: "{}".to_owned(),
+    };
+    api.store
+        .delete(&id, &audit)
+        .await
+        .map_err(storage_problem)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

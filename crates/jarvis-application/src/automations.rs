@@ -313,12 +313,47 @@ impl AutomationService {
             // Recorded whatever happened, and *before* it is reported: the
             // record is what stops a flapping trigger re-firing, so a firing we
             // could not write down must not count as having happened.
+            //
+            // The audit row travels with it (invariant 6). An automation is the
+            // one thing here that acts with nobody watching, so "why did the
+            // lights come on at 6am" has to be answerable from the append-only
+            // trail — not only from a table the automation module owns and
+            // could in principle rewrite.
+            //
+            // The actor is the **creator**, not `system`: the firing ran on that
+            // device's authority, and an audit row naming the daemon would hide
+            // exactly the fact that matters when a device is later revoked.
+            let audit = jarvis_domain::audit::AuditEvent {
+                occurred_at: now,
+                actor: format!("device:{}", automation.created_by()),
+                event_type: match &outcome {
+                    ExecutionOutcome::Executed => "automation.executed",
+                    ExecutionOutcome::NeedsApproval { .. } => "automation.needs_approval",
+                    ExecutionOutcome::Denied { .. } => "automation.denied",
+                    ExecutionOutcome::Failed { .. } => "automation.failed",
+                }
+                .to_owned(),
+                target: format!("automation:{}", automation.id()),
+                correlation_id: None,
+                // Closed vocabulary only — never the automation's name or the
+                // refusal reason, both of which are human text with no business
+                // in a hashed audit payload.
+                payload_json: format!(
+                    r#"{{"toolId":"{}","outcome":"{}"}}"#,
+                    automation.action().tool_id.as_str(),
+                    outcome.as_str()
+                ),
+            };
+
             self.store
-                .record_execution(&jarvis_domain::automations::AutomationExecution {
-                    automation_id: automation.id().clone(),
-                    occurred_at: now,
-                    outcome: outcome.clone(),
-                })
+                .record_execution(
+                    &jarvis_domain::automations::AutomationExecution {
+                        automation_id: automation.id().clone(),
+                        occurred_at: now,
+                        outcome: outcome.clone(),
+                    },
+                    &audit,
+                )
                 .await?;
             fired.push(FiredAutomation {
                 automation_id: automation.id().clone(),
@@ -469,6 +504,7 @@ mod tests {
     struct MemStore {
         automations: std::sync::Mutex<Vec<Automation>>,
         recorded: std::sync::Mutex<Vec<jarvis_domain::automations::AutomationExecution>>,
+        audited: std::sync::Mutex<Vec<jarvis_domain::audit::AuditEvent>>,
         heartbeat: std::sync::Mutex<Option<std::time::SystemTime>>,
     }
 
@@ -498,20 +534,24 @@ mod tests {
             &self,
             _id: &jarvis_domain::ids::AutomationId,
             _enabled: bool,
+            _audit: &jarvis_domain::audit::AuditEvent,
         ) -> Result<(), crate::ports::RepositoryError> {
             Ok(())
         }
         async fn delete(
             &self,
             _id: &jarvis_domain::ids::AutomationId,
+            _audit: &jarvis_domain::audit::AuditEvent,
         ) -> Result<(), crate::ports::RepositoryError> {
             Ok(())
         }
         async fn record_execution(
             &self,
             execution: &jarvis_domain::automations::AutomationExecution,
+            audit: &jarvis_domain::audit::AuditEvent,
         ) -> Result<(), crate::ports::RepositoryError> {
             self.recorded.lock().expect("lock").push(execution.clone());
+            self.audited.lock().expect("lock").push(audit.clone());
             Ok(())
         }
         async fn history(
