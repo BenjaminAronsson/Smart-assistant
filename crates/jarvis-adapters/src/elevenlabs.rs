@@ -129,7 +129,12 @@ impl Bypass {
 }
 
 /// Configuration. Absent or `enabled = false` means this adapter never runs.
-#[derive(Debug, Clone)]
+///
+/// `Debug` is hand-written rather than derived: this struct holds a **resolved**
+/// API key, and a derived `Debug` is the shape invariant 5 exists to prevent —
+/// one `{:?}` in a future error path, span field or panic message and the secret
+/// is in a log. Nothing prints it today; this makes that stay true.
+#[derive(Clone)]
 pub struct ElevenLabsConfig {
     pub enabled: bool,
     pub voice_id: String,
@@ -140,6 +145,19 @@ pub struct ElevenLabsConfig {
     pub monthly_character_budget: u64,
     /// Overridable for tests; production leaves it at the real host.
     pub base_url: String,
+}
+
+impl std::fmt::Debug for ElevenLabsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ElevenLabsConfig")
+            .field("enabled", &self.enabled)
+            .field("voice_id", &self.voice_id)
+            .field("model_id", &self.model_id)
+            .field("api_key", &"[redacted]")
+            .field("monthly_character_budget", &self.monthly_character_budget)
+            .field("base_url", &self.base_url)
+            .finish()
+    }
 }
 
 impl ElevenLabsConfig {

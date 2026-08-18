@@ -62,6 +62,17 @@ pub const PRE_TRAINED_WORDS: [&str; 6] = [
 pub fn normalise_wake_word(raw: Option<&str>) -> String {
     raw.map(|value| value.trim().to_lowercase())
         .filter(|word| !word.is_empty())
+        // The word becomes a *filename* (`hey jarvis` -> `hey_jarvis.onnx`), so
+        // anything that could leave the asset directory is not a wake word.
+        // `../../etc/x` would otherwise load an arbitrary file into ONNX
+        // Runtime's C++ parser. Rejected rather than sanitised: silently
+        // rewriting somebody's configured word to a different one is how a node
+        // ends up listening for something nobody chose.
+        .filter(|word| {
+            word.chars().all(|c| {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, ' ' | '_' | '-')
+            })
+        })
         .unwrap_or_else(|| DEFAULT_WAKE_WORD.to_owned())
 }
 
@@ -328,6 +339,27 @@ mod word_tests {
         assert_eq!(normalise_wake_word(None), DEFAULT_WAKE_WORD);
         // And an owner may genuinely choose another one.
         assert_eq!(normalise_wake_word(Some("Hey Jarvis")), "hey jarvis");
+    }
+
+    /// S6 from the M8 security audit. The word becomes a **filename**
+    /// (`hey jarvis` -> `hey_jarvis.onnx`), so a word containing path
+    /// separators or `..` would load an arbitrary file into ONNX Runtime's C++
+    /// parser. Rejected, not sanitised: quietly rewriting a configured word to
+    /// a different one is how a node ends up listening for something nobody
+    /// chose.
+    #[test]
+    fn a_wake_word_that_could_escape_the_asset_directory_is_refused() {
+        for hostile in ["../../etc/passwd", "..", "a/b", "a\\b", "hey\u{0}jarvis"] {
+            assert_eq!(
+                normalise_wake_word(Some(hostile)),
+                DEFAULT_WAKE_WORD,
+                "{hostile:?} must not survive as a wake word"
+            );
+        }
+        // The legitimate shapes still do.
+        assert_eq!(normalise_wake_word(Some("hey_mycroft")), "hey_mycroft");
+        assert_eq!(normalise_wake_word(Some("hey-rhasspy")), "hey-rhasspy");
+        assert_eq!(normalise_wake_word(Some("alexa2")), "alexa2");
     }
 }
 

@@ -402,3 +402,58 @@ async fn enabling_disabling_and_deleting_are_each_audited(pool: PgPool) {
         "disable, re-enable and delete must each leave a row"
     );
 }
+
+/// S5 from the M8 security audit: an automation that has fired can be removed.
+///
+/// It could not be, and the failure was invisible from the code: `executions`
+/// cascades from its parent AND is append-only by trigger, and Postgres fires
+/// row triggers on cascaded deletes — so `DELETE` aborted with "automation
+/// execution history is append-only" and the route returned 503 forever. The
+/// auditor could not confirm it without a database; this settles it and keeps
+/// it settled.
+///
+/// Retiring, not erasing (migration 0021): the automation stops being listed
+/// and stops firing, and its history stays exactly as immutable as it was.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn an_automation_that_has_fired_can_be_retired_and_keeps_its_history(pool: PgPool) {
+    let store = PgAutomationStore::new(pool.clone());
+    store
+        .create(
+            &automation(Trigger::DailyAt {
+                minutes_since_midnight: 420,
+            }),
+            &audit_event(),
+        )
+        .await
+        .expect("creates");
+    store
+        .record_execution(
+            &AutomationExecution {
+                automation_id: id(ID),
+                occurred_at: t0(),
+                outcome: ExecutionOutcome::Executed,
+            },
+            &audit_event(),
+        )
+        .await
+        .expect("records a firing");
+
+    store
+        .delete(&id(ID), &audit_event())
+        .await
+        .expect("an automation that has fired must still be removable");
+
+    assert!(
+        store.list_all().await.expect("lists").is_empty(),
+        "a retired automation is gone from the settings surface"
+    );
+    assert!(
+        store.list_enabled().await.expect("lists").is_empty(),
+        "and the scheduler must never sweep it again"
+    );
+    assert_eq!(
+        store.history(&id(ID), 10).await.expect("history").len(),
+        1,
+        "its history survives — that is the whole reason this is a retirement"
+    );
+}

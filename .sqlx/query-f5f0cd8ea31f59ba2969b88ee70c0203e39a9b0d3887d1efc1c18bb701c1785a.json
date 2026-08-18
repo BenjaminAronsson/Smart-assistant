@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, name, trigger_kind, trigger_minute, trigger_entity, trigger_state,\n                   tool_id, arguments_json, enabled, created_by_device_id, created_at,\n                   last_fired_at\n            FROM automations.automations\n            ORDER BY created_at\n            ",
+  "query": "\n            SELECT id, name, trigger_kind, trigger_minute, trigger_entity, trigger_state,\n                   tool_id, arguments_json, enabled, created_by_device_id, created_at,\n                   last_fired_at\n            FROM automations.automations\n            WHERE deleted_at IS NULL\n            ORDER BY created_at\n            ",
   "describe": {
     "columns": [
       {
@@ -82,5 +82,5 @@
       true
     ]
   },
-  "hash": "084e32cba91600476e017afb456b07d59f6dd1af4bdd5a894d22d408efa121b6"
+  "hash": "f5f0cd8ea31f59ba2969b88ee70c0203e39a9b0d3887d1efc1c18bb701c1785a"
 }
