@@ -1366,6 +1366,11 @@
           "description": "Adapter readiness by adapter name (docs/02 §12 startup order).",
           "type": "object"
         },
+        "paired": {
+          "default": false,
+          "description": "Whether the daemon has an owner device yet.\n\nThe health endpoint is the only unauthenticated surface (docs/05 §6.2),\nso this is the one honest answer an install script can get to \"did the\npairing actually work\" without holding a token. It is a bare boolean\nprecisely so it discloses nothing else: not how many devices, not which,\nnot their classes.\n\n**Fails closed.** If the identity store cannot be read, this is `false`\n— the daemon does not *know* it has an owner, and a check that reported\nsuccess on an unreadable database would be worse than one that failed.",
+          "type": "boolean"
+        },
         "pairingCode": {
           "description": "One-time pairing code, present only while the first-run pairing\nwindow is open (docs/05 §6: shown on the health page, loopback only).",
           "type": [

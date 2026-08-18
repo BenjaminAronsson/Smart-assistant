@@ -1486,6 +1486,20 @@ export interface HealthResponse {
     [k: string]: AdapterHealth;
   };
   /**
+   * Whether the daemon has an owner device yet.
+   *
+   * The health endpoint is the only unauthenticated surface (docs/05 §6.2),
+   * so this is the one honest answer an install script can get to "did the
+   * pairing actually work" without holding a token. It is a bare boolean
+   * precisely so it discloses nothing else: not how many devices, not which,
+   * not their classes.
+   *
+   * **Fails closed.** If the identity store cannot be read, this is `false`
+   * — the daemon does not *know* it has an owner, and a check that reported
+   * success on an unreadable database would be worse than one that failed.
+   */
+  paired?: boolean;
+  /**
    * One-time pairing code, present only while the first-run pairing
    * window is open (docs/05 §6: shown on the health page, loopback only).
    */

@@ -94,6 +94,13 @@ impl AppState {
             // Deliberate (docs/05 §6): the bootstrap code is shown on the
             // loopback-only health page while the pairing window is open.
             pairing_code: self.auth.as_ref().and_then(|a| a.current_pairing_code()),
+            // Fails closed: an unreadable identity store reads as "no owner"
+            // rather than as success. `first-run.sh` gates its "a paired
+            // device" step on this.
+            paired: match self.auth.as_ref() {
+                Some(auth) => auth.identity().device_count().await.unwrap_or(0) > 0,
+                None => false,
+            },
             ui: self.ui.clone(),
         }
     }

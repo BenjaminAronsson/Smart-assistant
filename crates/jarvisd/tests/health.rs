@@ -114,3 +114,38 @@ async fn unmapped_route_returns_404() {
         .expect("router must not error");
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+// `infra/install/first-run.sh` gates its "a paired device" step on this exact
+// field, and the health endpoint is the only unauthenticated surface (docs/05
+// §6.2), so it is the one honest signal an install script can read without a
+// token.
+//
+// This test exists because the field did not: the script shipped in F8.9
+// grepping for `"paired":true`, `HealthResponse` never carried it, and the
+// check therefore failed on every machine no matter how correctly installed.
+// Nobody noticed because nobody had run the script end to end.
+#[tokio::test]
+async fn health_reports_whether_an_owner_is_paired() {
+    let response = jarvisd::api::router(jarvisd::api::AppState::new())
+        .oneshot(get("/api/v1/diagnostics/health"))
+        .await
+        .expect("router responds");
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+
+    // Present and typed, which is what the script's grep depends on.
+    assert!(
+        body.get("paired")
+            .is_some_and(serde_json::Value::is_boolean),
+        "health must carry a boolean `paired`, got: {body}"
+    );
+    // Fails closed: with no identity store wired there is no owner to claim.
+    assert_eq!(body["paired"], false);
+    // And it stays a bare boolean — not a device count, not a list.
+    assert!(body.get("devices").is_none() && body.get("deviceCount").is_none());
+}
