@@ -194,8 +194,11 @@ announced rather than silently skipped.
       creator did not have.
       Refs: docs/02 §11, docs/04 §3, docs/05 §1. Deps: none (assembly over `timers.rs`).
 
-- [x] **F8.7 — The daemon actually schedules (FR-17, closes D-M4-1)** ✅ PRs #52 + #56 + #63 · *Sonnet*
-      Routes and sweeps in #52, D-M4-1 closed in #56, and the **restart sweep made real in
+- [x] **F8.7 — The daemon actually schedules (FR-17)** ✅ PRs #52 + #56 + #63 · *Sonnet*
+      ⚠️ **Does NOT close D-M4-1** — the original title said it did. `jarvisd::deferred::
+      run_worker` was written and never spawned; see the M8b gate report §1.3. The automation
+      scheduling this feature is actually about *is* done.
+      Routes and sweeps in #52, the deferred-work driver written in #56, and the **restart sweep made real in
       production** in #63 — it had been reading a `None` the daemon had nothing to fill in with,
       so the missed-run report was correct, tested, and inert.
       M4's `DeferrableScheduler` is a library nothing calls; the only thing that runs on a
@@ -296,7 +299,7 @@ proves it end to end.
 
 | Item | Source | Lands in |
 |---|---|---|
-| **D-M4-1** — the deferrable-work scheduler has no daemon driver | M4 gate | **F8.7** |
+| **D-M4-1** — the deferrable-work scheduler has no daemon driver | M4 gate | ⚠️ **STILL OPEN** — F8.7 wrote a driver and did not spawn it; needs real deferrable work to exist |
 | **D-M5-3** — NFR-04 latency never measured on real hardware | M5 gate | **F8.10** |
 | **STT model size undecided** (`base` vs `small` int8) | M5, docs/08 §6 | **F8.9** |
 | **Timer alerts have no device notion** — they play on the daemon host | found post-M7 | **F8.5** |
