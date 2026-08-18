@@ -166,9 +166,12 @@ would burn wakeups on an 8 GB target for a trigger that cannot express anything 
 
 ## 4. Open risks
 
-- **No subagent review passes** ran on any of M8 (see the M8a report, D4). This diff adds an
-  execution path that acts on the world **unattended** — the single best `security-auditor`
-  candidate in the milestone.
+- ~~**No subagent review passes**~~ **CLOSED 2026-08-18** (M8a report, D4). The instinct was
+  right: this diff *was* the best candidate in the milestone, and the audit found that
+  automations wrote **no audit row for enable, disable, delete or firing** — invariant 6, on the
+  one surface that acts unattended. Fixed with DB tests asserting the rows land and that the
+  firing's actor is the creator device rather than `system`. The same passes also found that
+  this report's "D-M4-1 is closed" claim was false (§1.3).
 - Automations can only propose tools that are *registered*; an unregistered tool is denied. That
   is correct, but it means an automation created against a tool that is later unregistered fails
   closed silently apart from its history row. Acceptable, worth knowing.
