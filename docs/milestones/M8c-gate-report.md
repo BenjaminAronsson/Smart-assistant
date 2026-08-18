@@ -38,7 +38,46 @@ page exists to answer. Automations enable/disable plus history, where a **refusa
 Keyboard-first (NFR-11) with a test that walks every button and fails on a click handler bolted
 to a `div`. 265 web tests pass.
 
-### 2 — A documented install (F8.9, PR #55) — **PARTIAL**
+### 2 — A documented install (F8.9, PR #55) — **PARTIAL, and a real bug found**
+
+**Update 2026-08-18: the script was run end to end for the first time, and it found a defect
+that would have failed the owner's clean-machine run.**
+
+`first-run.sh` gates its "a paired device" step on `"paired":true` in the health response.
+**`HealthResponse` never had a `paired` field.** The check could therefore never pass — on any
+machine, however correctly installed — and the script exited 1 every time. Nobody noticed
+because nobody had run it: F8.9 shipped the script and the gate deferred running it to "a fresh
+machine, watched by a human".
+
+That is precisely the failure mode this sub-gate's exit evidence exists to catch, and it is
+worth recording that *writing* the install story and *running* it are different acts.
+
+Fixed by giving the health endpoint the field the script always assumed: a bare `paired`
+boolean, deliberately disclosing nothing else (not how many devices, not which, not their
+classes), and **failing closed** — an unreadable identity store reads as "no owner", because a
+check that reported success on a broken database would be worse than one that failed.
+Regression test in `tests/health.rs`; the two contract wire-shape tests were updated, which is
+them doing their job.
+
+With the fix, against a live daemon, real Postgres and both real Wyoming services:
+
+```
+== database        ok: postgres is running
+== migrations      ok: migration state readable   (18, 19, 20 installed)
+== daemon health   ok: jarvisd answers on http://127.0.0.1:8741
+== a paired device ok: an owner device is paired
+== voice services  ok: wyoming service on 10300 / 10200
+== a microphone    ok: an input device exists
+first-run check passed.
+```
+
+**This is not the clean-machine run.** It is a developer workstation with the stack already
+built, so it does not demonstrate "a fresh machine reaches a working house from a documented
+install". What it does demonstrate is F8.9's named acceptance — *a scripted install reaches a
+healthy daemon and a paired device* — and that the script now reports the truth when it does.
+The owner's run on real hardware remains this sub-gate's exit evidence.
+
+### Original assessment (2026-08-15)
 
 Everything exists: Wyoming STT/TTS compose (loopback, memory-capped), systemd units for both
 binaries, TLS generation, an annotated production `jarvisd.toml`, and a first-run **check**

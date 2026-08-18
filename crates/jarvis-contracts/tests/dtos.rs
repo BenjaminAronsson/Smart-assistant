@@ -26,6 +26,10 @@ mod health {
         let value = json!({
             "status": "degraded",
             "version": "0.1.0",
+            // Always serialized, never skipped: `infra/install/first-run.sh`
+            // greps for it, and a field that vanishes when false would make
+            // "not paired" indistinguishable from an older daemon.
+            "paired": false,
             "adapters": {
                 "postgres": { "state": "up" },
                 "home-assistant": { "state": "down", "detail": "connection refused" },
@@ -43,6 +47,7 @@ mod health {
         let value = json!({
             "status": "ok",
             "version": "0.1.0",
+            "paired": false,
             "adapters": {
                 "postgres": { "state": "up" }
             }

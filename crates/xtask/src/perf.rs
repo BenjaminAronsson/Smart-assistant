@@ -64,7 +64,8 @@ pub fn run(mode: Option<&str>) -> anyhow::Result<()> {
     match mode {
         Some("--rss") => rss(),
         Some("--voice") => voice(),
-        _ => anyhow::bail!("usage: cargo xtask perf <--rss|--voice>"),
+        Some("--voice-real") => voice_real(),
+        _ => anyhow::bail!("usage: cargo xtask perf <--rss|--voice|--voice-real>"),
     }
 }
 
@@ -124,6 +125,62 @@ fn voice() -> anyhow::Result<()> {
         "perf --voice: PASS — daemon-side overhead is within its share of NFR-04. Record the \
          reference-hardware end-to-end figures (real faster-whisper/Piper) in the M5 gate report."
     );
+    Ok(())
+}
+
+/// `cargo xtask perf --voice-real`: the **actual** NFR-04 figures (D-M5-3).
+///
+/// The other half of `--voice`. That one deliberately excludes the speech
+/// models so it runs anywhere; this one includes them, which is the only way to
+/// produce the numbers docs/01 §4.1 actually budgets — and the reason D-M5-3
+/// stayed open from M5 until a harness existed to close it.
+///
+/// Needs the Wyoming services up:
+///
+/// ```text
+/// docker compose -f infra/compose/dev.yml -f infra/compose/voice.yml up -d
+/// cargo xtask perf --voice-real
+/// ```
+///
+/// It measures **the machine it runs on**. NFR-04 is specified on the 8 GB
+/// reference profile, so record which machine produced the figure — a pass on a
+/// workstation is evidence the pipeline is sane, not that the budget holds on
+/// the target.
+fn voice_real() -> anyhow::Result<()> {
+    let database_url = std::env::var("DATABASE_URL").context(
+        "DATABASE_URL is not set — export it, e.g. \
+         DATABASE_URL=postgres://jarvis:jarvis-dev-only@127.0.0.1:5432/jarvis",
+    )?;
+    preflight_postgres(&database_url)?;
+
+    let root = workspace_root()?;
+    println!("perf --voice-real: NFR-04 end to end, REAL faster-whisper + Piper (D-M5-3).");
+    println!("perf --voice-real: final transcript < 0.8 s after end of speech;");
+    println!("perf --voice-real: first audio < 1.2 s after the response text begins.");
+    println!("perf --voice-real: this measures THIS machine, not the 8 GB reference profile.");
+
+    let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+        .args([
+            "test",
+            "-p",
+            "jarvisd",
+            "--release",
+            "--test",
+            "voice_latency_real",
+            "--",
+            "--nocapture",
+        ])
+        .current_dir(&root)
+        .env("DATABASE_URL", &database_url)
+        .env("JARVIS_NFR04_REAL", "1")
+        .status()
+        .context("failed to run the real voice latency harness")?;
+    anyhow::ensure!(
+        status.success(),
+        "perf --voice-real: NFR-04 was exceeded on this machine — see the report above"
+    );
+    println!();
+    println!("perf --voice-real: PASS — record the figures and the machine in the gate report.");
     Ok(())
 }
 

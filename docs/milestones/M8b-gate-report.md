@@ -116,6 +116,13 @@ would burn wakeups on an 8 GB target for a trigger that cannot express anything 
   `missed_between` now takes two instants and, past 24 hours, reports every enabled daily
   automation.
 
+  **Confirmed live 2026-08-18**, which is stronger than the unit evidence: a real daemon was
+  started, stopped and restarted against real Postgres. The first start logged *"no previous run
+  recorded; nothing to report as missed"*; after the restart the second process logged *"no
+  automations were missed while the daemon was down"* — it had read the heartbeat the previous
+  process left. That is the whole of D2's claim, exercised in a deployed daemon rather than in a
+  test harness.
+
   Evidence: `the_last_seen_stamp_survives_a_restart` asserts through a **fresh store over the
   same database** (a value returned by the object that just wrote it would prove only that a
   field was set); `downtime_longer_than_a_day_reports_every_daily_automation` covers the case
