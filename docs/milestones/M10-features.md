@@ -38,7 +38,21 @@ instructions the whole way, with no source tree and no help from the person who 
 
 ## The features
 
-- [ ] **F10.1 — It runs, and you can talk to it (M8a/M8c exit evidence)** · *strong model*
+- [x] **F10.1 — It runs, and you can talk to it (M8a/M8c exit evidence)** ✅ *strong model*
+      **Done 2026-08-19.** The whole stack ran on one machine and a node answered to its name
+      **over the air** — played into the room, heard by a real microphone, detected by the engine
+      on the node. That is M8a's headline exit evidence, produced by using the product.
+      Runbook: `docs/TRY-IT.md`, every command executed in order.
+      **Four defects found, none of which any test could have caught:**
+      (1) a listening node burned **19.2% of a core** — ONNX Runtime spin-waiting on tiny models;
+      now 8.6%, of which the pipeline itself is 2.2%.
+      (2) **a turn could never end in a real room** — end-of-turn used a fixed silence threshold
+      of 300 and measured room tone is 1138–3916, so no frame was ever silent: the node streamed
+      continuously and never woke again. Every test used digital silence and missed it.
+      (3) golden 11 asserted a node may *speak* and never that one is *answered*; it now asserts
+      binary audio at the node's own socket.
+      (4) the shell told a never-paired browser "Is the daemon running?" while the daemon
+      answered 401 — the first thing an owner sees, pointing at the wrong thing.
       The one that makes this real. Bring the whole stack up on one machine — Postgres, Wyoming
       STT/TTS, `jarvisd`, the web shell, and a **paired `jarvis-agent` node with the wake engine
       compiled in** — and have a person say "hey jarvis" in a room and be answered aloud *there*.
