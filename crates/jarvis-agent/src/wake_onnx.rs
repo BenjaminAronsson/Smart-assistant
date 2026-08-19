@@ -126,6 +126,31 @@ fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
 /// replaces a checksum. It matters more than it looks: an ONNX file with the
 /// wrong shape loads perfectly happily and then never fires, which presents as
 /// "the house stopped answering" with nothing in the logs.
+/// A session tuned for **many tiny inferences**, which is what this pipeline
+/// actually does: three graphs, twelve and a half times a second, forever.
+///
+/// ONNX Runtime defaults to a multi-threaded pool sized for one large inference.
+/// On models this small the parallelism buys nothing and the pool's spin-wait
+/// between calls costs a great deal — measured at **~17% of an i7 core**
+/// sustained on an idle node, against ADR-032's "a few percent" budget. A Pi
+/// would not have kept up.
+///
+/// One thread each, no parallel execution: the work per chunk is under a
+/// millisecond of arithmetic, so the only thing threads add is the cost of
+/// coordinating them.
+fn tuned_session() -> Result<ort::session::builder::SessionBuilder> {
+    // Mapped rather than `?`: ort's builder errors are not `Send + Sync`, so
+    // they cannot cross into `anyhow` directly. `to_string` is the conversion.
+    Session::builder()
+        .map_err(|e| anyhow::anyhow!("onnx session builder: {e}"))?
+        .with_intra_threads(1)
+        .map_err(|e| anyhow::anyhow!("onnx intra threads: {e}"))?
+        .with_inter_threads(1)
+        .map_err(|e| anyhow::anyhow!("onnx inter threads: {e}"))?
+        .with_parallel_execution(false)
+        .map_err(|e| anyhow::anyhow!("onnx parallel execution: {e}"))
+}
+
 fn load_word_model(path: &Path, word: &str) -> Result<(Session, String, String)> {
     if !path.exists() {
         bail!(
@@ -137,7 +162,7 @@ fn load_word_model(path: &Path, word: &str) -> Result<(Session, String, String)>
             path.display()
         );
     }
-    let session = Session::builder()?
+    let session = tuned_session()?
         .commit_from_file(path)
         .with_context(|| format!("wake-word model {} could not be loaded", path.display()))?;
 
@@ -189,8 +214,8 @@ impl OnnxWakeWord {
         verify_sha256(&mel_path, MELSPECTROGRAM_SHA256)?;
         verify_sha256(&emb_path, EMBEDDING_SHA256)?;
 
-        let melspectrogram = Session::builder()?.commit_from_file(&mel_path)?;
-        let embedding = Session::builder()?.commit_from_file(&emb_path)?;
+        let melspectrogram = tuned_session()?.commit_from_file(&mel_path)?;
+        let embedding = tuned_session()?.commit_from_file(&emb_path)?;
         let (word_model, word_input, word_output) =
             load_word_model(&dir.join(model_file_name(word)), word)?;
 

@@ -325,3 +325,43 @@ fn a_word_with_no_model_names_both_ways_out() {
         "say how to choose a word that has one: {message}"
     );
 }
+
+/// Where does the listening cost actually go?
+///
+/// Not a correctness test — a measurement, so that "optimise the pipeline" and
+/// "this is ONNX's floor" can be told apart. A node listens 12.5 chunks a
+/// second forever, so this figure times 12.5 is the sustained CPU cost of
+/// answering to a name.
+#[test]
+#[ignore = "timing measurement, run explicitly"]
+fn measure_wake_inference_cost_per_chunk() {
+    let Some(dir) = assets() else {
+        eprintln!("SKIP: no assets");
+        return;
+    };
+    let mut engine = load(&dir, "hey jarvis");
+
+    // 80 ms of audio = one full pipeline pass (mel -> embedding -> word).
+    let frames = silence(4); // well past the 76-frame mel warm-up
+    for frame in &frames {
+        engine.accept(frame);
+    }
+
+    let chunk: Vec<Vec<u8>> = silence(1);
+    let passes = 200;
+    let start = std::time::Instant::now();
+    for _ in 0..passes {
+        for frame in &chunk {
+            engine.accept(frame);
+        }
+    }
+    let elapsed = start.elapsed();
+
+    // `silence(1)` is one second = 12.5 chunks, so `passes` seconds of audio.
+    let per_second = elapsed.as_secs_f64() / f64::from(passes);
+    println!(
+        "wake pipeline: {:.2} ms per second of audio = {:.2}% of one core",
+        per_second * 1000.0,
+        per_second * 100.0
+    );
+}
