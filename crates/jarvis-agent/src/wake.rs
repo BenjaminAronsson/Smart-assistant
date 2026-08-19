@@ -154,8 +154,43 @@ const PRE_ROLL_FRAMES: usize = 25;
 /// word existed; this is the node's half of that.
 const SILENCE_FRAMES_TO_END: usize = 40; // 800 ms
 
-/// Below this mean absolute amplitude a frame counts as silence.
+/// Absolute floor below which a frame is silence whatever the room is doing.
+///
+/// Keeps a digitally-silent stream (a muted source, a fixture) behaving
+/// sensibly. It is **not** sufficient on its own — see [`WakeGate::noise_floor`].
 const SILENCE_THRESHOLD: i32 = 300;
+
+/// How far above the room's own noise floor a frame must sit to count as
+/// speech.
+///
+/// **This exists because 300 was measured to be useless in a real room.** A
+/// laptop microphone in an ordinary quiet room reads a mean absolute amplitude
+/// of ~1100–4000 with nobody speaking; across 199 frames of recorded room tone,
+/// *zero* fell below 300. With a fixed threshold the end-of-turn silence never
+/// arrives, so a woken node streams the room continuously and — because the
+/// detector is not consulted mid-turn — never wakes again. That inverts the
+/// privacy property ADR-032 §2 exists for.
+///
+/// Every test in this file used `vec![0u8; 640]`, which is digitally silent, so
+/// nothing here could have found it. Running it in a room did.
+const SPEECH_OVER_FLOOR: f32 = 2.5;
+
+/// How quickly the noise-floor estimate follows the room.
+///
+/// Down fast, up slow: a room that goes quiet should be believed promptly, but
+/// a burst of speech must not drag the floor up behind it and deafen the gate.
+const FLOOR_FALL: f32 = 0.10;
+const FLOOR_RISE: f32 = 0.005;
+
+/// How quickly the floor learns **while no turn is open**.
+///
+/// Much faster, and it has to be: while the gate is closed, whatever the
+/// microphone hears is ambient *by definition* — nobody has addressed the
+/// assistant. Learning only from frames already judged "not speech" cannot work
+/// from a cold start, because a room louder than the initial floor reads as
+/// speech forever and the floor never rises to meet it. A node would sit deaf
+/// in a normal room. Roughly a second and a half to settle.
+const FLOOR_RISE_IDLE: f32 = 0.05;
 
 /// The pipeline (ADR-032 §4).
 pub struct WakeGate<D: WakeWordDetector> {
@@ -167,6 +202,13 @@ pub struct WakeGate<D: WakeWordDetector> {
     /// Counted, never asserted away (ADR-032 consequence 2).
     detections: u64,
     listening: bool,
+    /// Running estimate of this room's noise floor, in mean absolute amplitude.
+    ///
+    /// Learned from the frames the gate judges to be *not* speech, which is
+    /// nearly all of them, and only ever used relatively — "speech" is a level
+    /// well above whatever this room happens to sit at, not a number chosen on
+    /// a developer's desk.
+    noise_floor: f32,
 }
 
 impl<D: WakeWordDetector> WakeGate<D> {
@@ -178,6 +220,9 @@ impl<D: WakeWordDetector> WakeGate<D> {
             silent_frames: 0,
             detections: 0,
             listening: true,
+            // Starts at the absolute floor and rises to meet the room within a
+            // second or so of frames.
+            noise_floor: SILENCE_THRESHOLD as f32,
         }
     }
 
@@ -190,6 +235,17 @@ impl<D: WakeWordDetector> WakeGate<D> {
     /// false-accept rate the M8a gate reports.
     pub fn detections(&self) -> u64 {
         self.detections
+    }
+
+    /// Whether this frame is speech: meaningfully above **this room's** floor,
+    /// and above the absolute floor that keeps a silent stream silent.
+    fn is_speech(&self, level: f32) -> bool {
+        level > (SILENCE_THRESHOLD as f32).max(self.noise_floor * SPEECH_OVER_FLOOR)
+    }
+
+    /// The room's current noise floor estimate, for tests and diagnostics.
+    pub fn noise_floor(&self) -> f32 {
+        self.noise_floor
     }
 
     /// The visible listening state. A satellite that is not listening must say
@@ -226,10 +282,28 @@ impl<D: WakeWordDetector> WakeGate<D> {
             return GateAction::Discard;
         }
 
+        let level = frame_level(frame);
+        let speech = self.is_speech(level);
+        // While a turn is open somebody is talking, so the floor learns only
+        // from frames judged "not speech" — otherwise their voice drags the
+        // floor up and deafens the gate behind them. While the gate is closed
+        // there is no such risk: nobody has addressed the assistant, so every
+        // frame is the room, and the floor may follow it directly.
+        if !self.open || !speech {
+            let rate = if level < self.noise_floor {
+                FLOOR_FALL
+            } else if self.open {
+                FLOOR_RISE
+            } else {
+                FLOOR_RISE_IDLE
+            };
+            self.noise_floor += (level - self.noise_floor) * rate;
+        }
+
         if self.open {
             // Mid-turn: the detector is not consulted, so the word appearing
             // inside a sentence cannot restart the turn it is part of.
-            if is_silent(frame) {
+            if !speech {
                 self.silent_frames += 1;
                 if self.silent_frames >= SILENCE_FRAMES_TO_END {
                     self.open = false;
@@ -271,18 +345,18 @@ impl<D: WakeWordDetector> WakeGate<D> {
     }
 }
 
-/// Mean absolute amplitude below [`SILENCE_THRESHOLD`].
-fn is_silent(frame: &[u8]) -> bool {
-    if frame.len() < 2 {
-        return true;
-    }
+/// Mean absolute amplitude of a frame.
+fn frame_level(frame: &[u8]) -> f32 {
     let mut total: i64 = 0;
     let mut count: i64 = 0;
     for sample in frame.chunks_exact(2) {
         total += i64::from(i16::from_le_bytes([sample[0], sample[1]]).abs());
         count += 1;
     }
-    count == 0 || (total / count) < i64::from(SILENCE_THRESHOLD)
+    if count == 0 {
+        return 0.0;
+    }
+    (total / count) as f32
 }
 
 /// So a node can hold whichever engine it was built with behind one type.
@@ -409,6 +483,25 @@ mod tests {
         vec![0_u8; FRAME_BYTES]
     }
 
+    /// A frame of **real room tone** — an ordinary quiet room, not digital
+    /// silence.
+    ///
+    /// The level is taken from a measurement rather than invented: 199 frames
+    /// recorded from a laptop microphone in a quiet room read a mean absolute
+    /// amplitude of 1138 (min) to 3916 (median). Every one of them was above the
+    /// old fixed `SILENCE_THRESHOLD` of 300, which is why a real node's turn
+    /// could never end.
+    fn room_tone(level: i16) -> Vec<u8> {
+        let mut frame = Vec::with_capacity(FRAME_BYTES);
+        // Alternating sign so the mean *absolute* amplitude is `level` while the
+        // signal itself is centred, like noise.
+        for i in 0..FRAME_BYTES / 2 {
+            let sample = if i % 2 == 0 { level } else { -level };
+            frame.extend_from_slice(&sample.to_le_bytes());
+        }
+        frame
+    }
+
     /// The privacy property, stated as a test: before the word fires, every
     /// frame is discarded.
     #[test]
@@ -467,6 +560,75 @@ mod tests {
         assert!(gate.is_streaming());
         assert_eq!(gate.accept(&quiet(), false), GateAction::CloseStream);
         assert!(!gate.is_streaming());
+    }
+
+    /// **The bug a real room found.** A turn must end over ordinary room tone,
+    /// not only over digital silence.
+    ///
+    /// With a fixed 300 threshold this test hangs open forever: measured room
+    /// tone sits at 1138–3916, so `is_silent` never fires, the turn never ends,
+    /// and the node streams the room continuously — and never wakes again,
+    /// because the detector is not consulted mid-turn. That is the exact
+    /// inverse of the privacy property ADR-032 §2 exists for, and every test in
+    /// this file missed it by using `vec![0u8; 640]`.
+    #[test]
+    fn a_turn_ends_over_real_room_tone_not_only_digital_silence() {
+        let mut gate = WakeGate::new(Scripted::new(&[30]));
+
+        // Let the gate learn the room before anything happens, as it would in
+        // the seconds after boot.
+        for _ in 0..30 {
+            assert_eq!(gate.accept(&room_tone(3916), false), GateAction::Discard);
+        }
+        assert!(
+            gate.noise_floor() > 1000.0,
+            "the gate must have learned this room, got {}",
+            gate.noise_floor()
+        );
+
+        // The word fires, the person speaks well above the room, then stops —
+        // and the room tone continues, as rooms do.
+        assert!(matches!(
+            gate.accept(&room_tone(3916), false),
+            GateAction::OpenStream { .. }
+        ));
+        for _ in 0..10 {
+            assert_eq!(gate.accept(&loud(), false), GateAction::Send);
+        }
+        let mut closed = false;
+        for _ in 0..(SILENCE_FRAMES_TO_END * 2) {
+            if gate.accept(&room_tone(3916), false) == GateAction::CloseStream {
+                closed = true;
+                break;
+            }
+        }
+        assert!(
+            closed,
+            "the turn must end when the person stops, even though the room never goes quiet"
+        );
+        assert!(!gate.is_streaming());
+    }
+
+    /// And the converse, so the fix is not "close on everything": speech well
+    /// above the room keeps the turn open.
+    #[test]
+    fn speech_above_the_room_keeps_the_turn_open() {
+        let mut gate = WakeGate::new(Scripted::new(&[30]));
+        for _ in 0..30 {
+            gate.accept(&room_tone(2000), false);
+        }
+        assert!(matches!(
+            gate.accept(&room_tone(2000), false),
+            GateAction::OpenStream { .. }
+        ));
+        for _ in 0..(SILENCE_FRAMES_TO_END * 2) {
+            assert_eq!(
+                gate.accept(&loud(), false),
+                GateAction::Send,
+                "someone is still talking"
+            );
+        }
+        assert!(gate.is_streaming());
     }
 
     #[test]

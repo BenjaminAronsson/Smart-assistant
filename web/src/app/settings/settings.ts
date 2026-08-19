@@ -1,3 +1,4 @@
+import { HttpErrorResponse } from '@angular/common/http';
 import { Component, type OnInit, computed, inject, signal } from '@angular/core';
 import type {
   AutomationDto,
@@ -76,10 +77,14 @@ export class Settings implements OnInit {
       this.devices.set(devices.devices);
       this.automations.set(automations.automations);
       this.voice.set(voice);
-    } catch {
-      // Never the raw error: an adapter/transport string has no business on a
-      // settings page (docs/06 §5).
-      this.error.set('Could not load settings. Is the daemon running?');
+    } catch (failure) {
+      // Never the raw error (docs/06 §5) — but *which* failure this is decides
+      // what the owner should do next, and getting that wrong sends them to
+      // debug the wrong thing. Opening the shell on a machine that has never
+      // paired is the single most common first-run state, and it used to read
+      // "Is the daemon running?" while the daemon was running perfectly well
+      // and answering 401.
+      this.error.set(describeFailure(failure));
     } finally {
       this.busy.set(false);
     }
@@ -320,5 +325,26 @@ export class Settings implements OnInit {
     return Number.isNaN(parsed.getTime())
       ? ''
       : parsed.toLocaleTimeString(undefined, { timeStyle: 'short' });
+  }
+}
+
+/**
+ * Turn a failed request into something the owner can act on.
+ *
+ * The daemon already answers with an RFC 9457 problem body carrying a stable
+ * code; the shell's job is to say what to *do*, not to echo it. Status 0 is
+ * Angular's "the request never reached anybody".
+ */
+export function describeFailure(failure: unknown): string {
+  const status = failure instanceof HttpErrorResponse ? failure.status : -1;
+  switch (status) {
+    case 0:
+      return 'Could not reach the daemon. Is it running?';
+    case 401:
+      return 'This browser is not paired yet. Open the daemon’s health page on this machine to get the pairing code, then pair.';
+    case 403:
+      return 'This device is not allowed to administer settings. Use the owner’s browser.';
+    default:
+      return 'Could not load settings.';
   }
 }

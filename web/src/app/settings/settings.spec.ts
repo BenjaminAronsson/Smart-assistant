@@ -1,6 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
-import { Settings } from './settings';
+import { HttpErrorResponse } from '@angular/common/http';
+import { Settings, describeFailure } from './settings';
 import { ApiService } from '../api.service';
 import type {
   AutomationDto,
@@ -235,8 +236,11 @@ describe('Settings', () => {
     api.listDevices = () => Promise.reject(new Error('ECONNREFUSED 127.0.0.1:8741'));
     await component.refresh();
     fixture.detectChanges();
-    expect(component.error()).toBe('Could not load settings. Is the daemon running?');
+    // The intent is the assertion, not the exact copy: whatever the owner is
+    // told, it is never the transport's own words.
+    expect(component.error()).toBe('Could not load settings.');
     expect((fixture.nativeElement as HTMLElement).textContent).not.toContain('ECONNREFUSED');
+    expect((fixture.nativeElement as HTMLElement).textContent).not.toContain('127.0.0.1');
   });
 
   describe('voice', () => {
@@ -306,6 +310,41 @@ describe('Settings', () => {
     it('reads the period as a month', () => {
       expect(component.periodLabel('2026-08')).toContain('2026');
       expect(component.periodLabel('nonsense')).toBe('nonsense');
+    });
+  });
+
+
+  describe('failure messages', () => {
+    // The most common first-run state: the shell is open on a machine that has
+    // never paired. It used to read "Is the daemon running?" while the daemon
+    // was running perfectly well and answering 401 — sending the owner to debug
+    // the wrong thing on their very first visit.
+    it('tells an unpaired browser to pair, not to check the daemon', () => {
+      const message = describeFailure(new HttpErrorResponse({ status: 401 }));
+      expect(message).toContain('not paired');
+      expect(message).not.toContain('Is it running');
+    });
+
+    it('distinguishes a forbidden device from an unpaired one', () => {
+      expect(describeFailure(new HttpErrorResponse({ status: 403 }))).toContain(
+        'not allowed',
+      );
+    });
+
+    // Angular reports a request that never reached anybody as status 0.
+    it('says the daemon is unreachable only when it actually is', () => {
+      expect(describeFailure(new HttpErrorResponse({ status: 0 }))).toContain(
+        'Could not reach the daemon',
+      );
+    });
+
+    it('never echoes a raw transport string (docs/06 §5)', () => {
+      const raw = 'ECONNREFUSED 127.0.0.1:8741 secret-token-abc';
+      const message = describeFailure(
+        new HttpErrorResponse({ status: 500, statusText: raw, error: raw }),
+      );
+      expect(message).not.toContain('ECONNREFUSED');
+      expect(message).not.toContain('secret-token-abc');
     });
   });
 
