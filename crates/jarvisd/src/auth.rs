@@ -71,6 +71,45 @@ pub struct AuthState {
     audit: Option<Arc<dyn jarvis_application::ports::AuditLog>>,
 }
 
+/// The environment variable that reopens the pairing window (F10.9).
+pub const RECOVERY_ENV: &str = "JARVIS_RECOVER_PAIRING";
+
+/// Whether this start was asked to reopen the pairing window.
+///
+/// A two-variant enum rather than a `bool` so the call sites read as intent at
+/// the point of use — `RecoveryRequest::None` cannot be confused with "no
+/// devices" or any of the other booleans in this ceremony.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryRequest {
+    None,
+    Requested,
+}
+
+impl RecoveryRequest {
+    /// Read [`RECOVERY_ENV`].
+    pub fn from_env() -> Self {
+        Self::from_value(std::env::var(RECOVERY_ENV).ok().as_deref())
+    }
+
+    /// The parsing half, kept separate from the reading half so it can be
+    /// tested without mutating the environment — `set_var` is `unsafe` in
+    /// edition 2024 and this crate denies `unsafe_code`, but the better reason
+    /// is that a process-global mutation is a poor foundation for a test that
+    /// runs alongside others.
+    ///
+    /// Anything but absent, empty, `0`, or `false` requests recovery. An owner
+    /// who has just lost their token is already having a bad day and should not
+    /// also have to guess which spelling of yes this program wanted.
+    pub fn from_value(value: Option<&str>) -> Self {
+        match value {
+            Some(v) if !matches!(v.trim().to_ascii_lowercase().as_str(), "" | "0" | "false") => {
+                Self::Requested
+            }
+            _ => Self::None,
+        }
+    }
+}
+
 impl AuthState {
     /// First-run bootstrap (docs/05 §6): with no paired devices, open a
     /// pairing window and surface the code in the journal + health page
@@ -78,16 +117,56 @@ impl AuthState {
     /// unreachable database must NOT abort startup (degraded start,
     /// docs/02 §12) — no window opens and a restart re-runs the bootstrap.
     pub async fn bootstrap(identity: Arc<dyn IdentityStore>) -> Self {
-        let code = match identity.device_count().await {
-            Ok(0) => {
+        Self::bootstrap_with_recovery(identity, RecoveryRequest::from_env()).await
+    }
+
+    /// As [`Self::bootstrap`], but able to reopen the window for an owner who
+    /// has lost their token (F10.9).
+    ///
+    /// Without this there is no way back into your own house. The bootstrap
+    /// window opens only at zero devices, `device_count` counts revoked rows
+    /// too, and opening a pairing window needs an owner token — so a lost token
+    /// with any device row present is terminal, and the only escape is hand-
+    /// editing Postgres. That was found by an owner hitting it on a first real
+    /// test, which is exactly the wrong time to discover it.
+    ///
+    /// Recovery is deliberately gated on **restarting the daemon with an
+    /// environment variable set**, not on any request. Anyone who can do that
+    /// already controls the process: they can read the token hashes out of the
+    /// database or mint their own. So this grants no authority that host access
+    /// did not already carry — it just stops the owner from having to write SQL
+    /// to get it. Requiring a restart also makes it a deliberate act rather than
+    /// something a stray request can trigger.
+    ///
+    /// Existing devices keep working; this mints an *additional* owner device
+    /// rather than clearing anything. Revoking the lost one is then an ordinary
+    /// authenticated action from the new device — the recovery path never has to
+    /// destroy anything to work.
+    pub async fn bootstrap_with_recovery(
+        identity: Arc<dyn IdentityStore>,
+        recovery: RecoveryRequest,
+    ) -> Self {
+        let code = match (identity.device_count().await, recovery) {
+            (Ok(0), _) => {
                 let code = generate_pairing_code();
                 // Deliberate journal output (docs/05 §6 step 1) — the pairing
                 // code is the bootstrap secret shown to the local owner only.
                 tracing::info!(pairing_code = %code, "no paired devices — pairing window open");
                 Some(code)
             }
-            Ok(_) => None,
-            Err(e) => {
+            (Ok(n), RecoveryRequest::Requested) => {
+                let code = generate_pairing_code();
+                tracing::warn!(
+                    pairing_code = %code,
+                    existing_devices = n,
+                    "OWNER RECOVERY: pairing window reopened by {RECOVERY_ENV}. Existing \
+                     devices are untouched and still work. Pair a device now, then revoke the \
+                     lost one from it. Restart without {RECOVERY_ENV} once you are back in."
+                );
+                Some(code)
+            }
+            (Ok(_), RecoveryRequest::None) => None,
+            (Err(e), _) => {
                 tracing::warn!(error = %e, "pairing bootstrap deferred — database unreachable");
                 None
             }
