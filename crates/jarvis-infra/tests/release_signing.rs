@@ -123,7 +123,12 @@ fn now() -> String {
 
 fn days_ago(days: u32) -> String {
     let out = Command::new("date")
-        .args(["-u", "-d", &format!("{days} days ago"), "+%Y-%m-%dT%H:%M:%SZ"])
+        .args([
+            "-u",
+            "-d",
+            &format!("{days} days ago"),
+            "+%Y-%m-%dT%H:%M:%SZ",
+        ])
         .output()
         .expect("date");
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
