@@ -22,6 +22,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use ed25519_dalek::{Signer, SigningKey};
 use futures_util::{SinkExt as _, StreamExt};
+use jarvis_adapters::wyoming::WyomingClient;
 use jarvis_application::testing::FakeModel;
 use jarvis_domain::artifact::{
     ArtifactContent, ArtifactKind, ArtifactManifest, ArtifactSource, BuildProvenance,
@@ -48,6 +49,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_util::sync::CancellationToken;
 
 mod golden11_support;
+mod voice_fixture;
 use golden11_support::{FakeArtifactStore, FakeAuditLog};
 
 const ARTIFACT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -207,6 +209,9 @@ async fn golden11_a_second_node_pairs_receives_a_surface_speaks_and_is_revoked(p
             serde_json::json!({
                 "type": "voice.stream.start",
                 "streamId": "kitchen-1",
+                // Without a session the transcript starts no run, and a node
+                // with no run is a node with nothing to be answered *with*.
+                "sessionId": "01ARZ3NDEKTSV4RRFFQ69G5FB0",
                 "sampleRateHz": 16000,
                 "sampleWidthBytes": 2,
                 "channels": 1
@@ -221,14 +226,54 @@ async fn golden11_a_second_node_pairs_receives_a_surface_speaks_and_is_revoked(p
         .await
         .expect("send audio");
 
-    // A room node holds `voice-capture`, so the stream is accepted: no
-    // refusal comes back. (What the speech service then produces is M5's
-    // territory and is not wired here.)
+    // End of speech. The turn is what produces an answer, so it has to close.
+    socket
+        .send(WsMessage::Text(
+            serde_json::json!({ "type": "voice.stream.stop", "streamId": "kitchen-1" })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .expect("stop capture");
+
+    // **The answer comes back to the node that asked (F8.5).**
+    //
+    // Until F10.1 this test stopped at "no refusal came back", which proved a
+    // room node may *speak* and nothing about whether it is ever *answered*.
+    // That gap mattered: a satellite never holds `ui`, and a run's text deltas
+    // ride the Session channel whose rule is `ui` — so the node that asked the
+    // question was, by construction, the one socket that could not hear the
+    // reply, and a node cannot speak what it is not sent.
+    //
+    // Asserted at the socket, on binary frames, because that is the only
+    // evidence that survives every intermediate claim being wrong.
+    let mut heard_audio = false;
+    let mut seen: Vec<String> = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_secs(2), socket.next()).await {
+            Ok(Some(Ok(WsMessage::Binary(bytes)))) if !bytes.is_empty() => {
+                heard_audio = true;
+                break;
+            }
+            Ok(Some(Ok(WsMessage::Text(text)))) => {
+                let value: serde_json::Value = serde_json::from_str(&text).expect("an envelope");
+                let kind = value["type"].as_str().unwrap_or("?").to_owned();
+                if kind == "voice.error" {
+                    seen.push(format!("voice.error({})", value["payload"]));
+                } else {
+                    seen.push(kind);
+                }
+            }
+            Ok(Some(Ok(_))) => {}
+            Ok(Some(Err(e))) => panic!("socket error while waiting for the answer: {e}"),
+            Ok(None) => panic!("the socket closed before the node was answered"),
+            Err(_) => {}
+        }
+    }
     assert!(
-        next_voice_error(&mut socket, Duration::from_secs(2))
-            .await
-            .is_none(),
-        "a room node's capture must be accepted"
+        heard_audio,
+        "the node that asked must hear the answer on its own socket; it received: {seen:?}"
     );
 
     // ---- evidence 4: revocation works, mid-flow ---------------------------
@@ -295,7 +340,12 @@ async fn build_app(pool: &PgPool, server_fingerprint: String) -> (axum::Router, 
     let shutdown = CancellationToken::new();
     let events = Arc::new(PgEventLog::new(pool.clone()));
     let engine = RunEngine::new(
-        Arc::new(FakeModel::streaming(["ok"])),
+        // A real answer, because evidence 3 now asserts the node *hears* it.
+        // Two clauses, deliberately. The segmenter emits a clause when it sees
+        // a terminator *followed by more text*; the last fragment waits for the
+        // run's terminal event to flush it, and this harness runs no outbox
+        // dispatcher, so that event never arrives here. In production it does.
+        Arc::new(FakeModel::streaming(["Twenty minutes. Left on the pasta."])),
         Arc::new(PassthroughAssembler),
         Arc::new(PgRunStore::new(pool.clone())),
         Arc::new(PgMessageStore::new(pool.clone())),
@@ -334,12 +384,25 @@ async fn build_app(pool: &PgPool, server_fingerprint: String) -> (axum::Router, 
         surfaces: auth.surfaces().clone(),
     });
 
+    // The **real** Wyoming client against in-process fixture services: the
+    // framing, cancellation and error paths under test stay production code,
+    // and only the speech engines are faked (their latency is measured
+    // separately by `perf --voice-real` against the real models).
+    let stt_url = voice_fixture::stt_returning("how long on the pasta").await;
+    let tts_url = voice_fixture::tts_streaming(3, 1024, Duration::from_millis(0)).await;
+
     let ws = WsState {
         hub: hub.clone(),
         events,
         shutdown,
-        transcriber: None,
-        synthesizer: None,
+        transcriber: Some(Arc::new(WyomingClient::new(
+            "stt",
+            voice_fixture::addr_of(&stt_url),
+        ))),
+        synthesizer: Some(Arc::new(WyomingClient::new(
+            "tts",
+            voice_fixture::addr_of(&tts_url),
+        ))),
         runs: Some(run_api.clone()),
         identity: Some(identity),
         revocations: auth.revocations().clone(),
@@ -426,15 +489,6 @@ async fn next_display(
     within: Duration,
 ) -> Option<serde_json::Value> {
     next_matching(socket, within, |v| v["channel"] == "display").await
-}
-
-async fn next_voice_error(
-    socket: &mut tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
-    within: Duration,
-) -> Option<serde_json::Value> {
-    next_matching(socket, within, |v| v["type"] == "voice.error").await
 }
 
 async fn next_matching(
