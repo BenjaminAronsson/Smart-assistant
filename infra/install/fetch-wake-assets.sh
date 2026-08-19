@@ -67,6 +67,85 @@ done <<<"$ASSETS"
 # Only once every file is present and verified.
 mv "$STAGING"/*.onnx "$DEST"/
 
+# --- speech-to-text tokenizer ------------------------------------------------
+#
+# Same rule as above (ADR-032 consequence 3), for the other model asset a voice
+# host needs. faster-whisper loads its tokenizer from `tokenizer.json` inside the
+# model directory and, when that file is absent, silently falls back to
+# DOWNLOADING it from `openai/whisper-tiny` at startup. The rhasspy CTranslate2
+# model repos do not ship one — so the STT service reaches the network on every
+# cold start, and on a host whose container runtime has no working DNS it does
+# not start at all: it crash-loops with LocalEntryNotFoundError while the port
+# stays bound by the port-forwarder, which looks healthy from outside.
+#
+# Seeding the file makes the fallback unreachable: faster-whisper checks
+# `os.path.isfile(tokenizer_file)` before it considers the Hub. The tokenizer is
+# identical across whisper sizes for a given multilingual-ness, which is why
+# upstream uses tiny's for every model.
+#
+# Skipped without complaint when no whisper volume exists — a node-only install
+# has no STT service to provision.
+WHISPER_TOKENIZER_SHA=27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566
+WHISPER_TOKENIZER_URL=https://huggingface.co/openai/whisper-tiny/resolve/main/tokenizer.json
+
+runtime=""
+for candidate in podman docker; do
+	command -v "$candidate" >/dev/null 2>&1 && { runtime="$candidate"; break; }
+done
+
+volume_dir=""
+if [ -n "$runtime" ]; then
+	for name in compose_whisper-models whisper-models; do
+		volume_dir="$("$runtime" volume inspect "$name" --format '{{.Mountpoint}}' 2>/dev/null || true)"
+		[ -n "$volume_dir" ] && break
+	done
+fi
+
+if [ -z "$volume_dir" ] || [ ! -d "$volume_dir" ]; then
+	echo
+	echo "No whisper model volume found — skipping the STT tokenizer."
+	echo "  (Expected a '$runtime' volume named compose_whisper-models. Run"
+	echo "   'docker compose -f infra/compose/voice.yml up -d' first if this host"
+	echo "   is meant to run speech-to-text.)"
+else
+	# Every model snapshot present, so this stays correct if the owner changes
+	# the model size in voice.yml and a second snapshot appears.
+	mapfile -t snapshots < <(find "$volume_dir" -mindepth 3 -maxdepth 3 \
+		-path '*/models--*faster-whisper*/snapshots/*' -type d 2>/dev/null)
+
+	if [ "${#snapshots[@]}" -eq 0 ]; then
+		echo
+		echo "Whisper volume has no model snapshot yet — skipping the tokenizer."
+		echo "  Start the STT service once with working network so it downloads the"
+		echo "  model, then re-run this script to seed the tokenizer for later"
+		echo "  offline starts."
+	else
+		echo "  fetching whisper tokenizer.json"
+		curl --fail --silent --show-error --location \
+			--output "$STAGING/tokenizer.json" "$WHISPER_TOKENIZER_URL"
+
+		actual="$(sha256sum "$STAGING/tokenizer.json" | cut -d' ' -f1)"
+		if [ "$actual" != "$WHISPER_TOKENIZER_SHA" ]; then
+			echo "ABORT: whisper tokenizer failed its pinned checksum." >&2
+			echo "  expected $WHISPER_TOKENIZER_SHA" >&2
+			echo "  actual   $actual" >&2
+			echo "The wake assets above are installed; STT is untouched." >&2
+			exit 1
+		fi
+
+		for snapshot in "${snapshots[@]}"; do
+			install -m 0644 "$STAGING/tokenizer.json" "$snapshot/tokenizer.json"
+			echo "  seeded $(basename "$(dirname "$(dirname "$snapshot")")")"
+		done
+		compose_hint="docker compose"
+		if [ "$runtime" = "podman" ]; then
+			compose_hint="podman compose"
+		fi
+		echo "  restart the STT service to pick it up:"
+		echo "    $compose_hint -f infra/compose/voice.yml restart wyoming-whisper"
+	fi
+fi
+
 cat <<EOF
 
 Installed $(ls -1 "$DEST"/*.onnx | wc -l) assets.
