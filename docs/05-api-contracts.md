@@ -191,6 +191,15 @@ Single-owner, loopback-first — deliberately simple, upgraded at M7:
    device record + opaque device token (random 256-bit, stored hashed server-side, keyring
    client-side). The pair response body is `{ deviceId, deviceToken, scopes }` — the
    granted scope list (§6.3) is returned explicitly so clients never infer it.
+1b. **Recovery (F10.9).** The bootstrap window opens only at zero devices, and
+   `device_count` counts revoked rows too — so a lost owner token with any device row
+   present used to be terminal, recoverable only by hand-editing Postgres. Restarting
+   with `JARVIS_RECOVER_PAIRING=1` reopens the window with a fresh code. It is gated on
+   restarting the daemon, i.e. host access, which is strictly stronger than the loopback
+   access step 1 already trusts and no more than a shell already grants. Recovery
+   **adds** a device; it never revokes or deletes, so a half-finished recovery cannot
+   lock the owner out further. The lost device is revoked afterwards as an ordinary
+   authenticated action from the replacement.
 2. **Requests.** Every REST call carries `Authorization: Bearer <token>`. The `/ws/v1`
    upgrade does too **for non-browser clients** (the desktop agent, tests) — but a
    browser's native `WebSocket` constructor cannot set arbitrary request headers on a

@@ -15,7 +15,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use http_body_util::BodyExt;
 use jarvis_domain::identity::DeviceClass;
 use jarvisd::api::{AppState, Wiring, router_with};
-use jarvisd::auth::AuthState;
+use jarvisd::auth::{AuthState, RecoveryRequest};
 use jarvisd::pairing::PairingState;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -482,4 +482,125 @@ async fn a_node_cannot_pair_before_the_owner_does() {
 
 fn pairing_window_for_test(pairing: &PairingState) -> (String, std::time::SystemTime) {
     pairing.open_window_for_test(std::time::SystemTime::now())
+}
+
+// ---------------------------------------------------------------------------
+// F10.9 — the way back in after losing the owner token.
+//
+// Discovered by an owner losing their token on a first real test. Before this,
+// the situation was terminal without hand-editing Postgres: the bootstrap window
+// opens only at zero devices, `device_count` counts revoked rows too, and
+// opening a pairing window needs the very token you lost.
+// ---------------------------------------------------------------------------
+
+/// The bug, stated as a test: with a device present and no recovery asked for,
+/// there is no window — this is the trap the owner fell into.
+#[tokio::test]
+async fn without_recovery_a_house_with_devices_offers_no_way_in() {
+    let store = Arc::new(InMemoryIdentityStore::new().with_device(device(
+        "the laptop whose token was lost",
+        DeviceClass::OwnerUi,
+        "hash-lost",
+    )));
+    let auth = AuthState::bootstrap_with_recovery(store, RecoveryRequest::None).await;
+    assert!(
+        auth.current_pairing_code().is_none(),
+        "a window must not open just because someone restarted the daemon"
+    );
+}
+
+/// And the fix: asked for explicitly, the window reopens.
+#[tokio::test]
+async fn recovery_reopens_the_window_without_touching_existing_devices() {
+    let store = Arc::new(InMemoryIdentityStore::new().with_device(device(
+        "the laptop whose token was lost",
+        DeviceClass::OwnerUi,
+        "hash-lost",
+    )));
+    let auth = AuthState::bootstrap_with_recovery(store.clone(), RecoveryRequest::Requested).await;
+
+    assert!(
+        auth.current_pairing_code().is_some(),
+        "recovery must reopen the pairing window"
+    );
+    // Recovery adds a way in; it does not take anything away. The lost device is
+    // revoked afterwards, from the recovered one, as an ordinary authenticated
+    // action — so a half-finished recovery never leaves the house unreachable.
+    assert_eq!(
+        store.devices().len(),
+        1,
+        "recovery must not delete or revoke existing devices"
+    );
+}
+
+/// Recovery reopens the window; it does not unlock it. Driven through the
+/// production route mount, because a recovery path that is only ever exercised
+/// by a helper is a recovery path nobody has actually tried.
+#[tokio::test]
+async fn a_recovered_window_still_refuses_the_wrong_code() {
+    let store = Arc::new(InMemoryIdentityStore::new().with_device(device(
+        "lost",
+        DeviceClass::OwnerUi,
+        "hash-lost",
+    )));
+    let auth = AuthState::bootstrap_with_recovery(store.clone(), RecoveryRequest::Requested).await;
+    let real = auth.current_pairing_code().expect("a window is open");
+    let app = router_with(AppState::new().with_auth(auth), Wiring::default());
+
+    let pair_with = |code: String| {
+        let app = app.clone();
+        async move {
+            app.oneshot(
+                Request::post("/api/v1/auth/pair")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"pairingCode":"{code}","deviceName":"replacement laptop"}}"#
+                    )))
+                    .expect("request"),
+            )
+            .await
+            .expect("response")
+            .status()
+        }
+    };
+
+    assert_ne!(
+        pair_with("000-000".to_owned()).await,
+        StatusCode::OK,
+        "a wrong code must be refused even during recovery"
+    );
+    assert_eq!(
+        pair_with(real).await,
+        StatusCode::OK,
+        "the real code must pair a replacement device"
+    );
+    assert_eq!(
+        store.devices().len(),
+        2,
+        "the recovered device joins the lost one rather than replacing it"
+    );
+}
+
+/// The flag reading, including the spellings an owner might reach for.
+#[test]
+fn the_recovery_flag_reads_the_spellings_people_actually_type() {
+    for value in ["1", "true", "yes", "on", "TRUE", " 1 "] {
+        assert_eq!(
+            RecoveryRequest::from_value(Some(value)),
+            RecoveryRequest::Requested,
+            "{value:?} should request recovery"
+        );
+    }
+    for value in ["0", "false", "FALSE", "", "   "] {
+        assert_eq!(
+            RecoveryRequest::from_value(Some(value)),
+            RecoveryRequest::None,
+            "{value:?} should not request recovery"
+        );
+    }
+    assert_eq!(
+        RecoveryRequest::from_value(None),
+        RecoveryRequest::None,
+        "unset must never open a window"
+    );
 }

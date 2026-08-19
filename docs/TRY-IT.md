@@ -192,3 +192,22 @@ Stated plainly because you are about to hit them, not to be defensive:
   startup and falls back to push-to-talk rather than failing.
 - **Creating an automation is API-only.** The settings surface lists them,
   enables, disables and shows history (M8b D1).
+
+## Lost your device token?
+
+The `deviceToken` crosses the wire exactly once, so if you lose it there is
+nothing to look up. Restart `jarvisd` with the recovery flag set:
+
+```bash
+JARVIS_RECOVER_PAIRING=1 ./target/release/jarvisd
+```
+
+The journal logs a fresh pairing code and the loopback health page shows it
+again. Pair a replacement device the ordinary way, then revoke the lost one from
+it — recovery **adds** a way in rather than clearing anything, so your existing
+devices, nodes, timers and automations keep working throughout.
+
+Restart without the flag once you are back in. The flag is gated on being able
+to restart the daemon, which is host access — strictly stronger than the
+loopback access the first-run ceremony already trusts, and no more than someone
+with a shell could do by reading the database directly.
