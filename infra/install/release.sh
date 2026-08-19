@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Build, checksum and sign a release (F10.7, docs/06 §9, NFR-14).
+#
+# Produces a directory an owner can verify *without trusting the machine that
+# built it*: the binaries, a SHA-256 manifest over them, an SSH signature over
+# that manifest, and a record of when the advisory scan was run.
+#
+# WHY THE ADVISORY DATE IS IN THE MANIFEST.
+#
+# The supply-chain check is **time-dependent**, which nothing else in this
+# pipeline is. During M8, RUSTSEC-2026-0258 turned a green pipeline red with no
+# code change whatsoever — the code was identical, the world had learned
+# something. A signature proves these bytes are the bytes that were built; it
+# says nothing at all about whether they were known-vulnerable at the time, and
+# nothing about how long ago anyone last checked.
+#
+# So "we ran cargo deny" is not a durable claim, and a release process that only
+# records *that* it passed is recording the wrong thing. This records **when**,
+# and `verify-release.sh` refuses an artifact whose scan is older than
+# MAX_ADVISORY_AGE_DAYS. Stale evidence of safety is not evidence of safety.
+#
+# Usage:
+#   JARVIS_RELEASE_KEY=~/.ssh/id_ed25519 infra/install/release.sh dist/
+#
+# Verify with:
+#   infra/install/verify-release.sh dist/jarvis-<version>
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/../.." && pwd)"
+OUT_ROOT="${1:-}"
+if [[ -z "$OUT_ROOT" ]]; then
+	echo "usage: JARVIS_RELEASE_KEY=<ssh-private-key> $0 <output-directory>" >&2
+	exit 2
+fi
+: "${JARVIS_RELEASE_KEY:?JARVIS_RELEASE_KEY must point at an SSH private key}"
+[[ -f "$JARVIS_RELEASE_KEY" ]] || { echo "ABORT: no such key: $JARVIS_RELEASE_KEY" >&2; exit 2; }
+
+# The namespace scopes the signature: a signature made for `jarvis-release`
+# cannot be replayed as a git commit signature, or vice versa.
+NAMESPACE="jarvis-release"
+BINARIES=(jarvisd jarvis-agent)
+
+VERSION="$(grep -m1 '^version' "$REPO/crates/jarvisd/Cargo.toml" | cut -d'"' -f2)"
+DEST="$OUT_ROOT/jarvis-$VERSION"
+mkdir -p "$DEST"
+
+echo "== 1/4 advisory scan"
+# Run it here rather than trusting that CI ran it at some point: the whole
+# argument below depends on knowing exactly when this happened.
+SCAN_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+if command -v cargo-deny >/dev/null 2>&1 || cargo deny --version >/dev/null 2>&1; then
+	if ! (cd "$REPO" && cargo deny check advisories 2>&1 | tail -5); then
+		echo >&2
+		echo "ABORT: the advisory scan found unaccepted findings." >&2
+		echo "Releasing over a known advisory is a decision, not a default — accept it" >&2
+		echo "explicitly in deny.toml with a reason, or fix it." >&2
+		exit 1
+	fi
+	SCAN_STATUS=pass
+else
+	echo "ABORT: cargo-deny is not installed, so this release has no advisory evidence." >&2
+	echo "  cargo install cargo-deny --locked" >&2
+	exit 2
+fi
+echo "   ok: advisories clean at $SCAN_AT"
+
+echo "== 2/4 build"
+(cd "$REPO" && cargo build --release --locked -p jarvisd -p jarvis-agent)
+for bin in "${BINARIES[@]}"; do
+	cp "$REPO/target/release/$bin" "$DEST/$bin"
+done
+echo "   ok: ${BINARIES[*]}"
+
+echo "== 3/4 manifest"
+# Sorted, relative paths: the manifest must be byte-identical for identical
+# inputs, or the signature is over an accident of directory order.
+(cd "$DEST" && sha256sum "${BINARIES[@]}" | LC_ALL=C sort > SHA256SUMS)
+cat > "$DEST/RELEASE" <<EOF
+jarvis-release 1
+version=$VERSION
+built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+advisory_scan_at=$SCAN_AT
+advisory_scan_status=$SCAN_STATUS
+EOF
+# The signature covers BOTH files: SHA256SUMS pins the bytes, RELEASE pins the
+# advisory date. Signing only the checksums would leave the freshness claim
+# unsigned and therefore editable by anyone who could reach the directory.
+cat "$DEST/SHA256SUMS" "$DEST/RELEASE" > "$DEST/SIGNED-PAYLOAD"
+echo "   ok: $(wc -l < "$DEST/SHA256SUMS") artifacts"
+
+echo "== 4/4 signature"
+ssh-keygen -Y sign -f "$JARVIS_RELEASE_KEY" -n "$NAMESPACE" "$DEST/SIGNED-PAYLOAD" >/dev/null 2>&1
+# The public half travels with the release so a verifier can check the signature
+# is internally consistent. That is NOT the same as trusting it — verification
+# against a known key is the operator's job, and verify-release.sh says so.
+ssh-keygen -y -f "$JARVIS_RELEASE_KEY" > "$DEST/signing-key.pub"
+echo "   ok: signed with $(cut -d' ' -f1 < "$DEST/signing-key.pub")"
+
+echo
+echo "release complete: $DEST"
+echo "verify with: infra/install/verify-release.sh $DEST"
