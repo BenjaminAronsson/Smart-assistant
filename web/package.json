@@ -39,6 +39,7 @@
     "@angular/compiler-cli": "^22.0.7",
     "@types/jasmine": "~5.1.0",
     "angular-eslint": "^22.1.0",
+    "axe-core": "^4.13.0",
     "eslint": "^9.39.1",
     "istanbul-lib-instrument": "^6.0.3",
     "jasmine-core": "~5.9.0",
