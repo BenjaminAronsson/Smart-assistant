@@ -10,6 +10,10 @@ useDefault = true
 
 [allowlist]
 description = "Canonical non-secret constants that trip the entropy heuristic"
+# Match against the whole matched line, not just the extracted secret: what
+# makes the checksum below provably not a credential is the `<NAME>_SHA=` on its
+# left, which the extracted secret does not include.
+regexTarget = "match"
 
 regexes = [
   # `01ARZ3NDEKTSV4RRFFQ69G5FAV` is *the* example ULID from the ULID
@@ -23,4 +27,17 @@ regexes = [
   # looks like a key. Without this entry the scan fails on hundreds of
   # pre-existing test fixtures across the tree.
   '''01ARZ3NDEKTSV4RRFFQ69G5FAV''',
+
+  # Pinned SHA-256 checksums in the provisioning scripts, e.g.
+  # `WHISPER_TOKENIZER_SHA=27fc476…`. A 64-character lowercase-hex value is a
+  # digest, not a credential — and these in particular are the *mechanism*
+  # ADR-032 uses to refuse a downloaded model whose bytes do not match. They are
+  # meant to be public, committed, and reviewed in the diff; a checksum that had
+  # to be kept secret would not be doing its job.
+  #
+  # `generic-api-key` flags them on entropy alone, exactly as it flags the ULID
+  # above. Deliberately narrow: it matches only a `<NAME>_SHA=` assignment
+  # followed by 64 hex characters, so an actual key assigned to an actual
+  # key-shaped variable is still caught.
+  '''[A-Z0-9_]*_SHA=[0-9a-f]{64}''',
 ]
