@@ -1,8 +1,25 @@
 # M8c gate report — the seam
 
-**Status: NOT READY FOR SIGN-OFF — for one reason, and it is not a code reason.** The exit
-evidence is a fresh-machine install demonstrated end to end, and that has not been done on a
-fresh machine.
+**Status: ✅ SIGNED OFF — owner, 2026-08-19, with the clean-machine install recorded as an
+accepted deviation.**
+
+Be precise about what that means, because it is the one place this milestone's evidence is
+weaker than its wording. On 2026-08-19 the full stack was brought up and driven end to end from
+a written runbook (`docs/TRY-IT.md`, every command executed in order): Postgres, Wyoming, the
+daemon, the shell served by the daemon, an owner paired, a satellite paired with its credentials
+in the **OS keyring**, and the wake word heard over the air. What that is **not** is a *fresh
+machine* — it is a developer workstation with the stack already built. The owner signed on that
+evidence; a genuine clean-machine install remains untested and is the first thing F10.2/F10.3
+build on.
+
+That run was not ceremonial: it found four defects, including one that made a woken node stream
+continuously and never wake again, and one where the shell told a never-paired browser that the
+daemon was down.
+
+---
+
+*Original status: NOT READY FOR SIGN-OFF — the exit evidence is a fresh-machine install
+demonstrated end to end, and that had not been done on a fresh machine.*
 
 Prepared 2026-08-15 against `main` (`e69bd83`), covering F8.8–F8.11.
 **Updated 2026-08-17:** **D1, D2 and D3 are all closed** (voice section + config-write API,

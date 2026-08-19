@@ -299,7 +299,7 @@ proves it end to end.
 
 | Item | Source | Lands in |
 |---|---|---|
-| **D-M4-1** — the deferrable-work scheduler has no daemon driver | M4 gate | ⚠️ **STILL OPEN** — F8.7 wrote a driver and did not spawn it; needs real deferrable work to exist |
+| ~~**D-M4-1**~~ — the deferrable-work scheduler has no daemon driver | M4 gate | **DROPPED by the owner 2026-08-19.** F8.7 wrote a driver and did not spawn it; there is also no deferrable work for one to turn. Carried since M4, never needed. The code stays with a banner so it cannot be re-claimed as closed. |
 | **D-M5-3** — NFR-04 latency never measured on real hardware | M5 gate | **F8.10** |
 | **STT model size undecided** (`base` vs `small` int8) | M5, docs/08 §6 | **F8.9** |
 | **Timer alerts have no device notion** — they play on the daemon host | found post-M7 | **F8.5** |
