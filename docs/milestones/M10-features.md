@@ -80,7 +80,7 @@ instructions the whole way, with no source tree and no help from the person who 
       database; a restore with the blob store missing **fails loudly** rather than half-working.
       Deps: F10.1.
 
-- [ ] **F10.3 — Update and rollback, repeatably (docs/09)** · *strong model*
+- [x] **F10.3 — Update and rollback, repeatably (docs/09)** · *strong model*
       Upgrading must not be an act of faith. Forward migrations already run on start; what is
       missing is the other direction and the story around it: what happens to a paired node when
       the daemon's contract version moves, what an operator does when an upgrade goes wrong, and
