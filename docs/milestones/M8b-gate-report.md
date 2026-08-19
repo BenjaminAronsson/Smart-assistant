@@ -1,7 +1,13 @@
 # M8b gate report — scheduling
 
-**Status: READY FOR SIGN-OFF on its own exit evidence, with two recorded deviations — one of
-which is a correction to this report.**
+**Status: ✅ SIGNED OFF — owner, 2026-08-19**, with D1 recorded (automations are created
+API-only) and **D-M4-1 dropped** rather than carried: it had been open since M4, nothing has
+ever needed it, and this report's earlier claim that it was closed has been withdrawn (§1.3).
+
+---
+
+*Original status: READY FOR SIGN-OFF on its own exit evidence, with two recorded deviations —
+one of which is a correction to this report.*
 
 Prepared 2026-08-15 against `main` (`e69bd83`), covering F8.6–F8.7 and D-M4-1.
 **Updated 2026-08-17:** D2 is **closed** — the restart sweep now reads a persisted last-seen

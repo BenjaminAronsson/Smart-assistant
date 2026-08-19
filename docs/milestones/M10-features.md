@@ -4,9 +4,8 @@ Status: **APPROVED — owner sign-off 2026-08-19**, list and order as written. D
 day on Opus 5, after M8 finished in code (PRs #44–#68) and M9 was deliberately skipped.
 **F10.1 is the current feature.** The owner will install and test once it is done.
 
-Two of the three human-only questions below are still open and do not block F10.1: whether
-D-M4-1 is scheduled or dropped, and whether M8's sub-gates are signed now or on the evidence
-F10.1 produces.
+All three human-only questions are now answered: the list and order are approved, **D-M4-1 is
+dropped**, and **M8's sub-gates are signed** on the evidence F10.1 produced (2026-08-19).
 
 **Ordered for one stated goal: "a working product I can test."** That reorders the roadmap row.
 Signed releases and a diagnostics bundle are worth nothing to an owner who cannot yet run the
@@ -141,7 +140,7 @@ instructions the whole way, with no source tree and no help from the person who 
 
 | Item | Source | Note |
 |---|---|---|
-| **D-M4-1** — deferrable work has no driver *and* no handler | M4 gate, reopened 2026-08-18 | M8 wrote `run_worker` and never spawned it. Needs **real deferrable work to exist** (M4's deferred summarization) before a driver means anything. Its own slice, or explicitly dropped. |
+| ~~**D-M4-1**~~ — deferrable work has no driver *and* no handler | M4 gate | **DROPPED by the owner 2026-08-19.** Carried since M4 and nothing has ever needed it; dropping it deliberately beats carrying it a sixth time. The code stays, with a banner saying nothing spawns it, so no future report can claim it closed again. Revisit only when something real needs deferring. |
 | **S3** — every spoken answer is labelled `Normal` | M8 security audit | A run that reads a message aloud can reach ElevenLabs. Needs a tool-activity signal from the orchestrator — an application-layer change with a transition-table test. |
 | **M8b D1** — automations are created API-only | M8b gate | Natural fit with F10.5's policy surface. |
 | **AEC active cost** ~9.3% of a core while speaking | M8 perf pass | Scalar 2048-tap NLMS. Only paid while speaking now; revisit only if a satellite proves too slow. |
@@ -159,7 +158,7 @@ instructions the whole way, with no source tree and no help from the person who 
 
 1. **Approve this list and its order.** In particular: F10.1 before everything, and shipping
    F10.5 read-only rather than blocking on the write-access ADR.
-2. **D-M4-1: schedule or drop it.** It has been carried since M4 and nothing has ever needed it.
-   Dropping it deliberately is a better outcome than carrying it a fifth time.
-3. **Whether M8's three sub-gates are signed before M10 starts**, or M8a/M8c sign off on the
-   evidence F10.1 produces.
+2. ~~**D-M4-1: schedule or drop it.**~~ **DROPPED 2026-08-19.**
+3. ~~**Whether M8's three sub-gates are signed.**~~ **SIGNED 2026-08-19** on the evidence F10.1
+   produced — see the three gate reports for what is demonstrated and what is accepted as a
+   recorded deviation.

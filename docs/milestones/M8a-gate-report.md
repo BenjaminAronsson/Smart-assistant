@@ -1,6 +1,23 @@
 # M8a gate report — hands-free core
 
-**Status: READY FOR SIGN-OFF ON THE CODE, pending two off-machine measurements.**
+**Status: ✅ SIGNED OFF — owner, 2026-08-19.**
+
+The headline claim was demonstrated on 2026-08-19, during F10.1: the wake word was played into
+a room, picked up by a real analog microphone, scored by the openWakeWord engine **on the node**,
+and detected. A node answers to its name. Signed with two deviations recorded below (D2/D3:
+reference-hardware measurement; D5: the false-accept corpus), both of which need hardware this
+gate does not have and neither of which is a code gap.
+
+F10.1 also found — and fixed — two defects in the hands-free path that this report had passed:
+a listening node burned 19.2% of a core, and **a turn could never end in a real room**, which
+left a woken node permanently deaf and permanently transmitting. Both are described in the M10
+feature list; that they existed after this report first read "PASS" is the strongest argument
+in the project for running the thing.
+
+---
+
+*Original status when first prepared: READY FOR SIGN-OFF ON THE CODE, pending two off-machine
+measurements.*
 
 Prepared 2026-08-15 against `main` (`e9118ae`), covering F8.1–F8.5 since `m7-complete`.
 

@@ -1,8 +1,28 @@
-//! The daemon driver for M4's deferrable work (closes D-M4-1, F8.7).
+//! The daemon driver for M4's deferrable work (F8.7).
+//!
+//! # ⚠️ NOTHING SPAWNS THIS, BY DECISION
+//!
+//! **D-M4-1 was dropped by the owner on 2026-08-19**, not closed. `main.rs`
+//! does not call `run_worker`, no production type implements [`DeferredContext`],
+//! and no production type implements `DeferredWorkHandler` — so there is also no
+//! deferrable *work* for a driver to turn. Read that before writing anywhere
+//! that this is wired.
+//!
+//! It is kept rather than deleted because it is correct, tested, and the moment
+//! there is real deferrable work (M4's deferred summarization was the intended
+//! first case) this is what turns it. Spawning it before then would produce a
+//! loop that wakes every two minutes to do nothing — which is precisely the
+//! mistake that has already been made twice here.
+//!
+//! That history is the reason for this banner. M4 shipped a scheduler nothing
+//! called; M8 shipped this driver and never spawned it, and an M8b gate report
+//! then stated in writing that the deviation was **closed**. It was not, and a
+//! `rust-reviewer` pass caught it one step before sign-off. The pattern is
+//! logged as the fixture-vs-caller class, on its fifth instance.
 //!
 //! `DeferrableScheduler` and `DeferredWorkExecutor` have existed since M4 and
-//! **nothing called them** — the deviation carried forward through three
-//! milestones. The scheduling logic was never the gap; a loop to turn it was.
+//! **nothing called them**. The scheduling logic was never the gap; something
+//! that *needs* deferring is.
 //!
 //! Deliberately shaped like `timers::run_scheduler` rather than inventing a
 //! second pattern: wake, do at most one thing, log honestly, sleep. Two
