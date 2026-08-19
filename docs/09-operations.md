@@ -222,6 +222,54 @@ PGDUMP=/usr/lib/postgresql/16/bin/pg_dump  infra/install/backup.sh ...  # or exp
 - Upgrade procedure: backup → `sqlx migrate run` → health gate → on failure, roll back
   the binary and `restore.sh` (a repeatable procedure is F10.3).
 
+## 3a. Update and rollback (F10.3)
+
+```bash
+systemctl stop jarvisd          # a daemon on the old schema during migration is
+                                # the one state nothing here can reason about
+DATABASE_URL=... JARVIS__STORAGE__ARTIFACTS_ROOT=... \
+  infra/install/update.sh /var/backups/jarvis
+```
+
+The script does the three things in the order that matters and refuses to continue when
+any fails: **take and verify a backup**, apply forward migrations, then wait for the daemon
+to report healthy — printing the exact restore command if it does not.
+
+### Rollback is restore from backup. There is no `down` migration.
+
+Stated plainly because the alternative is implying something untrue. All 21 files in
+`migrations/` are forward-only; there is not one `.down.sql`, so `sqlx migrate revert` has
+nothing to revert. **A schema change that has run cannot be un-run.**
+
+That is a position, not an oversight. A `down` migration that drops the column a failed
+upgrade just populated destroys data the operator still had; restoring a backup does not.
+The cost is that rollback loses everything written since the backup — which is exactly why
+`update.sh` takes one seconds before migrating rather than relying on the nightly.
+
+To roll back:
+
+```bash
+JARVIS__STORAGE__ARTIFACTS_ROOT=... \
+  infra/install/restore.sh /var/backups/jarvis/jarvis-<timestamp> --force
+```
+
+…and **run the old binary against it**. Restoring the database without also going back to
+the matching binary just reproduces the failure.
+
+### Paired devices across an upgrade
+
+Device tokens are opaque and stored hashed; nothing in them encodes a contract version, so
+paired browsers and nodes survive an upgrade and a rollback without re-pairing. A node
+whose contract version no longer matches the daemon's fails its next handshake and says so,
+rather than half-working — the same fail-closed stance as everywhere else.
+
+### Verified, not asserted
+
+`crates/jarvis-infra/tests/update_rollback.rs` executes the documented path: a fully
+migrated house with a paired device is backed up, restored into a *separate* database, and
+the owner is still paired afterwards. A third test fails the build if anyone adds a
+`.down.sql`, so this section cannot quietly drift out of date.
+
 ## 4. Configuration profiles (operational presets)
 
 | Profile | Providers | Tools | Network |
