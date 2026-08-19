@@ -208,4 +208,60 @@
       <p class="empty">Voice settings unavailable.</p>
     }
   </section>
+
+  <!--
+    F10.5 — what each tool may do. Read-only: every value here came from the
+    server, which got each outcome from `policy::evaluate` itself. Nothing on
+    this page decides anything, and there is no control that changes policy —
+    that needs an ADR before it needs a button.
+  -->
+  <section class="panel" aria-labelledby="policy-heading">
+    <h2 id="policy-heading">What each tool may do</h2>
+    @if (policy(); as p) {
+      @if (p.tools.length === 0) {
+        <p class="empty">
+          No tools are registered, so nothing can act. Optional capabilities are
+          opt-in — see <code>diagnostics/health</code> for which are configured.
+        </p>
+      } @else {
+        <div class="table-scroll">
+          <table class="policy-table">
+            <caption class="visually-hidden">
+              Registered tools, their risk tier, and what each device class is
+              allowed to do with them
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Tool</th>
+                <th scope="col">Risk</th>
+                <th scope="col">Data</th>
+                @for (c of policyClasses; track c) {
+                  <th scope="col">{{ c }}</th>
+                }
+              </tr>
+            </thead>
+            <tbody>
+              @for (tool of p.tools; track tool.toolId) {
+                <tr>
+                  <th scope="row"><code>{{ tool.toolId }}</code></th>
+                  <td>{{ tool.risk }}</td>
+                  <td>{{ tool.egress }}</td>
+                  @for (c of policyClasses; track c) {
+                    <td>{{ outcomeFor(tool, c) }}</td>
+                  }
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+        <p class="muted">
+          Read-only. Risk tiers and scopes are host-owned and set in configuration —
+          a page that could change them is a larger authority question than this
+          surface answers.
+        </p>
+      }
+    } @else {
+      <p class="empty">Policy unavailable.</p>
+    }
+  </section>
 </main>

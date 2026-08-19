@@ -557,6 +557,65 @@
       ],
       "type": "object"
     },
+    "ClassOutcomeDto": {
+      "description": "One device class's actual outcome for a tool.",
+      "oneOf": [
+        {
+          "description": "Runs without asking (still evaluated and audited — there is no\nskip-policy path, docs/06 §3).",
+          "properties": {
+            "outcome": {
+              "const": "auto",
+              "type": "string"
+            }
+          },
+          "required": [
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Requires an explicit approval carrying the exact effect.",
+          "properties": {
+            "outcome": {
+              "const": "needs_approval",
+              "type": "string"
+            }
+          },
+          "required": [
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Refused, with the engine's own reason.",
+          "properties": {
+            "outcome": {
+              "const": "denied",
+              "type": "string"
+            },
+            "reason": {
+              "description": "A stable, human-readable reason: `unknown_tool`, `prohibited`, or\n`missing_scope:<scope>`. Rendered from `DenyReason`, never invented.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "outcome",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "deviceClass": {
+          "description": "`owner-ui` | `display-node` | `voice-node` | `room-node`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "deviceClass"
+      ],
+      "type": "object"
+    },
     "ContentBlock": {
       "oneOf": [
         {
@@ -2884,6 +2943,71 @@
       ],
       "type": "string"
     },
+    "PolicyOutcomeDto": {
+      "description": "What `policy::evaluate` returns for one (tool, device class) pair, flattened\nfor display.",
+      "oneOf": [
+        {
+          "description": "Runs without asking (still evaluated and audited — there is no\nskip-policy path, docs/06 §3).",
+          "properties": {
+            "outcome": {
+              "const": "auto",
+              "type": "string"
+            }
+          },
+          "required": [
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Requires an explicit approval carrying the exact effect.",
+          "properties": {
+            "outcome": {
+              "const": "needs_approval",
+              "type": "string"
+            }
+          },
+          "required": [
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Refused, with the engine's own reason.",
+          "properties": {
+            "outcome": {
+              "const": "denied",
+              "type": "string"
+            },
+            "reason": {
+              "description": "A stable, human-readable reason: `unknown_tool`, `prohibited`, or\n`missing_scope:<scope>`. Rendered from `DenyReason`, never invented.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "outcome",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "PolicyViewDto": {
+      "description": "`GET /api/v1/policy`.",
+      "properties": {
+        "tools": {
+          "description": "Every registered tool, in the registry's stable order.\n\nA tool absent here is not callable at all — the registry *is* the\ncatalogue, there is no ambient tool set — so a short list is a true\nanswer to \"what can this house do\", not a truncated one.",
+          "items": {
+            "$ref": "#/definitions/ToolPolicyDto"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "tools"
+      ],
+      "type": "object"
+    },
     "ProblemDetails": {
       "description": "RFC 9457 problem details body plus the stable machine `code` (docs/05 §2).\nThe gateway maps every boundary-crossing error through one `IntoProblem`\nimpl — no inline problem bodies.",
       "properties": {
@@ -3653,6 +3777,54 @@
           "type": "string"
         }
       ]
+    },
+    "ToolPolicyDto": {
+      "description": "One tool, as the engine treats it.",
+      "properties": {
+        "egress": {
+          "description": "`none` | `local` | `external` — how far this tool's data travels.",
+          "type": "string"
+        },
+        "outcomes": {
+          "description": "**The decision itself**, per device class, straight from\n`policy::evaluate`. Keyed by class name (`owner-ui`, `room-node`, …).",
+          "items": {
+            "$ref": "#/definitions/ClassOutcomeDto"
+          },
+          "type": "array"
+        },
+        "requiredScopes": {
+          "description": "Scopes a caller must hold. A device class holding none of these is not\nmerely restricted, it is refused.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "requiresUserPresence": {
+          "description": "Whether the tool may only run with the owner present.",
+          "type": "boolean"
+        },
+        "reversible": {
+          "description": "Whether an execution can be undone. Shown because it is what an owner\nweighs, and it is host-owned metadata — never tool-declared.",
+          "type": "boolean"
+        },
+        "risk": {
+          "description": "`R0`–`R4` (docs/06 §2).",
+          "type": "string"
+        },
+        "toolId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "toolId",
+        "risk",
+        "reversible",
+        "requiresUserPresence",
+        "egress",
+        "requiredScopes",
+        "outcomes"
+      ],
+      "type": "object"
     },
     "TrackMetadataDto": {
       "description": "Track metadata as published by the player — **untrusted display data**\n(docs/06 §2 Z4). Absent fields are omitted rather than blank so the card can\nrender \"unknown\" instead of an empty line.",

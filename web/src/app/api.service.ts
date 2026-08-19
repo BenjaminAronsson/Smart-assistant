@@ -2,28 +2,29 @@ import { HttpClient, HttpErrorResponse, HttpHeaders } from '@angular/common/http
 import { Injectable, inject } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import type {
-  CreateSessionRequest,
-  HealthResponse,
-  PairRequest,
-  PairResponse,
-  SessionDto,
-  SessionListResponse,
-  TimelineResponse,
-  SubmitMessageRequest,
-  ProvidersResponse,
-  RunAck,
-  RunDto,
   ApprovalDecisionDto,
+  AutomationHistoryResponse,
+  AutomationListResponse,
+  CreateSessionRequest,
+  DeviceListResponse,
+  HealthResponse,
+  MapCoverageResponse,
   MediaCommandRequest,
   MediaCommandResponse,
   MediaStateResponse,
-  MapCoverageResponse,
-  DeviceListResponse,
+  PairRequest,
+  PairResponse,
   PairingWindowDto,
-  AutomationListResponse,
-  AutomationHistoryResponse,
-  VoiceSettingsDto,
+  PolicyViewDto,
+  ProvidersResponse,
+  RunAck,
+  RunDto,
+  SessionDto,
+  SessionListResponse,
+  SubmitMessageRequest,
+  TimelineResponse,
   UpdateVoiceSettingsRequest,
+  VoiceSettingsDto,
 } from '../generated/api-types';
 
 const TOKEN_KEY = 'jarvis.deviceToken';
@@ -260,6 +261,23 @@ export class ApiService {
         { enabled },
         { headers: this.authHeaders() },
       ),
+    );
+  }
+
+  /**
+   * The read-only policy view (F10.5, FR-05): what each tool may do, and what
+   * each device class is actually allowed.
+   *
+   * Read-only by design — there is no counterpart write method, and adding one
+   * needs an ADR first (see `jarvis_contracts::policy`). Changing a risk tier
+   * from a web page is a far larger authority question than changing a wake
+   * word.
+   */
+  getPolicy(): Promise<PolicyViewDto> {
+    return firstValueFrom(
+      this.http.get<PolicyViewDto>('/api/v1/policy', {
+        headers: this.authHeaders(),
+      }),
     );
   }
 

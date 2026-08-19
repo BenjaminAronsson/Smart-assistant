@@ -59,6 +59,14 @@ pub fn export() -> Value {
     generator.subschema_for::<crate::settings::ElevenLabsSettingsDto>();
     generator.subschema_for::<crate::settings::UpdateVoiceSettingsRequest>();
     generator.subschema_for::<crate::settings::NodeVoiceSettingsDto>();
+    // F10.5: the read-only policy view. Registered so the Angular client's types
+    // are generated from the same schema the daemon serves, never hand-written
+    // twice — a policy surface with a hand-maintained client type is a second
+    // place for the rules to drift.
+    generator.subschema_for::<crate::policy::PolicyViewDto>();
+    generator.subschema_for::<crate::policy::ToolPolicyDto>();
+    generator.subschema_for::<crate::policy::ClassOutcomeDto>();
+    generator.subschema_for::<crate::policy::PolicyOutcomeDto>();
     generator.subschema_for::<crate::content::ContentBlock>();
     // M1 run/message/timeline/provider surface + typed WS events (F1.1).
     generator.subschema_for::<crate::runs::RunDto>();

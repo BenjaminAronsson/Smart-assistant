@@ -100,7 +100,7 @@ instructions the whole way, with no source tree and no help from the person who 
       body appear **nowhere** in it.
       Deps: F10.1.
 
-- [ ] **F10.5 — Policy UI: see and change what is allowed (FR-05, docs/12)** · *Sonnet*
+- [x] **F10.5 — Policy UI: see and change what is allowed (FR-05, docs/12)** · *Sonnet*
       Risk tiers, scopes and per-tool policy are config-only today. The settings surface gained
       devices, automations and voice in M8c; this adds the one an owner most needs to *see*:
       what each tool may do, what needs approval, and what a given device class is allowed.
