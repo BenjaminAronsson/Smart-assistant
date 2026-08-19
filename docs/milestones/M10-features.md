@@ -111,7 +111,7 @@ instructions the whole way, with no source tree and no help from the person who 
       inputs — a UI that *describes* different rules than the engine enforces is worse than none.
       Deps: F10.1.
 
-- [ ] **F10.6 — Accessibility pass (NFR-11, docs/12 §8)** · *Sonnet*
+- [x] **F10.6 — Accessibility pass (NFR-11, docs/12 §8)** · *Sonnet*
       Keyboard-first was built in from M3b and spot-checked per surface; nothing has audited it
       whole. Screen-reader labelling of the presence states, focus order across the HUD and
       settings, reduced-motion honoured everywhere, contrast in both the glass and photo

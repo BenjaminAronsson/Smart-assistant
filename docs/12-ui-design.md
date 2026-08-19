@@ -229,6 +229,45 @@ reachable with visible `:focus-visible` ring; dismiss/restore/clear operable wit
 hover (focus-within reveals `×`); reduced-motion fully honored; captions persist for
 muted/silent use.
 
+### 8.1 The audit, and its limits (F10.6)
+
+Audited whole rather than per surface, because the defects that matter here are the
+ones no single component's own spec would ask about — a route that shipped without a
+heading, a focus order that only breaks when two surfaces compose.
+
+**Automated** (`web/src/app/a11y.spec.ts`, `contrast.spec.ts`, run in CI):
+
+| check | what it catches |
+|---|---|
+| axe over HUD, presence orb, settings | missing labels, roles, structure |
+| every focusable control is announced | the icon-button-with-no-label case |
+| no positive `tabindex` | a tab order that stops matching the visual one |
+| presence has a live region carrying the state | state conveyed by colour and motion alone |
+| decorative layers are `aria-hidden` | the HUD read as a wall of unlabelled `div`s |
+| each route offers a heading | nothing to navigate by |
+| every voice affordance has a non-voice equivalent | NFR-11's sharpest clause |
+| contrast from the real tokens | body text 4.5:1, focus ring and state colours 3:1 |
+
+The suite is mutation-checked: removing the presence live region, or adding an
+unlabelled button, fails it. An audit that cannot fail is decoration.
+
+**Deliberately not automated, and why:**
+
+- **Contrast in a fixture.** axe's `color-contrast` rule is disabled in the karma
+  fixtures. Headless backgrounds compute as transparent, so the rule compares text
+  against nothing — reporting failures that do not exist while missing the ones that
+  do. Wrong in both directions is worse than absent, because people trust it. Contrast
+  is checked from the token values instead, which is where it is actually decided.
+- **The photo background.** Token contrast assumes the glass panel's white base. A
+  user-supplied photo can put anything behind the scrim, and no fixture can model an
+  arbitrary image. The scrim exists for this; whether it is *enough* for a given photo
+  is a human judgement, made when the photo is chosen.
+- **Screen-reader feel.** Announcement order and verbosity in a real reader are not
+  reducible to assertions. The structure is tested; the experience is not.
+
+**Result:** the surface passes as it stands. Keyboard-first was built in from M3b and
+holds up under an audit it was never specifically written for.
+
 ## 9. Acceptance for HUD work
 
 Keyboard-only walkthrough · amber-exclusivity grep · card grammar only (no free-form
