@@ -23,25 +23,30 @@ runs:
   using: composite
   steps:
     - shell: bash
-      # Belt and braces: the loop below bounds each attempt, and this bounds the
-      # step as a whole should apt find a way to hang that `timeout` does not
-      # catch.
-      timeout-minutes: 6
+      # NB: composite-action steps do not accept `timeout-minutes` — GitHub
+      # rejects the whole action file if you try, which is how the first version
+      # of this failed. The bound therefore lives inside the script, as a wall
+      # clock deadline rather than an attempt count: retries whose individual
+      # timeouts each fire still add up, and it is total time that was the
+      # problem here.
       run: |
         set -euo pipefail
         export DEBIAN_FRONTEND=noninteractive
+        DEADLINE=$((SECONDS + 300))
 
         # A fresh runner may still be running unattended-upgrades, which holds
         # the dpkg lock; apt-get then waits for it indefinitely and silently.
-        # Bounded wait, then proceed regardless — `timeout` below is the real
+        # Bounded wait, then proceed regardless — the deadline is the real
         # guard, this just avoids a pointless first failure.
-        for i in $(seq 1 12); do
+        while (( SECONDS < DEADLINE )); do
           sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break
-          echo "dpkg lock is held; waiting ($i/12)"
+          echo "dpkg lock is held; waiting"
           sleep 5
         done
 
-        for attempt in 1 2 3; do
+        attempt=0
+        while (( SECONDS < DEADLINE )); do
+          attempt=$((attempt + 1))
           echo "::group::apt attempt $attempt"
           if timeout 90s sudo -E apt-get update \
             && timeout 90s sudo -E apt-get install -y --no-install-recommends libasound2-dev; then
@@ -53,6 +58,6 @@ runs:
           sleep 10
         done
 
-        echo "libasound2-dev could not be installed after three bounded attempts." >&2
+        echo "libasound2-dev could not be installed within 5 minutes ($attempt attempts)." >&2
         echo "This is the failure that used to present as a job hanging for hours." >&2
         exit 1
