@@ -133,6 +133,37 @@ export type CanvasActionDto = "extend" | "shelve";
  */
 export type Channel = "session" | "display" | "voice";
 /**
+ * One device class's actual outcome for a tool.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ClassOutcomeDto".
+ */
+export type ClassOutcomeDto = {
+  /**
+   * `owner-ui` | `display-node` | `voice-node` | `room-node`.
+   */
+  deviceClass: string;
+  [k: string]: unknown;
+} & ClassOutcomeDto1;
+export type ClassOutcomeDto1 =
+  | {
+      outcome: "auto";
+      [k: string]: unknown;
+    }
+  | {
+      outcome: "needs_approval";
+      [k: string]: unknown;
+    }
+  | {
+      outcome: "denied";
+      /**
+       * A stable, human-readable reason: `unknown_tool`, `prohibited`, or
+       * `missing_scope:<scope>`. Rendered from `DenyReason`, never invented.
+       */
+      reason: string;
+      [k: string]: unknown;
+    };
+/**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
  * via the `definition` "ContentBlock".
  */
@@ -573,6 +604,31 @@ export type MemoryScopeDto =
     }
   | {
       project: string;
+    };
+/**
+ * What `policy::evaluate` returns for one (tool, device class) pair, flattened
+ * for display.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "PolicyOutcomeDto".
+ */
+export type PolicyOutcomeDto =
+  | {
+      outcome: "auto";
+      [k: string]: unknown;
+    }
+  | {
+      outcome: "needs_approval";
+      [k: string]: unknown;
+    }
+  | {
+      outcome: "denied";
+      /**
+       * A stable, human-readable reason: `unknown_tool`, `prohibited`, or
+       * `missing_scope:<scope>`. Rendered from `DenyReason`, never invented.
+       */
+      reason: string;
+      [k: string]: unknown;
     };
 /**
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
@@ -2217,6 +2273,60 @@ export interface PatchMemoryRequest {
   pinned?: boolean | null;
   retention?: RetentionDto | null;
   text?: string | null;
+  [k: string]: unknown;
+}
+/**
+ * `GET /api/v1/policy`.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "PolicyViewDto".
+ */
+export interface PolicyViewDto {
+  /**
+   * Every registered tool, in the registry's stable order.
+   *
+   * A tool absent here is not callable at all — the registry *is* the
+   * catalogue, there is no ambient tool set — so a short list is a true
+   * answer to "what can this house do", not a truncated one.
+   */
+  tools: ToolPolicyDto[];
+  [k: string]: unknown;
+}
+/**
+ * One tool, as the engine treats it.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ToolPolicyDto".
+ */
+export interface ToolPolicyDto {
+  /**
+   * `none` | `local` | `external` — how far this tool's data travels.
+   */
+  egress: string;
+  /**
+   * **The decision itself**, per device class, straight from
+   * `policy::evaluate`. Keyed by class name (`owner-ui`, `room-node`, …).
+   */
+  outcomes: ClassOutcomeDto[];
+  /**
+   * Scopes a caller must hold. A device class holding none of these is not
+   * merely restricted, it is refused.
+   */
+  requiredScopes: string[];
+  /**
+   * Whether the tool may only run with the owner present.
+   */
+  requiresUserPresence: boolean;
+  /**
+   * Whether an execution can be undone. Shown because it is what an owner
+   * weighs, and it is host-owned metadata — never tool-declared.
+   */
+  reversible: boolean;
+  /**
+   * `R0`–`R4` (docs/06 §2).
+   */
+  risk: string;
+  toolId: string;
   [k: string]: unknown;
 }
 /**

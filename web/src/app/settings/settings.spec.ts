@@ -3,6 +3,7 @@ import { provideZonelessChangeDetection } from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
 import { Settings, describeFailure } from './settings';
 import { ApiService } from '../api.service';
+import type { PolicyViewDto } from '../../generated/api-types';
 import type {
   AutomationDto,
   DeviceDto,
@@ -87,6 +88,35 @@ class FakeApi {
   revoked: { id: string; reason: string }[] = [];
   toggled: { id: string; enabled: boolean }[] = [];
   windowsOpened = 0;
+
+  /**
+   * The policy view (F10.5). Shaped like the daemon's real response, including
+   * an outcome for every class the component renders — a double that returned
+   * fewer would let the component pass here while showing "unknown" against a
+   * real daemon, which is this project's most expensive recurring bug.
+   */
+  policy: PolicyViewDto = {
+    tools: [
+      {
+        toolId: 'example.light',
+        risk: 'R1',
+        reversible: true,
+        requiresUserPresence: false,
+        egress: 'local',
+        requiredScopes: ['home:control'],
+        outcomes: [
+          { deviceClass: 'owner-ui', outcome: 'auto' },
+          { deviceClass: 'room-node', outcome: 'denied', reason: 'missing_scope:home:control' },
+          { deviceClass: 'voice-node', outcome: 'denied', reason: 'missing_scope:home:control' },
+          { deviceClass: 'display-node', outcome: 'denied', reason: 'missing_scope:home:control' },
+        ],
+      },
+    ],
+  };
+
+  getPolicy() {
+    return Promise.resolve(this.policy);
+  }
 
   listDevices() {
     return Promise.resolve({ devices: this.devices });
@@ -348,4 +378,53 @@ describe('Settings', () => {
     });
   });
 
+
+  describe('policy view (F10.5)', () => {
+    /**
+     * The UI half of "the rendered policy matches the engine's decisions". The
+     * daemon obtains each outcome from `policy::evaluate`; the component must
+     * *render what it was sent* rather than re-deriving anything from the risk
+     * tier, which would be a second copy of the rules free to drift.
+     */
+    it('renders the outcome the server sent, per device class', async () => {
+      const fixture = TestBed.createComponent(Settings);
+      await fixture.componentInstance.ngOnInit();
+      fixture.detectChanges();
+
+      const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+      expect(text).toContain('example.light');
+      expect(text).toContain('R1');
+      // owner-ui was sent `auto`; the nodes were sent a scope denial.
+      expect(text).toContain('runs');
+      expect(text).toContain('not allowed');
+    });
+
+    /**
+     * An R1 tool "runs" for the owner — but if the server says a class is
+     * denied, the page must say denied even though the tier alone would suggest
+     * otherwise. This is the drift the feature warns about, checked from the UI
+     * side: tier is not the answer, the engine's outcome is.
+     */
+    it('trusts the outcome over the risk tier', async () => {
+      const fixture = TestBed.createComponent(Settings);
+      const component = fixture.componentInstance;
+      await component.ngOnInit();
+
+      const tool = component.policy()!.tools[0];
+      expect(tool.risk).toBe('R1');
+      expect(component.outcomeFor(tool, 'owner-ui')).toBe('runs');
+      expect(component.outcomeFor(tool, 'room-node')).toContain('not allowed');
+      expect(component.outcomeFor(tool, 'room-node')).toContain('home:control');
+    });
+
+    it('says so when nothing is registered rather than looking empty', async () => {
+      api.policy = { tools: [] };
+      const fixture = TestBed.createComponent(Settings);
+      await fixture.componentInstance.ngOnInit();
+      fixture.detectChanges();
+
+      const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+      expect(text).toContain('No tools are registered');
+    });
+  });
 });

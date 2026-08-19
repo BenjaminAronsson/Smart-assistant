@@ -5,6 +5,7 @@ import type {
   AutomationExecutionDto,
   DeviceDto,
   PairingWindowDto,
+  PolicyViewDto,
   VoiceSettingsDto,
 } from '../../generated/api-types';
 import { ApiService } from '../api.service';
@@ -39,6 +40,7 @@ export class Settings implements OnInit {
   readonly history = signal<Record<string, AutomationExecutionDto[]>>({});
   readonly pairingWindow = signal<PairingWindowDto | null>(null);
   readonly voice = signal<VoiceSettingsDto | null>(null);
+  readonly policy = signal<PolicyViewDto | null>(null);
   /** Asked once before consent is granted, never before it is withdrawn. */
   readonly confirmingElevenLabs = signal(false);
   readonly error = signal<string | null>(null);
@@ -61,6 +63,34 @@ export class Settings implements OnInit {
     }),
   );
 
+  /**
+   * The outcome for one device class, for display.
+   *
+   * Reads what the server sent; it never computes an outcome. The server got
+   * each one from `policy::evaluate` itself, and re-deriving anything here
+   * would reintroduce exactly the drift F10.5 exists to prevent — a UI that
+   * describes different rules than the engine enforces is worse than none.
+   */
+  outcomeFor(tool: PolicyViewDto['tools'][number], deviceClass: string): string {
+    const found = tool.outcomes.find((o) => o.deviceClass === deviceClass);
+    if (!found) return 'unknown';
+    switch (found.outcome) {
+      case 'auto':
+        return 'runs';
+      case 'needs_approval':
+        return 'asks first';
+      default:
+        // Denials carry the engine's own reason; a missing scope is the common
+        // one and is worth naming, because "denied" alone reads as a fault.
+        return 'reason' in found && found.reason?.startsWith('missing_scope:')
+          ? `not allowed (${found.reason.slice('missing_scope:'.length)})`
+          : 'not allowed';
+    }
+  }
+
+  /** Device classes in the order the view lists them, owner first. */
+  readonly policyClasses = ['owner-ui', 'room-node', 'voice-node', 'display-node'];
+
   async ngOnInit(): Promise<void> {
     await this.refresh();
   }
@@ -69,14 +99,16 @@ export class Settings implements OnInit {
     this.busy.set(true);
     this.error.set(null);
     try {
-      const [devices, automations, voice] = await Promise.all([
+      const [devices, automations, voice, policy] = await Promise.all([
         this.api.listDevices(),
         this.api.listAutomations(),
         this.api.getVoiceSettings(),
+        this.api.getPolicy(),
       ]);
       this.devices.set(devices.devices);
       this.automations.set(automations.automations);
       this.voice.set(voice);
+      this.policy.set(policy);
     } catch (failure) {
       // Never the raw error (docs/06 §5) — but *which* failure this is decides
       // what the owner should do next, and getting that wrong sends them to

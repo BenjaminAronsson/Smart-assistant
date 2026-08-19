@@ -141,6 +141,11 @@ pub struct Wiring {
     /// The owner-tunable settings surface (F8.8's voice section, F8.11's
     /// spend). `None` without a database — there is no override layer to read.
     pub settings: Option<crate::settings::SettingsApi>,
+    /// The read-only policy view (F10.5, FR-05): what each tool may do and what
+    /// each device class is actually allowed. `None` without a tool registry —
+    /// there is nothing to describe, and an empty view would read as "nothing
+    /// is permitted" rather than "policy is not mounted".
+    pub policy: Option<crate::policy_view::PolicyViewState>,
     /// Lists and quick notes (F3b.8, FR-34, ADR-024).
     pub lists: Option<crate::lists::ListApi>,
     /// Deep-dive threads (F3b.6, FR-27, ADR-017). The same handle is given to
@@ -177,6 +182,7 @@ impl Default for Wiring {
             maps: None,
             timers: None,
             automations: None,
+            policy: None,
             settings: None,
             lists: None,
             deepdive: None,
@@ -210,6 +216,7 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
         maps,
         timers,
         automations,
+        policy,
         settings,
         lists,
         deepdive,
@@ -328,6 +335,16 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
                 Router::new()
                     .route("/ws/v1", get(crate::ws::ws_upgrade))
                     .with_state(ws),
+            );
+        }
+        if let Some(view) = policy {
+            // `ui`-scoped like every other settings surface: a satellite has no
+            // business enumerating the household's policy, and this route names
+            // every tool in the house.
+            protected = protected.merge(
+                Router::new()
+                    .route("/api/v1/policy", get(crate::policy_view::get_policy))
+                    .with_state(view),
             );
         }
         if let Some(api) = settings {

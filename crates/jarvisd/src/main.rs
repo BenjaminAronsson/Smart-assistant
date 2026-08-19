@@ -754,6 +754,12 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     let app = jarvisd::api::router_with(
         state,
         jarvisd::api::Wiring {
+            // The same registry the tool plane executes from — not a copy, not a
+            // startup snapshot. A view of policy that could be stale relative to
+            // the engine is the one thing F10.5 must not ship.
+            policy: Some(jarvisd::policy_view::PolicyViewState::new(
+                bridge_registry.clone(),
+            )),
             settings: Some({
                 let api = jarvisd::settings::SettingsApi::new(
                     settings_store.clone(),

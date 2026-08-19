@@ -24,6 +24,7 @@ pub mod memories;
 pub mod observability;
 pub mod pairing;
 pub mod pmtiles;
+pub mod policy_view;
 pub mod problem;
 pub mod runs;
 pub mod sessions;
