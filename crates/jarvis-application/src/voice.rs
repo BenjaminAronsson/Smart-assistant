@@ -134,13 +134,21 @@ pub trait SpeechSynthesizer: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum VoiceError {
     /// The voice service could not be reached or is unhealthy.
-    #[error("voice service unavailable")]
+    ///
+    /// The payload is an **adapter-authored** reason, not transport text: short,
+    /// stable strings the adapter chose, carrying no address and no secret. It
+    /// is surfaced because a message that says only "unavailable" cannot be
+    /// acted on — the first live voice turn produced exactly that and the log
+    /// could not say what had gone wrong.
+    #[error("voice service unavailable: {0}")]
     Unavailable(String),
     /// The request was cancelled before it produced a terminal result.
     #[error("voice request was cancelled")]
     Cancelled,
-    /// The service's response did not follow the wire protocol.
-    #[error("malformed voice service response")]
+    /// The service's response did not follow the wire protocol. Payload as
+    /// above: adapter-authored, safe to log, and the only thing that makes this
+    /// diagnosable.
+    #[error("malformed voice service response: {0}")]
     Malformed(String),
 }
 
