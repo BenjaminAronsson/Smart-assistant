@@ -17,11 +17,12 @@ env:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain # installs the pinned toolchain + components
       - name: audio build dependencies (cpal → ALSA, F8.2)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        uses: ./.github/actions/audio-deps
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -48,23 +49,25 @@ jobs:
     # the port; that it still *detects* is proven on a machine with the assets and
     # recorded in the M8a gate report.
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     needs: validate
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain
       - name: audio build dependencies (cpal → ALSA, F8.2)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        uses: ./.github/actions/audio-deps
       - run: cargo clippy -p jarvis-agent --features wake-word-onnx --all-targets -- -D warnings
       - run: cargo test -p jarvis-agent --features wake-word-onnx
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     needs: validate
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain
       - name: audio build dependencies (cpal → ALSA, F8.2)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        uses: ./.github/actions/audio-deps
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -105,12 +108,13 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     needs: validate
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain
       - name: audio build dependencies (cpal → ALSA, F8.2)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        uses: ./.github/actions/audio-deps
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -122,12 +126,13 @@ jobs:
 
   security:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     needs: validate
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain
       - name: audio build dependencies (cpal → ALSA, F8.2)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        uses: ./.github/actions/audio-deps
       - name: cargo deny (licenses, advisories, bans, sources)
         run: |
           cargo install cargo-deny --locked
@@ -141,12 +146,13 @@ jobs:
 
   integration:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     needs: [test, build]
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain
       - name: audio build dependencies (cpal → ALSA, F8.2)
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        uses: ./.github/actions/audio-deps
       - uses: actions/setup-node@v4
         with:
           node-version: 24

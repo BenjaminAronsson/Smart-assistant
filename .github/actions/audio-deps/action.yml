@@ -1,0 +1,90 @@
+name: audio build dependencies
+description: >
+  Install libasound2-dev for cpal (F8.2), bounded so a stuck apt fails the step
+  instead of the job.
+
+# Why this is a composite action rather than six copies of one `run:` line.
+#
+# `sudo apt-get update && sudo apt-get install -y libasound2-dev` appeared to
+# hang on three separate runners in one afternoon — 50 minutes on `build` and
+# `wake-word-engine`, then 11 more on `integration` — while sibling jobs in the
+# same run finished the identical step in seconds.
+#
+# It was not hanging. Once the step was bounded and therefore *failed*, the logs
+# showed `apt-get update` making steady progress at roughly 50 KB/s against the
+# Azure Ubuntu mirror: 1.2 MB of package indices in 27 seconds, and several more
+# megabytes still to fetch. A slow mirror and a stuck process look identical
+# from outside, and GitHub serves no logs for a job that is still running — so
+# an unbounded step that produces no output cannot be told apart from either.
+#
+# Hence the shape of this action, in the order the problems were solved:
+#
+#   1. bound it, so the next occurrence is a readable failure rather than a
+#      blocked queue — this is what made the diagnosis possible at all;
+#   2. skip the download entirely when the runner image's existing package
+#      lists already satisfy the install, which is the usual case;
+#   3. retry the slow path against a wall-clock deadline, since a mirror that is
+#      merely slow fails the same way on every attempt.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      # NB: composite-action steps do not accept `timeout-minutes` — GitHub
+      # rejects the whole action file if you try, which is how the first version
+      # of this failed. The bound therefore lives inside the script, as a wall
+      # clock deadline rather than an attempt count: retries whose individual
+      # timeouts each fire still add up, and it is total time that was the
+      # problem here. Ten minutes, sized to fit inside every job's own timeout.
+      run: |
+        set -euo pipefail
+        export DEBIAN_FRONTEND=noninteractive
+        DEADLINE=$((SECONDS + 600))
+
+        # A fresh runner may still be running unattended-upgrades, which holds
+        # the dpkg lock; apt-get then waits for it indefinitely and silently.
+        # Bounded wait, then proceed regardless — the deadline is the real
+        # guard, this just avoids a pointless first failure.
+        while (( SECONDS < DEADLINE )); do
+          sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break
+          echo "dpkg lock is held; waiting"
+          sleep 5
+        done
+
+        # Try the package lists the runner image already ships with, before
+        # refreshing anything. This is the fast path and it almost always works:
+        # libasound2-dev has been in the Ubuntu archive for years and the image
+        # is built with populated lists. When it works it costs a second or two
+        # instead of six megabytes of package indices.
+        echo "::group::install from the image's existing package lists"
+        if timeout 180s sudo -E apt-get install -y --no-install-recommends libasound2-dev; then
+          echo "::endgroup::"
+          echo "installed without refreshing package lists"
+          exit 0
+        fi
+        echo "::endgroup::"
+        echo "existing lists were not enough; refreshing" >&2
+
+        # Slow path. `apt-get update` here pulls every configured source —
+        # Ubuntu archive, Microsoft, Google — and on a bad draw the Azure mirror
+        # delivers those at ~50 KB/s, which is what an earlier version of this
+        # step spent 50 minutes doing before anyone could see why. Retries are
+        # bounded by DEADLINE rather than by count, because a mirror that is
+        # merely slow will fail the same way every time.
+        attempt=0
+        while (( SECONDS < DEADLINE )); do
+          attempt=$((attempt + 1))
+          echo "::group::apt update + install, attempt $attempt"
+          if timeout 300s sudo -E apt-get update -o Acquire::Retries=3 \
+            && timeout 180s sudo -E apt-get install -y --no-install-recommends libasound2-dev; then
+            echo "::endgroup::"
+            exit 0
+          fi
+          echo "::endgroup::"
+          echo "attempt $attempt failed or timed out; retrying" >&2
+          sleep 10
+        done
+
+        echo "libasound2-dev could not be installed within 10 minutes ($attempt attempts)." >&2
+        echo "This is the failure that used to present as a job hanging for hours." >&2
+        echo "If the log shows steady slow 'Get:' lines, the archive mirror is the cause." >&2
+        exit 1
