@@ -1,0 +1,58 @@
+name: audio build dependencies
+description: >
+  Install libasound2-dev for cpal (F8.2), bounded so a stuck apt fails the step
+  instead of the job.
+
+# Why this is a composite action rather than six copies of one `run:` line.
+#
+# `sudo apt-get update && sudo apt-get install -y libasound2-dev` hung with no
+# output on three separate runners in one afternoon — 50 minutes on `build` and
+# `wake-word-engine`, then 11 more on `integration` — while sibling jobs in the
+# same run completed the identical step in seconds.
+#
+# The cause is not identified. That is exactly the problem: an unbounded step
+# that produces no output cannot be diagnosed, because GitHub serves no logs for
+# a job that is still running. So the first fix is not a theory about apt, it is
+# a **bound** — turn a six-hour hang into a five-minute failure whose logs can be
+# read. If it recurs, the next person gets evidence instead of a stuck queue.
+#
+# The retry is the second-order fix, for the ordinary case where the cause is a
+# flaky mirror or transient lock contention with unattended-upgrades on a fresh
+# runner.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      # Belt and braces: the loop below bounds each attempt, and this bounds the
+      # step as a whole should apt find a way to hang that `timeout` does not
+      # catch.
+      timeout-minutes: 6
+      run: |
+        set -euo pipefail
+        export DEBIAN_FRONTEND=noninteractive
+
+        # A fresh runner may still be running unattended-upgrades, which holds
+        # the dpkg lock; apt-get then waits for it indefinitely and silently.
+        # Bounded wait, then proceed regardless — `timeout` below is the real
+        # guard, this just avoids a pointless first failure.
+        for i in $(seq 1 12); do
+          sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break
+          echo "dpkg lock is held; waiting ($i/12)"
+          sleep 5
+        done
+
+        for attempt in 1 2 3; do
+          echo "::group::apt attempt $attempt"
+          if timeout 90s sudo -E apt-get update \
+            && timeout 90s sudo -E apt-get install -y --no-install-recommends libasound2-dev; then
+            echo "::endgroup::"
+            exit 0
+          fi
+          echo "::endgroup::"
+          echo "attempt $attempt failed or timed out; retrying" >&2
+          sleep 10
+        done
+
+        echo "libasound2-dev could not be installed after three bounded attempts." >&2
+        echo "This is the failure that used to present as a job hanging for hours." >&2
+        exit 1
