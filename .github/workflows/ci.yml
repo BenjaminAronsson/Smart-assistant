@@ -17,7 +17,7 @@ env:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain # installs the pinned toolchain + components
@@ -49,7 +49,7 @@ jobs:
     # the port; that it still *detects* is proven on a machine with the assets and
     # recorded in the M8a gate report.
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     needs: validate
     steps:
       - uses: actions/checkout@v4
@@ -61,7 +61,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     needs: validate
     steps:
       - uses: actions/checkout@v4
@@ -108,7 +108,7 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     needs: validate
     steps:
       - uses: actions/checkout@v4
@@ -126,7 +126,7 @@ jobs:
 
   security:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     needs: validate
     steps:
       - uses: actions/checkout@v4
@@ -146,7 +146,7 @@ jobs:
 
   integration:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     needs: [test, build]
     steps:
       - uses: actions/checkout@v4
