@@ -68,7 +68,7 @@ instructions the whole way, with no source tree and no help from the person who 
       Refs: `docs/milestones/M8a-gate-report.md` §1.4/§1.6, `M8c-gate-report.md` §2.
       Deps: none — everything it needs is merged.
 
-- [ ] **F10.2 — Backup, restore, and a restore that is actually tested (FR-30, docs/09)**
+- [x] **F10.2 — Backup, restore, and a restore that is actually tested (FR-30, docs/09)**
       · *strong model*
       A house whose Postgres is one disk failure from gone is not a product. `pg_dump` is the
       easy half; the half that matters is **restoring into a clean database and proving the house

@@ -175,16 +175,52 @@ Claude CLI runs as the `jarvis` service user; authenticate once interactively
 valid credentials. Document the re-auth runbook (§5) — expired CLI auth is the most
 likely "mystery outage".
 
-## 3. Backup and restore (NFR-05, M8 gate but implemented early)
+## 3. Backup and restore (NFR-05, FR-30 — implemented in F10.2)
 
-- **Nightly**: `pg_dump -Fc` of the database + hardlink snapshot of the artifact CAS
-  (CAS is immutable content — rsync-friendly) + config copy. Keyring is *not* backed up
-  automatically; document manual secret re-provisioning.
-- **Restore test** is part of the M8 checklist and quarterly thereafter: restore into a
-  scratch compose env, run the golden trace suite against it.
-- Audit schema is included in dumps; hash-chain verification runs post-restore.
-- Upgrade procedure: backup → apply migrations (`sqlx migrate run`) → health gate →
-  on failure, rollback binary + `pg_restore`.
+Two scripts, and the second one is the point:
+
+```bash
+export DATABASE_URL=postgres://jarvis:...@127.0.0.1:5432/jarvis
+export JARVIS__STORAGE__ARTIFACTS_ROOT=/var/lib/jarvis/artifacts
+
+infra/install/backup.sh  /var/backups/jarvis
+infra/install/restore.sh /var/backups/jarvis/jarvis-<timestamp>
+```
+
+**A house is two stores.** Postgres holds sessions, runs, devices, timers,
+automations, memories, the audit trail, and artifact *manifests*; the CAS holds the
+blob *bytes* those manifests point at. Back up one without the other and the restore
+looks complete — every artifact listed, none readable. Both scripts therefore
+cross-check the two stores and exit non-zero if they disagree.
+
+**Order is load-bearing, and it is the opposite of the obvious one.** The database is
+dumped *first*, then the blobs. Blobs are content-addressed and never deleted, so a
+manifest captured at t0 still has its blob at t1. Copy the blobs first and a manifest
+written in between points at bytes the copy never saw.
+
+**Client and server versions must match.** A dump written by a newer `pg_dump` can be
+rejected by an older server (`pg_dump` 18 emits `SET transaction_timeout`, which a 16
+server refuses) — and you find out on the day you need it. Both scripts compare
+versions and **refuse before writing anything** rather than producing an archive that
+looks fine. Point them at matching tools with either:
+
+```bash
+JARVIS_PG_CONTAINER=jarvis-dev-postgres-1 infra/install/backup.sh ...  # the server's own
+PGDUMP=/usr/lib/postgresql/16/bin/pg_dump  infra/install/backup.sh ...  # or explicit paths
+```
+
+- **Restoring over a populated database is refused** unless `--force` is passed; it is
+  not reversible and the mistake is expensive. Normally restore into a *fresh* database.
+- **The keyring is not backed up** — secrets are re-provisioned manually after a restore
+  (`infra/install/first-run.sh` reports what is missing).
+- **Restore is tested, not assumed**: `crates/jarvis-infra/tests/backup_restore.rs` runs
+  these exact scripts, restores into a throwaway database and a different blob root, and
+  asserts devices are still paired, automations still hold their `created_by`, timers are
+  still armed, and artifacts still resolve to their bytes. Verified by mutation — with
+  `pg_restore` stubbed out, those tests fail.
+- Nightly via systemd timer; a quarterly restore drill remains the operator's job.
+- Upgrade procedure: backup → `sqlx migrate run` → health gate → on failure, roll back
+  the binary and `restore.sh` (a repeatable procedure is F10.3).
 
 ## 4. Configuration profiles (operational presets)
 

@@ -37,3 +37,5 @@ tracing = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "time", "sync"] }
+# F10.2 runs the real backup/restore scripts against throwaway directories.
+tempfile = "3"
