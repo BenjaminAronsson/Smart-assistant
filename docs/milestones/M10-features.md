@@ -91,7 +91,7 @@ instructions the whole way, with no source tree and no help from the person who 
       rollback path, executed.
       Deps: F10.2 (rollback leans on restore).
 
-- [ ] **F10.4 — Diagnostics bundle (NFR-07, docs/09)** · *Sonnet*
+- [x] **F10.4 — Diagnostics bundle (NFR-07, docs/09)** · *Sonnet*
       One command that produces something an owner can read — or send — when the house
       misbehaves: versions, migration state, adapter health, recent audit *shapes*, the last
       errors, resource figures. **Redaction is the feature, not a caveat**: no secrets, no

@@ -774,6 +774,25 @@ export interface AdapterHealth {
   [k: string]: unknown;
 }
 /**
+ * One adapter's state, flattened for a bundle a human reads top to bottom.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "AdapterLineDto".
+ */
+export interface AdapterLineDto {
+  /**
+   * The daemon's own fixed hint, e.g. "set [integrations.web_search]". A
+   * config *key*, never a value — the same rule the health endpoint follows.
+   */
+  detail?: string | null;
+  name: string;
+  /**
+   * `up` | `down` | `disabled`.
+   */
+  state: string;
+  [k: string]: unknown;
+}
+/**
  * `POST /api/v1/lists/{id}/items` — append one line.
  *
  * This interface was referenced by `JarvisContracts`'s JSON-Schema
@@ -980,6 +999,29 @@ export interface ArtifactSourceDto {
 export interface ArtifactVersionsResponse {
   artifactId: UlidString;
   versions: ArtifactManifestDto[];
+  [k: string]: unknown;
+}
+/**
+ * How many audit events of one type, and when the most recent was.
+ *
+ * The *shape* of what happened, which is what diagnoses a fault: "forty
+ * `tool.denied` in the last hour" is the whole story, and it needs no argument,
+ * actor or target to tell it.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "AuditShapeDto".
+ */
+export interface AuditShapeDto {
+  count: number;
+  /**
+   * A host-defined event type such as `device.paired`. Never free text: these
+   * are written by the daemon, not by a model, a tool or a user.
+   */
+  eventType: string;
+  /**
+   * RFC 3339, most recent occurrence.
+   */
+  lastAt: string;
   [k: string]: unknown;
 }
 /**
@@ -1306,6 +1348,88 @@ export interface DeviceDto {
  */
 export interface DeviceListResponse {
   devices: DeviceDto[];
+  [k: string]: unknown;
+}
+/**
+ * `GET /api/v1/diagnostics/bundle`.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "DiagnosticsBundleDto".
+ */
+export interface DiagnosticsBundleDto {
+  /**
+   * Adapter and capability readiness, the same map the health page reports:
+   * name → `up` | `down` | `disabled`.
+   */
+  adapters: AdapterLineDto[];
+  auditShapes: AuditShapeDto[];
+  /**
+   * Counts only. Deliberately not a device list: names are owner-chosen and
+   * can be personal ("Dad's phone"), and nothing here needs them.
+   */
+  deviceCount: number;
+  /**
+   * Generated-at, RFC 3339 — so a bundle sent three days later is not read
+   * as current.
+   */
+  generatedAt: string;
+  messageCount: number;
+  migrations: MigrationStateDto;
+  resources: ResourcesDto;
+  runs: RunOutcomesDto;
+  sessionCount: number;
+  /**
+   * Registered tool ids. Host-defined identifiers, and the fastest answer to
+   * "why did it not do the thing" — usually because the tool is not there.
+   */
+  tools: string[];
+  version: string;
+  [k: string]: unknown;
+}
+/**
+ * Migration state — the first thing to check after an upgrade goes wrong.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "MigrationStateDto".
+ */
+export interface MigrationStateDto {
+  applied: number;
+  /**
+   * The highest applied version, or `null` on an unmigrated database.
+   */
+  latestVersion?: number | null;
+  [k: string]: unknown;
+}
+/**
+ * What the daemon is costing the machine.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "ResourcesDto".
+ */
+export interface ResourcesDto {
+  /**
+   * Resident set size in kibibytes, or `null` where the platform will not say.
+   */
+  rssKib?: number | null;
+  uptimeSecs: number;
+  [k: string]: unknown;
+}
+/**
+ * Run outcomes as tallies. No prompts, no answers, no tool arguments.
+ *
+ * This interface was referenced by `JarvisContracts`'s JSON-Schema
+ * via the `definition` "RunOutcomesDto".
+ */
+export interface RunOutcomesDto {
+  cancelled: number;
+  completed: number;
+  failed: number;
+  /**
+   * Still in a non-terminal state — a large number here after a restart is
+   * itself the diagnosis.
+   */
+  inFlight: number;
+  total: number;
   [k: string]: unknown;
 }
 /**

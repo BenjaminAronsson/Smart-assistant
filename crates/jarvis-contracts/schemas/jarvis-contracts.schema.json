@@ -18,6 +18,30 @@
       ],
       "type": "object"
     },
+    "AdapterLineDto": {
+      "description": "One adapter's state, flattened for a bundle a human reads top to bottom.",
+      "properties": {
+        "detail": {
+          "description": "The daemon's own fixed hint, e.g. \"set [integrations.web_search]\". A\nconfig *key*, never a value — the same rule the health endpoint follows.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "state": {
+          "description": "`up` | `down` | `disabled`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "state"
+      ],
+      "type": "object"
+    },
     "AdapterState": {
       "description": "`disabled` = present in config but switched off (e.g. voice before M5).",
       "enum": [
@@ -324,6 +348,30 @@
       "required": [
         "artifactId",
         "versions"
+      ],
+      "type": "object"
+    },
+    "AuditShapeDto": {
+      "description": "How many audit events of one type, and when the most recent was.\n\nThe *shape* of what happened, which is what diagnoses a fault: \"forty\n`tool.denied` in the last hour\" is the whole story, and it needs no argument,\nactor or target to tell it.",
+      "properties": {
+        "count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "eventType": {
+          "description": "A host-defined event type such as `device.paired`. Never free text: these\nare written by the daemon, not by a model, a tool or a user.",
+          "type": "string"
+        },
+        "lastAt": {
+          "description": "RFC 3339, most recent occurrence.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "eventType",
+        "count",
+        "lastAt"
       ],
       "type": "object"
     },
@@ -898,6 +946,77 @@
       },
       "required": [
         "devices"
+      ],
+      "type": "object"
+    },
+    "DiagnosticsBundleDto": {
+      "description": "`GET /api/v1/diagnostics/bundle`.",
+      "properties": {
+        "adapters": {
+          "description": "Adapter and capability readiness, the same map the health page reports:\nname → `up` | `down` | `disabled`.",
+          "items": {
+            "$ref": "#/definitions/AdapterLineDto"
+          },
+          "type": "array"
+        },
+        "auditShapes": {
+          "items": {
+            "$ref": "#/definitions/AuditShapeDto"
+          },
+          "type": "array"
+        },
+        "deviceCount": {
+          "description": "Counts only. Deliberately not a device list: names are owner-chosen and\ncan be personal (\"Dad's phone\"), and nothing here needs them.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "generatedAt": {
+          "description": "Generated-at, RFC 3339 — so a bundle sent three days later is not read\nas current.",
+          "type": "string"
+        },
+        "messageCount": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "migrations": {
+          "$ref": "#/definitions/MigrationStateDto"
+        },
+        "resources": {
+          "$ref": "#/definitions/ResourcesDto"
+        },
+        "runs": {
+          "$ref": "#/definitions/RunOutcomesDto"
+        },
+        "sessionCount": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tools": {
+          "description": "Registered tool ids. Host-defined identifiers, and the fastest answer to\n\"why did it not do the thing\" — usually because the tool is not there.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "generatedAt",
+        "version",
+        "adapters",
+        "migrations",
+        "tools",
+        "auditShapes",
+        "runs",
+        "resources",
+        "deviceCount",
+        "sessionCount",
+        "messageCount"
       ],
       "type": "object"
     },
@@ -2680,6 +2799,28 @@
       ],
       "type": "string"
     },
+    "MigrationStateDto": {
+      "description": "Migration state — the first thing to check after an upgrade goes wrong.",
+      "properties": {
+        "applied": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "latestVersion": {
+          "description": "The highest applied version, or `null` on an unmigrated database.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "applied"
+      ],
+      "type": "object"
+    },
     "MiniStatDto": {
       "description": "One labeled value in a value-readout card's mini-stats row (docs/12 §2.3).",
       "properties": {
@@ -3183,6 +3324,29 @@
       },
       "type": "object"
     },
+    "ResourcesDto": {
+      "description": "What the daemon is costing the machine.",
+      "properties": {
+        "rssKib": {
+          "description": "Resident set size in kibibytes, or `null` where the platform will not say.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "uptimeSecs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "uptimeSecs"
+      ],
+      "type": "object"
+    },
     "RetentionDto": {
       "oneOf": [
         {
@@ -3352,6 +3516,45 @@
         "cancelled"
       ],
       "type": "string"
+    },
+    "RunOutcomesDto": {
+      "description": "Run outcomes as tallies. No prompts, no answers, no tool arguments.",
+      "properties": {
+        "cancelled": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "completed": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "failed": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inFlight": {
+          "description": "Still in a non-terminal state — a large number here after a restart is\nitself the diagnosis.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "total",
+        "completed",
+        "failed",
+        "cancelled",
+        "inFlight"
+      ],
+      "type": "object"
     },
     "RunStateDto": {
       "description": "Wire projection of `jarvis_domain::RunState` (docs/02 §4). The policy/tool/\napproval states exist on the wire from M1 but are only produced once their\nstep executors land in M2 — the shape is stable so clients need no change.",

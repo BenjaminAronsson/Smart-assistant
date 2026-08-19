@@ -14,6 +14,7 @@ pub mod config;
 pub mod deepdive;
 pub mod deferred;
 pub mod devices;
+pub mod diagnostics;
 pub mod display;
 pub mod light_targets;
 pub mod lists;

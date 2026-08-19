@@ -167,11 +167,16 @@ over bytes nobody looked at again. There is a test for exactly that attack.
 | 2. adversarial suite | **pass** | `jarvis-application` adversarial tests |
 | 3. R2/R3 approval text, timeouts | **pass** | policy tests (14) |
 | 4. tool sandbox profiles | **pass** | app-builder profile tests (M6) |
-| 5. diagnostics bundle carries no secrets | **NOT MET — the bundle does not exist** | F10.4 is outstanding; see below |
+| 5. diagnostics bundle carries no secrets | **pass** | `diagnostics_bundle.rs`: a seeded credential, transcript and message body appear nowhere in it |
 | 6. `cargo deny` clean | **pass** | `advisories ok`, scanned 2026-08-19 |
 
-Gate 5 is recorded as unmet rather than ticked. F10.4 shipped capability reporting on the
-health endpoint — which is what made a real diagnosis possible — but the *bundle command*
-with redaction that this gate is about has not been built. A checklist that ticks a box for
-an adjacent feature is worse than one with an honest gap, because the gap is what a
-reviewer needs to see.
+Gate 5 was recorded as **NOT MET** when this section was first written, because F10.4 had
+shipped capability reporting on the health endpoint but not the bundle the gate is actually
+about. It is now met: `infra/install/diagnostics.sh` produces the bundle, and redaction is
+structural rather than filtered — the DTO has no field capable of holding a body, a
+transcript or a secret. The test seeds all three into the database and fails if any appears
+anywhere in the serialization.
+
+The gap is left described rather than deleted, because "this was untrue for a while and
+here is what closed it" is more useful to a reviewer than a row that has always read
+green.
