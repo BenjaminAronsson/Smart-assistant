@@ -92,8 +92,29 @@ pub async fn decide_at_fire_time(
 pub trait AutomationExecutor: Send + Sync {
     /// Execute an authorized proposal. `Err` carries a neutral reason — never
     /// raw adapter text (docs/06 §5).
-    async fn execute(&self, proposal: &ToolProposal) -> Result<(), String>;
+    ///
+    /// Takes the sweep's cancellation token (invariant 4). Without it the
+    /// daemon had no way to interrupt a firing: one unresponsive tool blocked
+    /// every later automation indefinitely, and shutdown could only give up and
+    /// detach the task.
+    async fn execute(
+        &self,
+        proposal: &ToolProposal,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<(), String>;
 }
+
+/// How long one automation may take before its executor gives up on it.
+///
+/// A firing is unattended background work: nobody is waiting on it, and the
+/// cost of letting one hang is that every *later* automation stops too. Two
+/// minutes is far past any legitimate tool and far short of "until the daemon
+/// restarts".
+///
+/// Declared here so the rule is stated with the thing it governs, but **applied
+/// by the adapter** — enforcing it needs a timer, and this crate takes no tokio
+/// dependency beyond async traits (invariant 3).
+pub const FIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Sweeps automations and fires the ones whose moment has come (FR-17, F8.7).
 pub struct AutomationService {
@@ -162,6 +183,7 @@ impl AutomationService {
         previous_minutes: u16,
         now_minutes: u16,
         now: std::time::SystemTime,
+        cancel: tokio_util::sync::CancellationToken,
     ) -> Result<Vec<FiredAutomation>, crate::ports::RepositoryError> {
         let due: Vec<_> = self
             .store
@@ -172,7 +194,7 @@ impl AutomationService {
                 a.trigger().fires_in_window(previous_minutes, now_minutes) && a.may_fire_at(now)
             })
             .collect();
-        self.fire_all(due, now).await
+        self.fire_all(due, now, cancel).await
     }
 
     /// Report automations whose moment passed while the daemon was down
@@ -275,6 +297,7 @@ impl AutomationService {
         entity_id: &str,
         state: &str,
         now: std::time::SystemTime,
+        cancel: tokio_util::sync::CancellationToken,
     ) -> Result<Vec<FiredAutomation>, crate::ports::RepositoryError> {
         let due: Vec<_> = self
             .store
@@ -289,21 +312,32 @@ impl AutomationService {
                 ) && a.may_fire_at(now)
             })
             .collect();
-        self.fire_all(due, now).await
+        self.fire_all(due, now, cancel).await
     }
 
     async fn fire_all(
         &self,
         due: Vec<Automation>,
         now: std::time::SystemTime,
+        cancel: tokio_util::sync::CancellationToken,
     ) -> Result<Vec<FiredAutomation>, crate::ports::RepositoryError> {
         let mut fired = Vec::new();
         for automation in due {
+            // Shutdown stops the sweep between firings rather than mid-effect:
+            // the automations not yet reached are simply not fired, which is the
+            // same outcome as the daemon having stopped a minute earlier.
+            if cancel.is_cancelled() {
+                break;
+            }
             let outcome =
                 match decide_at_fire_time(&automation, &self.registry, self.authority.as_ref())
                     .await
                 {
-                    Ok(proposal) => match self.executor.execute(&proposal).await {
+                    // The executor bounds this by `FIRE_TIMEOUT` and observes
+                    // `cancel`; a timeout comes back as an ordinary failure,
+                    // because it happened, it did not work, and the history has
+                    // to say so.
+                    Ok(proposal) => match self.executor.execute(&proposal, cancel.clone()).await {
                         Ok(()) => ExecutionOutcome::Executed,
                         Err(reason) => ExecutionOutcome::Failed { reason },
                     },
@@ -584,7 +618,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AutomationExecutor for CountingExecutor {
-        async fn execute(&self, _proposal: &ToolProposal) -> Result<(), String> {
+        async fn execute(
+            &self,
+            _proposal: &ToolProposal,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> Result<(), String> {
             *self.0.lock().expect("lock") += 1;
             Ok(())
         }
@@ -628,7 +666,12 @@ mod tests {
 
         // 07:00 falls in this window.
         let fired = service
-            .sweep_clock(419, 420, at(1_000))
+            .sweep_clock(
+                419,
+                420,
+                at(1_000),
+                tokio_util::sync::CancellationToken::new(),
+            )
             .await
             .expect("sweeps");
         assert_eq!(fired.len(), 1);
@@ -637,7 +680,12 @@ mod tests {
 
         // The same window again must not re-fire it: the trigger already passed.
         let again = service
-            .sweep_clock(420, 425, at(1_100))
+            .sweep_clock(
+                420,
+                425,
+                at(1_100),
+                tokio_util::sync::CancellationToken::new(),
+            )
             .await
             .expect("sweeps");
         assert!(again.is_empty(), "the moment does not come round twice");
@@ -662,7 +710,12 @@ mod tests {
 
         assert!(
             service
-                .sweep_clock(419, 420, at(1_000))
+                .sweep_clock(
+                    419,
+                    420,
+                    at(1_000),
+                    tokio_util::sync::CancellationToken::new()
+                )
                 .await
                 .expect("sweeps")
                 .is_empty()
@@ -692,7 +745,12 @@ mod tests {
         );
 
         let fired = service
-            .sweep_clock(419, 420, at(1_000))
+            .sweep_clock(
+                419,
+                420,
+                at(1_000),
+                tokio_util::sync::CancellationToken::new(),
+            )
             .await
             .expect("sweeps");
         assert_eq!(fired.len(), 1);
@@ -744,7 +802,12 @@ mod tests {
 
         assert!(
             service
-                .sweep_state("person.guest", "home", at(1_000))
+                .sweep_state(
+                    "person.guest",
+                    "home",
+                    at(1_000),
+                    tokio_util::sync::CancellationToken::new()
+                )
                 .await
                 .expect("sweeps")
                 .is_empty(),
@@ -752,14 +815,24 @@ mod tests {
         );
         assert!(
             service
-                .sweep_state("person.owner", "away", at(1_000))
+                .sweep_state(
+                    "person.owner",
+                    "away",
+                    at(1_000),
+                    tokio_util::sync::CancellationToken::new()
+                )
                 .await
                 .expect("sweeps")
                 .is_empty(),
             "the wrong state is not a trigger either"
         );
         let fired = service
-            .sweep_state("person.owner", "home", at(1_000))
+            .sweep_state(
+                "person.owner",
+                "home",
+                at(1_000),
+                tokio_util::sync::CancellationToken::new(),
+            )
             .await
             .expect("sweeps");
         assert_eq!(fired.len(), 1);
@@ -802,6 +875,51 @@ mod tests {
         assert!(
             store.recorded.lock().expect("lock").is_empty(),
             "reporting is not firing; nothing is recorded as having happened"
+        );
+    }
+
+    /// A cancelled sweep stops between firings rather than mid-effect.
+    ///
+    /// Before this the sweep took no token at all: `RegistryExecutor` built a
+    /// fresh `CancellationToken::new()` per firing that nothing held the other
+    /// end of, so shutdown could not interrupt a sweep and `main.rs` could only
+    /// let the drain deadline expire and detach the task (invariant 4).
+    #[tokio::test]
+    async fn a_cancelled_sweep_fires_nothing_further() {
+        let tool = ToolId::home_set_light();
+        let store = std::sync::Arc::new(MemStore::default());
+        // Two automations due in the same window.
+        store
+            .automations
+            .lock()
+            .expect("lock")
+            .push(automation_for(tool.clone()));
+        store
+            .automations
+            .lock()
+            .expect("lock")
+            .push(automation_for(tool.clone()));
+        let executor = std::sync::Arc::new(CountingExecutor::default());
+        let service = service(
+            store.clone(),
+            registry_with(&tool, RiskLevel::R1, &["home:control"]),
+            Authority(Some(scopes(&["home:control"]))),
+            executor.clone(),
+        );
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+
+        let fired = service
+            .sweep_clock(419, 420, at(1_000), cancel)
+            .await
+            .expect("sweeps");
+
+        assert!(fired.is_empty(), "a cancelled sweep fires nothing");
+        assert_eq!(
+            *executor.0.lock().expect("lock"),
+            0,
+            "and nothing reaches the world"
         );
     }
 

@@ -372,7 +372,12 @@ pub async fn run_scheduler(service: Arc<AutomationService>, shutdown: Cancellati
         let now_local = OffsetDateTime::now_utc();
         let now_minutes = minutes_since_midnight(now_local);
         match service
-            .sweep_clock(previous, now_minutes, SystemTime::now())
+            .sweep_clock(
+                previous,
+                now_minutes,
+                SystemTime::now(),
+                shutdown.child_token(),
+            )
             .await
         {
             Ok(fired) => {
@@ -474,7 +479,11 @@ impl RegistryExecutor {
 
 #[async_trait::async_trait]
 impl jarvis_application::automations::AutomationExecutor for RegistryExecutor {
-    async fn execute(&self, proposal: &jarvis_domain::tools::ToolProposal) -> Result<(), String> {
+    async fn execute(
+        &self,
+        proposal: &jarvis_domain::tools::ToolProposal,
+        cancel: CancellationToken,
+    ) -> Result<(), String> {
         let Some((tool_version, executor)) = self.registry.resolve(&proposal.tool_id) else {
             return Err("tool is not registered".to_owned());
         };
@@ -483,15 +492,32 @@ impl jarvis_application::automations::AutomationExecutor for RegistryExecutor {
             tool_version,
             arguments: proposal.arguments.clone(),
         };
-        executor
-            // No grant: `decide_at_fire_time` only returns a proposal for an
-            // `Auto` decision, and anything needing a grant was already
-            // recorded as a refusal (nobody is awake to approve it).
-            .execute(invocation, None, CancellationToken::new())
-            .await
+        // Bounded, and cancellable. Before this the firing got a fresh
+        // `CancellationToken::new()` that nothing held the other end of, so an
+        // unresponsive tool blocked every later automation indefinitely and
+        // shutdown could only give up and detach the scheduler (invariant 4).
+        //
+        // The timeout lives here rather than in `fire_all` because enforcing it
+        // needs a timer, and `jarvis-application` takes no tokio dependency
+        // beyond async traits (invariant 3). The rule itself is stated there,
+        // as `FIRE_TIMEOUT`.
+        let executed = tokio::time::timeout(
+            jarvis_application::automations::FIRE_TIMEOUT,
+            executor
+                // No grant: `decide_at_fire_time` only returns a proposal for an
+                // `Auto` decision, and anything needing a grant was already
+                // recorded as a refusal (nobody is awake to approve it).
+                .execute(invocation, None, cancel),
+        )
+        .await;
+
+        match executed {
             // Neutral text only — never a raw adapter string (docs/06 §5).
-            .map(|_| ())
-            .map_err(|e: jarvis_domain::tools::ToolError| e.to_string())
+            Ok(result) => result
+                .map(|_| ())
+                .map_err(|e: jarvis_domain::tools::ToolError| e.to_string()),
+            Err(_) => Err("the tool did not answer in time".to_owned()),
+        }
     }
 }
 

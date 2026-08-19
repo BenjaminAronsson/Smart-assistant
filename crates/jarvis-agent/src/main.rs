@@ -172,11 +172,39 @@ async fn run() -> Result<()> {
     // Intentionally detached, untracked work (invariant 4): a process-lifetime
     // signal listener with nothing to drain — it self-terminates on the first
     // signal and the awaited client loop below is the real shutdown join point.
+    //
+    // **SIGTERM matters more here than Ctrl-C does.** A node is started by
+    // systemd and stopped by `systemctl stop`, which sends SIGTERM — and until
+    // this handled it, every planned stop or restart killed the process on the
+    // default handler, skipping the drain: no `voice.stream.stop` for an open
+    // capture stream, no `voice.silence()`, and a daemon left holding a
+    // half-open stream until the socket read failed. The comment claimed this
+    // worked long before the code did (found by the M8 rust-reviewer pass).
     let (tx, rx) = tokio::sync::watch::channel(false);
     tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            let _ = tx.send(true);
+        let ctrl_c = tokio::signal::ctrl_c();
+        #[cfg(unix)]
+        {
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut term) => {
+                    tokio::select! {
+                        _ = ctrl_c => {}
+                        _ = term.recv() => {}
+                    }
+                }
+                // A node that cannot install the handler still runs and still
+                // stops on Ctrl-C; refusing to start over it would be worse.
+                Err(error) => {
+                    tracing::warn!(%error, "no SIGTERM handler; only Ctrl-C will drain");
+                    let _ = ctrl_c.await;
+                }
+            }
         }
+        #[cfg(not(unix))]
+        {
+            let _ = ctrl_c.await;
+        }
+        let _ = tx.send(true);
     });
 
     // Audio belongs to the classes that were given `voice-capture` authority.
