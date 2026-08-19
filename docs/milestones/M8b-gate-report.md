@@ -1,10 +1,16 @@
 # M8b gate report — scheduling
 
-**Status: READY FOR SIGN-OFF, with one recorded deviation.**
+**Status: READY FOR SIGN-OFF on its own exit evidence, with two recorded deviations — one of
+which is a correction to this report.**
 
 Prepared 2026-08-15 against `main` (`e69bd83`), covering F8.6–F8.7 and D-M4-1.
 **Updated 2026-08-17:** D2 is **closed** — the restart sweep now reads a persisted last-seen
 stamp, so evidence item 3 holds in production as well as in its tests. D1 stands.
+
+**Corrected 2026-08-18:** this report claimed **D-M4-1 is closed**. It is not, and the claim has
+been withdrawn — see §1.3. The sub-gate's own three exit-evidence items are unaffected and all
+pass; D-M4-1 was a carried-in deviation this report reported on in passing and got wrong. Found
+by the `rust-reviewer` pass that D4 says never ran.
 
 ---
 
@@ -19,6 +25,10 @@ stamp, so evidence item 3 holds in production as well as in its tests. D1 stands
 | 1 | An automation the owner created fires on its own | **PASS** |
 | 2 | Policy is re-evaluated **at fire time** | **PASS** |
 | 3 | A missed run is announced, not silently skipped | **PASS** |
+
+The missed-run announcement (evidence 3) is genuinely done and works in production. It is
+**D-M4-1 that is not closed** — a separate claim this report made in passing and got wrong; see
+§1.3.
 
 ### 1 — It fires on its own (F8.6/F8.7, PRs #51/#52)
 
@@ -58,7 +68,7 @@ denial that could be edited into a success is not a record — and a denial is t
 row in that table, because *"it ran and nothing happened"* and *"it was refused"* are
 indistinguishable from the sofa.
 
-### 3 — A missed run is announced (D-M4-1, PR #56)
+### 3 — A missed run is announced (PR #56)
 
 `AutomationService::missed_since` **reports rather than fires**, and the distinction was a real
 decision: a missed *timer* must still ring (the owner asked for a noise at a time, and the noise
@@ -67,10 +77,32 @@ all morning is **worse** than not firing it, because the reason has passed. Sile
 option ruled out: an owner returning to a house that did nothing cannot tell *"the automation is
 broken"* from *"the daemon was off"*. The announcement names the automation.
 
-**D-M4-1 is closed.** M4's `DeferrableScheduler` had existed since M4 with nothing calling it —
-carried through M5, M6 and M7. `jarvisd::deferred::run_worker` now turns it: single-flight,
-health- and quota-gated, 120 s idle / 5 s busy so a backlog drains, the lock never held across
-the sleep, and prompt shutdown (tested — it fails if the worker waits out its idle interval).
+**⚠️ D-M4-1 is NOT closed — this report said it was, and that was wrong.**
+
+Corrected 2026-08-18, found by the `rust-reviewer` pass (D4) and confirmed by inspection.
+`jarvisd::deferred::run_worker` is a correct, well-tested driver: single-flight, health- and
+quota-gated, 120 s idle / 5 s busy so a backlog drains, the lock never held across the sleep,
+and prompt shutdown. **Nothing spawns it.** `run_worker` appears nowhere outside its own file,
+`main.rs` never mentions `deferred`, and the only `impl DeferredContext` is in that file's test
+module.
+
+The M4 gate report named this deviation in three parts. All three are still true:
+
+| M4's wording | Now |
+|---|---|
+| "no background task calls `run_once`" | still true — the driver exists and is never spawned |
+| "no concrete `DeferredWorkHandler` exists for real work" | still true — only test doubles |
+| "no mechanism derives a `QuotaWindow` from provider health signals" | still true |
+
+So M8 moved the deviation one level up rather than closing it: M4 shipped a scheduler nothing
+called, and M8 shipped a driver nothing calls. That is the **fixture-vs-caller** class this
+project has now hit five times, and it is the reason the class is worth naming.
+
+**Deliberately not "fixed" by spawning the loop.** With no handler and no quota-window source,
+a spawned worker would wake every 120 seconds to do nothing — a driver turning nothing, which is
+the same defect a third level up and would make the claim *look* true while remaining false.
+Closing D-M4-1 honestly needs real deferrable work to exist first (M4's deferred summarization),
+which is a scope item for a feature list, not a bug fix at a gate.
 
 ---
 
@@ -94,6 +126,9 @@ would burn wakeups on an 8 GB target for a trigger that cannot express anything 
 
 ## 3. Deviations requested
 
+- **D-M4-1 — REOPENED.** Not a new deviation: a correction. `run_worker` exists, is tested and
+  is never spawned; no `DeferredWorkHandler` and no `QuotaWindow` source exist in production.
+  See §1.3 for why spawning the loop would not close it.
 - **D1 — the automations UI is read-and-toggle only.** The settings surface (F8.8) lists
   automations, enables/disables them and shows history, but **creating** one is API-only. The
   domain models creation as an R2 action; no UI drives it yet. Not blocking: the exit evidence
@@ -131,16 +166,21 @@ would burn wakeups on an 8 GB target for a trigger that cannot express anything 
 
 ## 4. Open risks
 
-- **No subagent review passes** ran on any of M8 (see the M8a report, D4). This diff adds an
-  execution path that acts on the world **unattended** — the single best `security-auditor`
-  candidate in the milestone.
+- ~~**No subagent review passes**~~ **CLOSED 2026-08-18** (M8a report, D4). The instinct was
+  right: this diff *was* the best candidate in the milestone, and the audit found that
+  automations wrote **no audit row for enable, disable, delete or firing** — invariant 6, on the
+  one surface that acts unattended. Fixed with DB tests asserting the rows land and that the
+  firing's actor is the creator device rather than `system`. The same passes also found that
+  this report's "D-M4-1 is closed" claim was false (§1.3).
 - Automations can only propose tools that are *registered*; an unregistered tool is denied. That
   is correct, but it means an automation created against a tool that is later unregistered fails
   closed silently apart from its history row. Acceptable, worth knowing.
 
 ## 5. Recommendation
 
-**Sign M8b**, accepting D1 as recorded. All three exit-evidence items are demonstrated: an
+**Sign M8b** on its own exit evidence, accepting D1 and the reopened D-M4-1 as recorded — and
+noting that this report previously asserted D-M4-1 closed. The three sub-gate claims themselves
+were verified and hold; the withdrawn claim was about a deviation carried in from M4. All three exit-evidence items are demonstrated: an
 automation fires on its own, policy is re-evaluated at fire time from live authority, and a
 missed run is reported rather than skipped — the last of these now in production as well as in
 its tests.

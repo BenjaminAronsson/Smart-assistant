@@ -232,14 +232,32 @@ pub async fn create(
 }
 
 /// `PATCH /api/v1/automations/{id}` — enable or disable, and nothing else.
+///
+/// Audited like creation is. Enabling arms an unattended actor that will run on
+/// its creator's authority; disabling is how a household silences one. Both are
+/// answers somebody may need later, so neither happens unrecorded (invariant 6).
 pub async fn update(
     State(api): State<AutomationApi>,
+    axum::Extension(device): axum::Extension<crate::auth::DeviceContext>,
     Path(id): Path<String>,
     Json(request): Json<UpdateAutomationRequest>,
 ) -> Result<StatusCode, Response> {
     let id: AutomationId = id.parse().map_err(|_| not_found())?;
+    let audit = AuditEvent {
+        occurred_at: SystemTime::now(),
+        actor: format!("device:{}", device.device_id),
+        event_type: if request.enabled {
+            "automation.enabled"
+        } else {
+            "automation.disabled"
+        }
+        .into(),
+        target: format!("automation:{id}"),
+        correlation_id: None,
+        payload_json: format!(r#"{{"enabled":{}}}"#, request.enabled),
+    };
     api.store
-        .set_enabled(&id, request.enabled)
+        .set_enabled(&id, request.enabled, &audit)
         .await
         .map_err(storage_problem)?;
     Ok(StatusCode::NO_CONTENT)
@@ -248,10 +266,22 @@ pub async fn update(
 /// `DELETE /api/v1/automations/{id}`
 pub async fn delete(
     State(api): State<AutomationApi>,
+    axum::Extension(device): axum::Extension<crate::auth::DeviceContext>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, Response> {
     let id: AutomationId = id.parse().map_err(|_| not_found())?;
-    api.store.delete(&id).await.map_err(storage_problem)?;
+    let audit = AuditEvent {
+        occurred_at: SystemTime::now(),
+        actor: format!("device:{}", device.device_id),
+        event_type: "automation.deleted".into(),
+        target: format!("automation:{id}"),
+        correlation_id: None,
+        payload_json: "{}".to_owned(),
+    };
+    api.store
+        .delete(&id, &audit)
+        .await
+        .map_err(storage_problem)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -342,7 +372,12 @@ pub async fn run_scheduler(service: Arc<AutomationService>, shutdown: Cancellati
         let now_local = OffsetDateTime::now_utc();
         let now_minutes = minutes_since_midnight(now_local);
         match service
-            .sweep_clock(previous, now_minutes, SystemTime::now())
+            .sweep_clock(
+                previous,
+                now_minutes,
+                SystemTime::now(),
+                shutdown.child_token(),
+            )
             .await
         {
             Ok(fired) => {
@@ -444,7 +479,11 @@ impl RegistryExecutor {
 
 #[async_trait::async_trait]
 impl jarvis_application::automations::AutomationExecutor for RegistryExecutor {
-    async fn execute(&self, proposal: &jarvis_domain::tools::ToolProposal) -> Result<(), String> {
+    async fn execute(
+        &self,
+        proposal: &jarvis_domain::tools::ToolProposal,
+        cancel: CancellationToken,
+    ) -> Result<(), String> {
         let Some((tool_version, executor)) = self.registry.resolve(&proposal.tool_id) else {
             return Err("tool is not registered".to_owned());
         };
@@ -453,15 +492,32 @@ impl jarvis_application::automations::AutomationExecutor for RegistryExecutor {
             tool_version,
             arguments: proposal.arguments.clone(),
         };
-        executor
-            // No grant: `decide_at_fire_time` only returns a proposal for an
-            // `Auto` decision, and anything needing a grant was already
-            // recorded as a refusal (nobody is awake to approve it).
-            .execute(invocation, None, CancellationToken::new())
-            .await
+        // Bounded, and cancellable. Before this the firing got a fresh
+        // `CancellationToken::new()` that nothing held the other end of, so an
+        // unresponsive tool blocked every later automation indefinitely and
+        // shutdown could only give up and detach the scheduler (invariant 4).
+        //
+        // The timeout lives here rather than in `fire_all` because enforcing it
+        // needs a timer, and `jarvis-application` takes no tokio dependency
+        // beyond async traits (invariant 3). The rule itself is stated there,
+        // as `FIRE_TIMEOUT`.
+        let executed = tokio::time::timeout(
+            jarvis_application::automations::FIRE_TIMEOUT,
+            executor
+                // No grant: `decide_at_fire_time` only returns a proposal for an
+                // `Auto` decision, and anything needing a grant was already
+                // recorded as a refusal (nobody is awake to approve it).
+                .execute(invocation, None, cancel),
+        )
+        .await;
+
+        match executed {
             // Neutral text only — never a raw adapter string (docs/06 §5).
-            .map(|_| ())
-            .map_err(|e: jarvis_domain::tools::ToolError| e.to_string())
+            Ok(result) => result
+                .map(|_| ())
+                .map_err(|e: jarvis_domain::tools::ToolError| e.to_string()),
+            Err(_) => Err("the tool did not answer in time".to_owned()),
+        }
     }
 }
 

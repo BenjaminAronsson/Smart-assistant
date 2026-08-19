@@ -184,7 +184,9 @@ Run on the dev host (not the reference 8 GB machine — see §3).
 | Metric | Measured | Budget | Result |
 |---|---|---|---|
 | Cold start to healthy | **0.051 s** | < 2 s (NFR-15) | PASS |
-| jarvisd idle RSS | **22.1 MB** | 40–80 MB typical, 120 MB ceiling | PASS |
+| jarvisd idle RSS (M8a, 2026-08-15) | **22.1 MB** | 40–80 MB typical, 120 MB ceiling | PASS |
+| jarvisd idle RSS (all of M8 merged, 2026-08-18) | **22.8 MB** | 40–80 MB typical, 120 MB ceiling | PASS |
+| Cold start to healthy (2026-08-18) | **0.052 s** | < 2 s (NFR-15) | PASS |
 | `jarvis-agent` release binary, no engine | **10.63 MB** | — | noted |
 | `jarvis-agent` release binary, `wake-word-onnx` | **37.18 MB** | — | **noted — see below** |
 | Workspace tests, as first prepared (2026-08-15) | **1488 pass**, 81 binaries, 0 fail | — | PASS |
@@ -254,11 +256,41 @@ re-running one command on that machine rather than of building a harness.
 - **D2 — NFR-04 has still never been measured** (D-M5-3, since M5).
 - **D3 — measurements are from the dev host**, not the 8 GB reference machine. docs/01 §4.1's
   numbers are the 8 GB profile's, so these are indicative, not conforming.
-- **D4 — no subagent review passes were run.** The whole of M8 was built in a session configured
-  not to dispatch subagents, so `rust-reviewer`, `security-auditor` and `perf-warden` did not see
-  any of it. The diffs that most warrant a security pass: `jarvis-agent/src/pinning.rs` (the
-  trust decision), `jarvis-agent/src/http.rs` (hand-rolled HTTP), and `jarvisd/src/ws.rs`
-  `delivers_to` (who hears what). **This is a gap in process, not just in coverage.**
+- ~~**D4 — no subagent review passes were run.**~~ **CLOSED 2026-08-18.** All three ran over
+  `m7-complete..HEAD`. It was the right call to insist on: between them they found **two blocking
+  defects and a false claim in these reports**, none of which any test was failing on.
+
+  | Pass | Outcome |
+  |---|---|
+  | `security-auditor` | 2 blocking, 7 should-fix — **all fixed** except S3 (recorded, see below) |
+  | `rust-reviewer` | 1 blocking (**D-M4-1 is not closed** — see the M8b report), 7 should-fix |
+  | `perf-warden` | no blocking budget violations |
+
+  **What the security pass found:** an absent room could **swallow an alarm** (the timer path
+  trusted a broadcast send, which succeeds whenever *any* socket exists — so an unplugged kitchen
+  node plus an open browser meant nobody heard it, contradicting ADR-023 and this report's own
+  §1.6 claim); and automations wrote **no audit rows at all** for enable, disable, delete or
+  firing (invariant 6, on the one surface that acts unattended). Both fixed with regression
+  tests. Also fixed: consent failing open on a startup read error, a stream/run id namespace
+  confusion, a resolved API key inside a `#[derive(Debug)]`, a wake word that could escape the
+  asset directory, CRLF in the hand-rolled request head, and a `DELETE` route that could never
+  succeed for any automation that had fired.
+
+  **Two reviewers disagreed and were checked rather than averaged.** `perf-warden` reported the
+  wake inference as running "on the audio thread (no Tokio worker)"; `rust-reviewer` reported it
+  as blocking a Tokio worker. Inspection settles it for `rust-reviewer`: `gate.accept` runs
+  synchronously inside `handle_captured_frame`, which is awaited from a `select!` arm in the
+  socket task, so that task cannot poll the socket or the shutdown token while three ONNX models
+  run. Recorded as an open should-fix.
+
+  **Still open from these passes** (none blocking, each recorded rather than quietly carried):
+  the AEC adapts against near-silence with no double-talk detector (**measured**: ~56%
+  attenuation of a near-end voice, and a ~200 ms clipped burst that the wake gate then scores);
+  the AEC costs **997 µs per 20 ms frame (~5% of an i7 core, sustained)** and never skips even on
+  an all-zero reference; automations execute tools with a `CancellationToken` nothing can cancel;
+  `jarvis-agent` never handles SIGTERM, so `systemctl stop` skips its drain path; and S3 — every
+  spoken answer is labelled `Normal`, so a run that read a message aloud can reach the
+  third-party voice.
 - **D5 — the false-accept budget is still unmeasured, but is now measurable.** ADR-032
   consequence 2 requires a *measured* rate over a household-noise corpus rather than an
   assurance. The harness exists and reports accepts/hour

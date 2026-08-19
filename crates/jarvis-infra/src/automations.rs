@@ -214,7 +214,7 @@ impl AutomationStore for PgAutomationStore {
                    tool_id, arguments_json, enabled, created_by_device_id, created_at,
                    last_fired_at
             FROM automations.automations
-            WHERE enabled
+            WHERE enabled AND deleted_at IS NULL
             ORDER BY created_at
             "#
         )
@@ -234,6 +234,7 @@ impl AutomationStore for PgAutomationStore {
                    tool_id, arguments_json, enabled, created_by_device_id, created_at,
                    last_fired_at
             FROM automations.automations
+            WHERE deleted_at IS NULL
             ORDER BY created_at
             "#
         )
@@ -245,7 +246,13 @@ impl AutomationStore for PgAutomationStore {
             .collect()
     }
 
-    async fn set_enabled(&self, id: &AutomationId, enabled: bool) -> Result<(), RepositoryError> {
+    async fn set_enabled(
+        &self,
+        id: &AutomationId,
+        enabled: bool,
+        audit: &AuditEvent,
+    ) -> Result<(), RepositoryError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
         sqlx::query!(
             r#"
             UPDATE automations.automations
@@ -255,26 +262,47 @@ impl AutomationStore for PgAutomationStore {
             id.as_str(),
             enabled,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(storage)?;
+        crate::audit::append(&mut tx, audit)
+            .await
+            .map_err(|e| RepositoryError::Storage(format!("automation set_enabled: audit: {e}")))?;
+        tx.commit().await.map_err(storage)?;
         Ok(())
     }
 
-    async fn delete(&self, id: &AutomationId) -> Result<(), RepositoryError> {
+    /// Retire an automation. It stops being listed and stops firing; its
+    /// execution history is untouched.
+    ///
+    /// A hard `DELETE` cannot work here and should not (S5, migration 0021):
+    /// `executions` cascades from this row and is append-only by trigger, so the
+    /// delete aborted — and "fix" it by loosening either and the delete path
+    /// becomes a path through the audit-adjacent evidence.
+    async fn delete(&self, id: &AutomationId, audit: &AuditEvent) -> Result<(), RepositoryError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
         sqlx::query!(
-            "DELETE FROM automations.automations WHERE id = $1",
+            r#"
+            UPDATE automations.automations
+            SET deleted_at = now(), enabled = FALSE, updated_at = now()
+            WHERE id = $1 AND deleted_at IS NULL
+            "#,
             id.as_str()
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(storage)?;
+        crate::audit::append(&mut tx, audit)
+            .await
+            .map_err(|e| RepositoryError::Storage(format!("automation delete: audit: {e}")))?;
+        tx.commit().await.map_err(storage)?;
         Ok(())
     }
 
     async fn record_execution(
         &self,
         execution: &AutomationExecution,
+        audit: &AuditEvent,
     ) -> Result<(), RepositoryError> {
         let (outcome, detail) = outcome_columns(&execution.outcome);
         let occurred_at = utc(execution.occurred_at);
@@ -308,6 +336,9 @@ impl AutomationStore for PgAutomationStore {
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
+        crate::audit::append(&mut tx, audit)
+            .await
+            .map_err(|e| RepositoryError::Storage(format!("automation firing: audit: {e}")))?;
         tx.commit().await.map_err(storage)?;
         Ok(())
     }

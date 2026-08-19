@@ -108,12 +108,18 @@ async fn a_disabled_automation_leaves_the_scheduler_sweep(pool: PgPool) {
         .expect("creates");
 
     assert_eq!(store.list_enabled().await.expect("lists").len(), 1);
-    store.set_enabled(&id(ID), false).await.expect("disables");
+    store
+        .set_enabled(&id(ID), false, &audit_event())
+        .await
+        .expect("disables");
     assert!(store.list_enabled().await.expect("lists").is_empty());
     // Still listed for the settings surface, though — disabling is not deleting.
     assert_eq!(store.list_all().await.expect("lists").len(), 1);
 
-    store.set_enabled(&id(ID), true).await.expect("re-enables");
+    store
+        .set_enabled(&id(ID), true, &audit_event())
+        .await
+        .expect("re-enables");
     assert_eq!(store.list_enabled().await.expect("lists").len(), 1);
 }
 
@@ -133,13 +139,17 @@ async fn a_denial_is_recorded_with_its_reason_and_stamps_the_rate_limit(pool: Pg
         .expect("creates");
 
     store
-        .record_execution(&AutomationExecution {
-            automation_id: id(ID),
-            occurred_at: t0() + Duration::from_secs(60),
-            outcome: ExecutionOutcome::Denied {
-                reason: "the device that created this automation no longer has authority".into(),
+        .record_execution(
+            &AutomationExecution {
+                automation_id: id(ID),
+                occurred_at: t0() + Duration::from_secs(60),
+                outcome: ExecutionOutcome::Denied {
+                    reason: "the device that created this automation no longer has authority"
+                        .into(),
+                },
             },
-        })
+            &audit_event(),
+        )
         .await
         .expect("records");
 
@@ -177,11 +187,14 @@ async fn history_comes_back_newest_first_and_bounded(pool: PgPool) {
 
     for minute in 1..=5 {
         store
-            .record_execution(&AutomationExecution {
-                automation_id: id(ID),
-                occurred_at: t0() + Duration::from_secs(60 * minute),
-                outcome: ExecutionOutcome::Executed,
-            })
+            .record_execution(
+                &AutomationExecution {
+                    automation_id: id(ID),
+                    occurred_at: t0() + Duration::from_secs(60 * minute),
+                    outcome: ExecutionOutcome::Executed,
+                },
+                &audit_event(),
+            )
             .await
             .expect("records");
     }
@@ -209,13 +222,16 @@ async fn execution_history_cannot_be_rewritten(pool: PgPool) {
         .await
         .expect("creates");
     store
-        .record_execution(&AutomationExecution {
-            automation_id: id(ID),
-            occurred_at: t0() + Duration::from_secs(60),
-            outcome: ExecutionOutcome::Denied {
-                reason: "missing scope".into(),
+        .record_execution(
+            &AutomationExecution {
+                automation_id: id(ID),
+                occurred_at: t0() + Duration::from_secs(60),
+                outcome: ExecutionOutcome::Denied {
+                    reason: "missing scope".into(),
+                },
             },
-        })
+            &audit_event(),
+        )
         .await
         .expect("records");
 
@@ -276,4 +292,168 @@ async fn stamping_again_moves_the_cursor_forward(pool: PgPool) {
     store.record_heartbeat(second).await.expect("stamps again");
 
     assert_eq!(store.last_heartbeat().await.expect("reads"), Some(second));
+}
+
+/// Invariant 6, on the one surface that acts with nobody watching.
+///
+/// An automation firing at 06:00 must be answerable from the **append-only
+/// audit trail**, not only from `automations.executions` — a table the
+/// automation module owns. Through M8 it was the latter only: `record_execution`
+/// co-transacted the history row and the rate-limit stamp and wrote no audit
+/// event at all, so "why did the lights come on?" had exactly one witness, and
+/// that witness was the accused.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn a_firing_writes_an_audit_row_in_the_same_transaction(pool: PgPool) {
+    let store = PgAutomationStore::new(pool.clone());
+    store
+        .create(
+            &automation(Trigger::DailyAt {
+                minutes_since_midnight: 420,
+            }),
+            &audit_event(),
+        )
+        .await
+        .expect("creates");
+
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM audit.audit_events")
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+
+    store
+        .record_execution(
+            &AutomationExecution {
+                automation_id: id(ID),
+                occurred_at: t0(),
+                outcome: ExecutionOutcome::Executed,
+            },
+            &AuditEvent {
+                occurred_at: t0(),
+                actor: format!("device:{CREATOR}"),
+                event_type: "automation.executed".into(),
+                target: format!("automation:{ID}"),
+                correlation_id: None,
+                payload_json: r#"{"toolId":"home.set_light","outcome":"executed"}"#.into(),
+            },
+        )
+        .await
+        .expect("records");
+
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM audit.audit_events")
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+    assert_eq!(after, before + 1, "a firing must leave an audit row");
+
+    let (actor, event_type): (String, String) = sqlx::query_as(
+        "SELECT actor, event_type FROM audit.audit_events ORDER BY occurred_at DESC, event_type DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("row");
+    assert_eq!(event_type, "automation.executed");
+    // The CREATOR, not `system`: the firing ran on that device's authority, and
+    // an audit row naming the daemon would hide the fact that matters most when
+    // that device is later revoked.
+    assert_eq!(actor, format!("device:{CREATOR}"));
+}
+
+/// Arming and disarming are audited too. Enabling is the act that arms an
+/// unattended actor holding its creator's authority; disabling is how a
+/// household silences one. `create` audited from the start and these did not.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn enabling_disabling_and_deleting_are_each_audited(pool: PgPool) {
+    let store = PgAutomationStore::new(pool.clone());
+    store
+        .create(
+            &automation(Trigger::DailyAt {
+                minutes_since_midnight: 420,
+            }),
+            &audit_event(),
+        )
+        .await
+        .expect("creates");
+
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM audit.audit_events")
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+
+    store
+        .set_enabled(&id(ID), false, &audit_event())
+        .await
+        .expect("disables");
+    store
+        .set_enabled(&id(ID), true, &audit_event())
+        .await
+        .expect("re-enables");
+    store
+        .delete(&id(ID), &audit_event())
+        .await
+        .expect("deletes");
+
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM audit.audit_events")
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+    assert_eq!(
+        after,
+        before + 3,
+        "disable, re-enable and delete must each leave a row"
+    );
+}
+
+/// S5 from the M8 security audit: an automation that has fired can be removed.
+///
+/// It could not be, and the failure was invisible from the code: `executions`
+/// cascades from its parent AND is append-only by trigger, and Postgres fires
+/// row triggers on cascaded deletes — so `DELETE` aborted with "automation
+/// execution history is append-only" and the route returned 503 forever. The
+/// auditor could not confirm it without a database; this settles it and keeps
+/// it settled.
+///
+/// Retiring, not erasing (migration 0021): the automation stops being listed
+/// and stops firing, and its history stays exactly as immutable as it was.
+#[sqlx::test(migrator = "jarvis_infra::MIGRATOR")]
+async fn an_automation_that_has_fired_can_be_retired_and_keeps_its_history(pool: PgPool) {
+    let store = PgAutomationStore::new(pool.clone());
+    store
+        .create(
+            &automation(Trigger::DailyAt {
+                minutes_since_midnight: 420,
+            }),
+            &audit_event(),
+        )
+        .await
+        .expect("creates");
+    store
+        .record_execution(
+            &AutomationExecution {
+                automation_id: id(ID),
+                occurred_at: t0(),
+                outcome: ExecutionOutcome::Executed,
+            },
+            &audit_event(),
+        )
+        .await
+        .expect("records a firing");
+
+    store
+        .delete(&id(ID), &audit_event())
+        .await
+        .expect("an automation that has fired must still be removable");
+
+    assert!(
+        store.list_all().await.expect("lists").is_empty(),
+        "a retired automation is gone from the settings surface"
+    );
+    assert!(
+        store.list_enabled().await.expect("lists").is_empty(),
+        "and the scheduler must never sweep it again"
+    );
+    assert_eq!(
+        store.history(&id(ID), 10).await.expect("history").len(),
+        1,
+        "its history survives — that is the whole reason this is a retirement"
+    );
 }

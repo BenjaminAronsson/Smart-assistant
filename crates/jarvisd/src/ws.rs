@@ -670,12 +670,49 @@ pub fn delivers_to_for_test(
 /// would cut off the answer to the question before last, mid-sentence.
 const MAX_REMEMBERED_STREAMS: usize = 12;
 
+/// One id this socket owns, **tagged by what kind of id it is**.
+///
+/// The tag is the security property, not bookkeeping. Capture-stream ids are
+/// chosen by the *client*; run ids are minted by the *daemon*. Kept in one
+/// untagged list, a socket could declare a `streamId` equal to somebody else's
+/// run id and be treated as that run's owner — receiving the full spoken answer
+/// to a question it never asked, straight past the Session channel's `ui` rule
+/// that F7.4/CF-8 exist to enforce.
+///
+/// That was not reachable when this was written (run ids are ULIDs and nothing
+/// a node may receive discloses another run's id), but it is a confused deputy
+/// waiting for one future field to hand it the key. Tagging costs nothing and
+/// removes the class.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OwnedId {
+    /// A capture stream or spoken utterance — **client-supplied**.
+    Stream(String),
+    /// A run this socket started — **daemon-minted**.
+    Run(String),
+}
+
+impl OwnedId {
+    fn stream(&self) -> Option<&str> {
+        match self {
+            Self::Stream(id) => Some(id),
+            Self::Run(_) => None,
+        }
+    }
+
+    fn run(&self) -> Option<&str> {
+        match self {
+            Self::Run(id) => Some(id),
+            Self::Stream(_) => None,
+        }
+    }
+}
+
 /// Remember an id this socket owns — a capture stream, a spoken utterance, or
 /// a run this socket started.
 /// Bounded: the list grows with client behaviour, and the oldest entries are
 /// no longer receiving events anyone is waiting for.
-fn register_owned_stream(owned: &mut std::collections::VecDeque<String>, id: String) {
-    if owned.iter().any(|s| s == &id) {
+fn register_owned_stream(owned: &mut std::collections::VecDeque<OwnedId>, id: OwnedId) {
+    if owned.iter().any(|existing| existing == &id) {
         return;
     }
     owned.push_back(id);
@@ -702,10 +739,14 @@ pub(crate) fn delivers_to_owner_of(
     envelope: &EventEnvelope,
     class: DeviceClass,
     device_id: &str,
-    owned: &std::collections::VecDeque<String>,
+    owned: &std::collections::VecDeque<OwnedId>,
 ) -> bool {
     if let Some(stream) = envelope.payload.get("streamId").and_then(|v| v.as_str()) {
-        return owned.iter().any(|s| s == stream)
+        // Matched only against ids registered as *streams*.
+        return owned
+            .iter()
+            .filter_map(OwnedId::stream)
+            .any(|s| s == stream)
             && delivers_to(envelope, class, Some(device_id), Some(stream));
     }
 
@@ -733,7 +774,9 @@ pub(crate) fn delivers_to_owner_of(
     if matches!(envelope.channel, Channel::Session)
         && SPOKEN_RUN_EVENTS.contains(&envelope.event_type.as_str())
         && let Some(run) = envelope.payload.get("runId").and_then(|v| v.as_str())
-        && owned.iter().any(|owned_id| owned_id == run)
+        // Matched only against ids the DAEMON minted. A client-declared
+        // `streamId` that happens to equal a run id buys nothing.
+        && owned.iter().filter_map(OwnedId::run).any(|r| r == run)
     {
         return true;
     }
@@ -1068,9 +1111,18 @@ async fn speak_task(
     // Whether this utterance may be spoken by a third-party voice (F8.11).
     // Labelled here, at the producer, rather than sniffed from the text: a
     // heuristic guessing whether a sentence is private fails open and silently.
-    // A spoken *run response* is `Normal`; anything reading out message bodies
-    // or calendar entries must pass `Sensitive`, and the synthesizer treats
-    // that as a hard routing constraint.
+    //
+    // ⚠️ **S3, M8 security audit — known gap, not a protection.** There is
+    // exactly one producer of run speech and it always passes `Normal` (see
+    // `begin_speech`). The routing constraint below is therefore correct
+    // machinery with nothing yet driving it: a run that used a mail or calendar
+    // tool and reads the result back is spoken by the third-party voice.
+    //
+    // Fixing it needs a signal this socket does not have. `RunUpdate` carries no
+    // tool variant, and `StateChanged` is dropped at this sink, so nothing here
+    // knows what a run touched. Escalating correctly means teaching the
+    // orchestrator to say so — an application-layer design change with a
+    // transition-table test, not a patch at this call site.
     speech_sensitivity: jarvis_application::voice::SpeechSensitivity,
     cancel: CancellationToken,
 ) {
@@ -1155,8 +1207,10 @@ fn begin_speech(
         synthesizer,
         clause_rx,
         audio_tx,
-        // A run's spoken answer. When a tool starts reading message bodies
-        // aloud, that path passes `Sensitive` instead.
+        // Always `Normal` today — see the S3 note on `speak_task`. This is the
+        // single producer, so this constant IS the current policy, and the
+        // mitigation for now is that ElevenLabs is off unless explicitly
+        // consented to and never receives anything when it is off.
         jarvis_application::voice::SpeechSensitivity::Normal,
         cancel.clone(),
     ));
@@ -1406,7 +1460,7 @@ async fn handle_socket(
     // torn down (that is what "final" means), so keying delivery on the live
     // stream would drop the socket's own last utterance — the one that starts
     // the run. Bounded, because it grows with client behaviour.
-    let mut owned_streams: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    let mut owned_streams: std::collections::VecDeque<OwnedId> = std::collections::VecDeque::new();
     // Presence lasts exactly as long as this task: the guard deregisters on
     // every exit path, including the ones that return early.
     let _presence = state.connected.mark_present(device.device_id.clone());
@@ -1655,7 +1709,10 @@ async fn handle_socket(
                             // This socket now owns the stream, so its events —
                             // including the final transcript that settles after
                             // teardown — reach it and nothing else (F7.4).
-                            register_owned_stream(&mut owned_streams, stream_id.clone());
+                            register_owned_stream(
+                                &mut owned_streams,
+                                OwnedId::Stream(stream_id.clone()),
+                            );
                             // The per-stream format is client-controlled and is
                             // handed straight to the speech service; the
                             // `[voice].audio` config constrains only what the
@@ -1734,7 +1791,7 @@ async fn handle_socket(
 
 /// Turn a settled transcript into a run, then bind spoken output to it.
 async fn start_voice_turn(
-    owned_streams: &mut std::collections::VecDeque<String>,
+    owned_streams: &mut std::collections::VecDeque<OwnedId>,
     socket: &mut WebSocket,
     state: &WsState,
     device: &crate::auth::DeviceContext,
@@ -1773,7 +1830,7 @@ async fn start_voice_turn(
     // statement about who asked, not about who can speak, and `delivers_to_
     // owner_of` needs it to let the run's own text deltas past the Session
     // channel's `ui` rule — which a satellite never satisfies.
-    register_owned_stream(owned_streams, ack.run_id.as_str().to_owned());
+    register_owned_stream(owned_streams, OwnedId::Run(ack.run_id.as_str().to_owned()));
 
     if let Some(synthesizer) = state.synthesizer.as_ref() {
         // The utterance's token is a child of the socket's shutdown token, so
@@ -1788,7 +1845,7 @@ async fn start_voice_turn(
         // own that id too or it would never hear that its own speech failed
         // (F7.4).
         if let Some(active) = speech.as_ref() {
-            register_owned_stream(owned_streams, active.utterance_id.clone());
+            register_owned_stream(owned_streams, OwnedId::Stream(active.utterance_id.clone()));
         }
     }
     Ok(())
@@ -2395,8 +2452,15 @@ mod delivery_scope_tests {
     }
 
     /// Builds the owned-id list a socket has after starting one voice turn.
-    fn owning(ids: &[&str]) -> std::collections::VecDeque<String> {
-        ids.iter().map(|s| (*s).to_owned()).collect()
+    fn owning(ids: &[&str]) -> std::collections::VecDeque<OwnedId> {
+        ids.iter().map(|s| OwnedId::Run((*s).to_owned())).collect()
+    }
+
+    /// The same ids, but declared the way a *client* declares a capture stream.
+    fn owning_streams(ids: &[&str]) -> std::collections::VecDeque<OwnedId> {
+        ids.iter()
+            .map(|s| OwnedId::Stream((*s).to_owned()))
+            .collect()
     }
 
     /// F8.5's named acceptance: **two nodes, each gets only its own answers.**
@@ -2518,6 +2582,64 @@ mod delivery_scope_tests {
             DeviceClass::RoomNode,
             THIS_DEVICE,
             &owning(&[])
+        ));
+    }
+
+    /// S2 from the M8 security audit: a client-chosen `streamId` cannot
+    /// impersonate a daemon-minted run id.
+    ///
+    /// Capture-stream ids come from the client; run ids are minted here. Held in
+    /// one untagged list, a socket could open a stream named after somebody
+    /// else's run and be treated as that run's owner — receiving the whole
+    /// spoken answer to a question it never asked, past the Session channel's
+    /// `ui` rule. Not reachable when this was written, because run ids are ULIDs
+    /// and nothing a node may receive discloses another run's id; tagged anyway,
+    /// because that is one leaked field away from being reachable.
+    #[test]
+    fn a_client_declared_stream_id_cannot_impersonate_a_run() {
+        let run = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+        let answer = envelope(
+            Channel::Session,
+            "text.delta",
+            serde_json::json!({ "runId": run, "text": "Twenty minutes." }),
+        );
+
+        for class in [DeviceClass::VoiceNode, DeviceClass::RoomNode] {
+            assert!(
+                !delivers_to_owner_of(&answer, class, THIS_DEVICE, &owning_streams(&[run])),
+                "{class} declared a capture stream named after a run; that must buy nothing"
+            );
+            // And the legitimate route still works.
+            assert!(delivers_to_owner_of(
+                &answer,
+                class,
+                THIS_DEVICE,
+                &owning(&[run])
+            ));
+        }
+    }
+
+    /// The converse, so the tagging is not satisfied by a rule that simply
+    /// stopped matching: a real capture stream still reaches its owner.
+    #[test]
+    fn a_real_capture_stream_still_reaches_its_owner() {
+        let transcript = envelope(
+            Channel::Voice,
+            "voice.transcript",
+            serde_json::json!({ "streamId": "mine", "text": "turn on the lamp" }),
+        );
+        assert!(delivers_to_owner_of(
+            &transcript,
+            DeviceClass::RoomNode,
+            THIS_DEVICE,
+            &owning_streams(&["mine"])
+        ));
+        // ...and a run id of the same name does not stand in for it.
+        assert!(!delivers_to_owner_of(
+            &transcript,
+            DeviceClass::RoomNode,
+            THIS_DEVICE,
+            &owning(&["mine"])
         ));
     }
 

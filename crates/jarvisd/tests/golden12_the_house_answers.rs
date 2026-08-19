@@ -135,7 +135,11 @@ struct RegistryExecutor(Arc<ToolRegistry>);
 
 #[async_trait::async_trait]
 impl AutomationExecutor for RegistryExecutor {
-    async fn execute(&self, proposal: &ToolProposal) -> Result<(), String> {
+    async fn execute(
+        &self,
+        proposal: &ToolProposal,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<(), String> {
         let (tool_version, executor) = self
             .0
             .resolve(&proposal.tool_id)
@@ -256,7 +260,12 @@ async fn golden12_an_automation_fires_on_its_own_and_records_what_happened(pool:
 
     // Nobody asked. The clock moved past 07:00 and the sweep did the rest.
     let fired = service
-        .sweep_clock(419, 421, t0() + Duration::from_secs(3_600))
+        .sweep_clock(
+            419,
+            421,
+            t0() + Duration::from_secs(3_600),
+            tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .expect("sweeps");
 
@@ -307,7 +316,12 @@ async fn golden12_a_revoked_nodes_automation_stops_and_says_why(pool: PgPool) {
     );
 
     let fired = service
-        .sweep_clock(419, 421, t0() + Duration::from_secs(3_600))
+        .sweep_clock(
+            419,
+            421,
+            t0() + Duration::from_secs(3_600),
+            tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .expect("sweeps");
 

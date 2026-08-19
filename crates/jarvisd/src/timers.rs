@@ -432,8 +432,25 @@ async fn sleep_or_stop(d: Duration, wake: &Notify, shutdown: &CancellationToken)
 /// another room must not be able to swallow one by being addressed and absent.
 /// So: ring in the room when there is a room and something is listening in it,
 /// and ring here otherwise.
+///
+/// # Why presence, and not the broadcast channel
+///
+/// The first version of this asked `WsHub::ring_timer_at` whether the send
+/// succeeded. That reads as "was it delivered" and is not: a
+/// `tokio::broadcast::Sender` reports `Err` only when there are **zero**
+/// receivers anywhere in the process, so with the owner's browser open it
+/// answered `true` for a kitchen node that had been unplugged — and
+/// `delivers_to` then correctly dropped the envelope at the browser, because
+/// it is addressed to a device id the browser does not have.
+///
+/// The alarm reached nobody, and the code reported success. That is precisely
+/// the failure ADR-023 exists to prevent, so the question has to be asked of
+/// the thing that actually decides delivery: is *that device* connected.
 pub struct RoutingAlertPlayer {
     hub: std::sync::Arc<crate::ws::WsHub>,
+    /// Who is actually on a socket right now — the same registry the fan-out
+    /// consults, so this cannot drift from what delivery really depends on.
+    connected: crate::devices::ConnectedDevices,
     /// The daemon's own speaker.
     host: std::sync::Arc<dyn jarvis_application::ports::AlertPlayer>,
 }
@@ -441,9 +458,14 @@ pub struct RoutingAlertPlayer {
 impl RoutingAlertPlayer {
     pub fn new(
         hub: std::sync::Arc<crate::ws::WsHub>,
+        connected: crate::devices::ConnectedDevices,
         host: std::sync::Arc<dyn jarvis_application::ports::AlertPlayer>,
     ) -> Self {
-        Self { hub, host }
+        Self {
+            hub,
+            connected,
+            host,
+        }
     }
 }
 
@@ -455,8 +477,11 @@ impl jarvis_application::ports::AlertPlayer for RoutingAlertPlayer {
         cancel: tokio_util::sync::CancellationToken,
     ) -> Result<(), jarvis_application::ports::AlertError> {
         if let Some(target) = timer.origin_device() {
-            let dto = to_timer_dto(timer, SystemTime::now());
-            if self.hub.ring_timer_at(&dto) {
+            // Presence first: a send that "succeeded" tells us only that some
+            // socket somewhere exists, not that this room's did.
+            if self.connected.is_connected(target) {
+                let dto = to_timer_dto(timer, SystemTime::now());
+                self.hub.ring_timer_at(&dto);
                 tracing::info!(device_id = %target, "timer rung in the room it was set in");
                 return Ok(());
             }
@@ -468,5 +493,150 @@ impl jarvis_application::ports::AlertPlayer for RoutingAlertPlayer {
             );
         }
         self.host.play(timer, cancel).await
+    }
+}
+
+#[cfg(test)]
+mod routing_alert_tests {
+    use super::*;
+    use jarvis_application::ports::{AlertError, AlertPlayer};
+    use jarvis_domain::ids::{DeviceId, TimerId};
+    use jarvis_domain::timers::{Timer, TimerKind, TimerName, TimerState};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const KITCHEN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+
+    /// Counts what actually reached the daemon's own speaker.
+    #[derive(Default)]
+    struct CountingHost(AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl AlertPlayer for CountingHost {
+        async fn play(
+            &self,
+            _timer: &Timer,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> Result<(), AlertError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn timer_from(origin: Option<&str>) -> Timer {
+        Timer::from_parts(
+            "01BX5ZZKBKACTAV9WEVGEMMVRZ"
+                .parse::<TimerId>()
+                .expect("timer id"),
+            TimerName::new("pasta").expect("name"),
+            TimerKind::Countdown {
+                duration: std::time::Duration::from_secs(600),
+            },
+            TimerState::Pending,
+            SystemTime::now(),
+            SystemTime::now(),
+            origin.map(|id| id.parse::<DeviceId>().expect("device id")),
+        )
+    }
+
+    /// Returns the live subscriber too: **holding it is the point**. The bug
+    /// this suite exists for only appears when some socket is subscribed to the
+    /// hub, because that is what made `broadcast::send` report success for a
+    /// device that was not there. Drop it and the test stops testing anything.
+    fn player(
+        connected: &crate::devices::ConnectedDevices,
+    ) -> (
+        RoutingAlertPlayer,
+        Arc<CountingHost>,
+        tokio::sync::broadcast::Receiver<Arc<jarvis_contracts::envelope::EventEnvelope>>,
+    ) {
+        let host = Arc::new(CountingHost::default());
+        let hub = crate::ws::WsHub::new();
+        let other_socket = hub.subscribe();
+        (
+            RoutingAlertPlayer::new(hub, connected.clone(), host.clone()),
+            host,
+            other_socket,
+        )
+    }
+
+    /// **The regression.** A timer addressed to a room whose node is gone must
+    /// ring on the host — even when other sockets (the owner's browser, another
+    /// node) are connected.
+    ///
+    /// The bug this replaces asked the broadcast channel whether the send
+    /// succeeded. `tokio::broadcast::Sender::send` reports `Err` only when there
+    /// are *zero* receivers process-wide, so with a browser open it answered
+    /// "delivered" for an unplugged kitchen node — and `delivers_to` then
+    /// correctly dropped the envelope at the browser, because it is addressed to
+    /// a device id the browser does not have. The alarm reached nobody and the
+    /// code logged success, which is the exact failure ADR-023 forbids.
+    #[tokio::test]
+    async fn an_absent_room_cannot_swallow_an_alarm_even_with_other_sockets_open() {
+        let connected = crate::devices::ConnectedDevices::new();
+        // Somebody else is connected — this is what made the old check lie.
+        let _browser = connected.mark_present(
+            "01BX5ZZKBKACTAV9WEVGEMMVRZ"
+                .parse::<DeviceId>()
+                .expect("device id"),
+        );
+        // The owner's browser is subscribed to the hub. This is what made the
+        // old check answer "delivered" for a node that was not there.
+        let (routing, host, _browser_socket) = player(&connected);
+
+        routing
+            .play(
+                &timer_from(Some(KITCHEN)),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .expect("an alarm must sound");
+
+        assert_eq!(
+            host.0.load(Ordering::SeqCst),
+            1,
+            "the kitchen node is not connected, so the host must ring"
+        );
+    }
+
+    /// The converse, so the fix is not satisfied by a player that always falls
+    /// back: when the room IS connected, the host stays silent and the room rings.
+    #[tokio::test]
+    async fn a_connected_room_rings_there_and_not_on_the_host() {
+        let connected = crate::devices::ConnectedDevices::new();
+        let _kitchen = connected.mark_present(KITCHEN.parse::<DeviceId>().expect("device id"));
+        let (routing, host, _other_socket) = player(&connected);
+
+        routing
+            .play(
+                &timer_from(Some(KITCHEN)),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .expect("rings");
+
+        assert_eq!(
+            host.0.load(Ordering::SeqCst),
+            0,
+            "a timer set in the kitchen must not also ring at the desk"
+        );
+    }
+
+    /// An unattributed timer (set from the shell, or by an automation) still
+    /// rings somewhere sensible.
+    #[tokio::test]
+    async fn a_timer_with_no_room_rings_on_the_host() {
+        let connected = crate::devices::ConnectedDevices::new();
+        let (routing, host, _other_socket) = player(&connected);
+
+        routing
+            .play(
+                &timer_from(None),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .expect("rings");
+
+        assert_eq!(host.0.load(Ordering::SeqCst), 1);
     }
 }

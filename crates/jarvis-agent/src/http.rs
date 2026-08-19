@@ -121,6 +121,19 @@ pub async fn post_json(
     body: &serde_json::Value,
     bearer: Option<&str>,
 ) -> Result<Response> {
+    // Defence in depth on a hand-written request head. Both values are trusted
+    // today — `path` is a literal and the token comes from the keyring or a
+    // 0600 file — but they are interpolated into a CRLF-framed protocol, and a
+    // newline in either would let a caller append headers or a second request.
+    // The cost of checking is nothing; the cost of assuming stays trusted is a
+    // request smuggling primitive the day one of them stops being a literal.
+    for (what, value) in [("path", path), ("bearer token", bearer.unwrap_or(""))] {
+        anyhow::ensure!(
+            !value.contains('\r') && !value.contains('\n'),
+            "refusing to build a request: the {what} contains a line break"
+        );
+    }
+
     let body = serde_json::to_string(body).context("encoding the request body")?;
     let mut request = format!(
         "POST {path} HTTP/1.1\r\n\
@@ -313,5 +326,43 @@ mod tests {
         };
         assert!(!response.is_success());
         assert_eq!(response.problem_detail(), "no open pairing window");
+    }
+}
+
+#[cfg(test)]
+mod header_injection_tests {
+    use super::*;
+
+    /// S7 from the M8 security audit. `path` and the bearer token are
+    /// interpolated into a CRLF-framed request head. Both are trusted today —
+    /// a literal and a keyring value — but a newline in either appends headers
+    /// or a whole second request, and "trusted today" is not a property that
+    /// survives a refactor.
+    #[tokio::test]
+    async fn a_line_break_in_the_path_or_token_is_refused() {
+        let endpoint = Endpoint {
+            host: "127.0.0.1".to_owned(),
+            port: 1,
+            tls: false,
+        };
+        let body = serde_json::json!({});
+
+        for (path, bearer) in [
+            ("/api/v1/x\r\nX-Injected: 1", None),
+            ("/api/v1/x\nX-Injected: 1", None),
+            ("/api/v1/x", Some("tok\r\nX-Injected: 1")),
+            ("/api/v1/x", Some("tok\nX-Injected: 1")),
+        ] {
+            // `Response` has no `Debug` on purpose (it carries token-bearing
+            // data), so `expect_err` is unavailable — match instead.
+            let error = match post_json(&endpoint, None, path, &body, bearer).await {
+                Ok(_) => panic!("a line break must be refused before any connection"),
+                Err(error) => format!("{error}"),
+            };
+            assert!(
+                error.contains("line break"),
+                "the refusal must name the reason, got: {error}"
+            );
+        }
     }
 }

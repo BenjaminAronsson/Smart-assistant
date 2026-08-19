@@ -195,8 +195,18 @@ from a lazy route**, because it drags the i18n machinery in. Replaced with `Intl
 
 ## 4. Open risks
 
-- **No subagent review passes** on any of M8. F8.11 adds the voice pipeline's **only**
-  `DataEgress::External` path — the clearest `security-auditor` candidate in M8c.
+- ~~**No subagent review passes**~~ **CLOSED 2026-08-18** (M8a report, D4). Again the instinct
+  was right about where to look: on the `DataEgress::External` path the audit found consent
+  **failing open** — a transient settings-read error at startup fell back to the config file, so
+  an owner who withdrew consent in the shell could have it silently reinstated by a slow
+  Postgres. Fixed to fail closed.
+
+  **S3 remains open and is the one worth reading before signing:** every spoken run answer is
+  labelled `Normal`, so a run that used a mail or calendar tool and reads the result back can be
+  spoken by ElevenLabs. The routing constraint ADR-033 §4 describes is correct machinery with
+  nothing driving it. Fixing it needs a signal the socket does not have (`RunUpdate` carries no
+  tool variant), so it is an application-layer change, not a patch. Mitigation today: the feature
+  is off unless explicitly consented to.
 - **Resolved after this report:** `jarvisd` now enables keyring's real Linux Secret Service
   backend (`async-secret-service` + pure-Rust crypto) and has a regression that rejects the mock
   credential type. Lookups run on awaited blocking workers, as required by keyring's Tokio

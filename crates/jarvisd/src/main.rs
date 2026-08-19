@@ -668,6 +668,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             // there is no room or nothing is listening in it (F8.5, ADR-023).
             Arc::new(jarvisd::timers::RoutingAlertPlayer::new(
                 hub.clone(),
+                connected.clone(),
                 Arc::new(jarvis_adapters::timer_alert::CommandAlertPlayer::new(
                     config.timers.alert_command.clone(),
                     config.timers.alert_args.clone(),
