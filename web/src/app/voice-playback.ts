@@ -28,8 +28,31 @@ export class VoicePlayback {
     this.format = { sampleRateHz, channels };
     // A dedicated context at the synthesizer's own rate: no resampling, and
     // closing it on barge-in releases the audio device promptly.
-    this.context = new AudioContext({ sampleRate: sampleRateHz });
-    this.nextStartTime = this.context.currentTime;
+    const context = new AudioContext({ sampleRate: sampleRateHz });
+    this.context = context;
+    this.nextStartTime = context.currentTime;
+
+    // Resume if the browser handed us a suspended context.
+    //
+    // This is not belt-and-braces, it is the difference between hearing the
+    // answer and not. Under Chrome's autoplay policy a context created without
+    // user activation starts `suspended`, and a suspended context accepts
+    // `start()` calls and plays nothing — no error, no warning, and
+    // `currentTime` frozen at zero. It fails exactly like working code.
+    //
+    // This context is *always* created at that disadvantage: `begin()` runs
+    // when `voice.speak.start` arrives, which is after the transcript, the
+    // model and the first synthesized clause — long after the push-to-talk
+    // gesture that started it all ended. The capture context (voice-capture
+    // .service.ts) is created during the gesture and still resumes defensively;
+    // this one needed it more and did not do it, which is how a daemon that was
+    // provably synthesizing audio produced a silent browser.
+    if (context.state === 'suspended') {
+      // Fire and forget: `begin()` is called from a synchronous socket handler,
+      // and a rejected resume (no activation at all yet) must not throw into it.
+      // Chunks scheduled meanwhile are queued on the context and play on resume.
+      void context.resume().catch(() => undefined);
+    }
   }
 
   /** Schedule one PCM chunk. Ignored when no utterance is open. */

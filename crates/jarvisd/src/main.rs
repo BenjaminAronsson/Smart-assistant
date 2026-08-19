@@ -750,6 +750,7 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
             motion: config.ui.motion.clone(),
         },
     );
+    report_capabilities(&state, &config, &bridge_registry);
     let app = jarvisd::api::router_with(
         state,
         jarvisd::api::Wiring {
@@ -1074,4 +1075,79 @@ async fn spawn_app_builder(
         },
         "system:app-builder",
     )))
+}
+
+/// Say, on the one unauthenticated surface there is, which optional capabilities
+/// this daemon actually has (F10.4).
+///
+/// # Why this exists
+///
+/// An owner reported three faults on a first real test: the assistant never
+/// decided to research anything, no cards appeared, and nothing was spoken. All
+/// three were answerable from configuration — `[integrations.web_search]` was
+/// absent, so `web.search` was never registered, so no research happened, so the
+/// sources and gallery cards (which are projected from a research thread) could
+/// not exist. But **the product said none of it**. `GET /diagnostics/health`
+/// reported `database: up` and stopped, so diagnosing it meant reading the
+/// daemon's process environment and config file from outside.
+///
+/// A capability that is off because nobody configured it is a perfectly good
+/// state. Being unable to tell that from a capability that is broken is not.
+///
+/// `Disabled` rather than `Down` for unconfigured things, deliberately: a
+/// capability nobody asked for must not make the daemon report degraded.
+fn report_capabilities(
+    state: &jarvisd::api::AppState,
+    config: &jarvisd::config::Config,
+    registry: &jarvis_application::policy::ToolRegistry,
+) {
+    use jarvis_contracts::health::AdapterState;
+
+    // `detail` is the load-bearing part: it names the setting to change. It is
+    // safe on an unauthenticated surface because it is a fixed string — a
+    // config *key*, never a value, never a path, never a secret.
+    let capability = |name: &str, on: bool, hint: &str| {
+        let (st, detail) = if on {
+            (AdapterState::Up, None)
+        } else {
+            (AdapterState::Disabled, Some(hint.to_owned()))
+        };
+        state.set_adapter(name, st, detail);
+    };
+
+    capability(
+        "voice-stt",
+        config.voice.enabled,
+        "set [voice] enabled — without it push-to-talk cannot be transcribed",
+    );
+    capability(
+        "voice-tts",
+        config.voice.enabled && config.voice.wyoming_tts.is_some(),
+        "set [voice] enabled and wyoming_tts — without it answers are text-only",
+    );
+    capability(
+        "web-search",
+        config.integrations.web_search.is_some(),
+        "set [integrations.web_search] — without it nothing can research, \
+         and source/gallery cards never appear",
+    );
+    capability(
+        "home-assistant",
+        config.integrations.home_assistant.enabled,
+        "set [integrations.home_assistant] enabled",
+    );
+
+    // Not a capability toggle but the same question in a different form: "can it
+    // do anything at all?" A registry that is smaller than expected is the
+    // fastest signal that an integration failed to register.
+    let tools: Vec<String> = registry.tool_ids().map(ToString::to_string).collect();
+    state.set_adapter(
+        "tools",
+        if tools.is_empty() {
+            AdapterState::Disabled
+        } else {
+            AdapterState::Up
+        },
+        Some(format!("{} registered: {}", tools.len(), tools.join(", "))),
+    );
 }

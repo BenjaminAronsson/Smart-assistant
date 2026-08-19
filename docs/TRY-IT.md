@@ -148,6 +148,53 @@ paplay ~/.cache/jarvis-wake-assets/alexa_test.wav                # in another
 That is exactly how the hands-free path was verified: played aloud, heard by a
 real microphone, detected by the engine on the node.
 
+## 4b. Check what it can actually do
+
+Before wondering why it will not research anything, ask it:
+
+```bash
+curl -s http://127.0.0.1:8741/api/v1/diagnostics/health | python3 -m json.tool
+```
+
+```
+database         up
+home-assistant   disabled  set [integrations.home_assistant] enabled
+tools            up        2 registered: example.light, message.send
+voice-stt        up
+voice-tts        up
+web-search       disabled  set [integrations.web_search] — without it nothing can research, …
+```
+
+**`disabled` means nobody configured it, not that it is broken** — that is the whole reason
+the distinction is reported. Read `tools` first: it is the honest answer to "what can this
+thing do", and a registry smaller than you expected is the fastest sign an integration
+failed to register.
+
+The default install is deliberately near-empty. Optional capabilities are opt-in, so a
+fresh daemon has **two** tools and cannot search the web, control lights, or play anything
+until you turn those on.
+
+### "It answers, but it never looks anything up"
+
+Expected on a default install: `web.search` and `web.fetch` register **only** when a
+provider is configured (needs a Brave API key). This also explains a second symptom that
+looks unrelated — the **sources and gallery cards never appear**, because they are
+projected from a research thread, and without search there is no thread.
+
+```toml
+[integrations.web_search]
+enabled = true
+provider = "brave"
+api_key_secret = "keyring:jarvis/websearch-key"
+```
+
+### "It answers in text but never speaks"
+
+Check `voice-tts` above. `disabled` means `[voice] enabled` or `wyoming_tts` is unset. If
+it says `up`, the daemon is synthesizing and the problem is downstream — start it with
+`RUST_LOG=debug` and watch for the speech path, and check the browser console, since
+playback needs a live `AudioContext`.
+
 ## 5. What you should see
 
 | | |
