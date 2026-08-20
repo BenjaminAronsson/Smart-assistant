@@ -277,5 +277,87 @@ fn install_script_stages_the_full_layout_under_a_destdir() {
          pgdata volume would stop authenticating"
     );
 
+    // `cp -r SRC DEST` nests SRC inside DEST when DEST already exists as a
+    // directory, instead of overwriting in place. The web-assets copy avoids
+    // this with `rm -rf` first; the migrations and postgres-init copies did
+    // not, so a second run of THIS SAME script (the one just above) produced
+    // migrations/migrations/ and postgres-init/postgres-init/ nested one
+    // level too deep. Assert directly on the doubled-up path, not just on
+    // the plain one existing, since the plain one exists either way.
+    assert!(
+        !staging
+            .join("var/lib/jarvis/migrations/migrations")
+            .exists(),
+        "install.sh nested migrations/migrations/ on re-run — cp -r into an \
+         existing destination directory nests instead of overwriting"
+    );
+    assert!(
+        !staging
+            .join("etc/jarvis/compose/postgres-init/postgres-init")
+            .exists(),
+        "install.sh nested postgres-init/postgres-init/ on re-run — cp -r \
+         into an existing destination directory nests instead of overwriting"
+    );
+
     std::fs::remove_dir_all(&staging).ok();
+}
+
+/// A live bug, not a hypothetical: an earlier `for arg in "$@"` argument
+/// parser desynced from the real positional parameters as soon as a
+/// `--destdir` (which `shift`s an extra word for its value) was followed by
+/// another argument — the loop's borrowed copy of `$@` no longer matched
+/// what `shift` had actually consumed. The concrete failure was
+/// `--destdir /a --skip-preflight --destdir /b` resolving `DESTDIR` to the
+/// empty string instead of `/b`, which is exactly backwards for a flag whose
+/// whole contract is "last one wins" and exactly the kind of thing that
+/// looks fine in a two-argument manual test and breaks the moment a real
+/// invocation adds one more flag.
+///
+/// This test is entirely `--dry-run`: nothing under `run()` executes, so an
+/// old, still-broken parser landing on an empty (i.e. real-system) `DESTDIR`
+/// cannot make this test touch the host it runs on — it only ever inspects
+/// what install.sh *says* it would do.
+#[test]
+fn install_script_uses_the_last_destdir_flag() {
+    let script = repo_root().join("infra/install/install.sh");
+    let output = Command::new("bash")
+        .arg(&script)
+        .args([
+            "--destdir",
+            "/a",
+            "--skip-preflight",
+            "--destdir",
+            "/b",
+            "--skip-systemd",
+            "--dry-run",
+        ])
+        .current_dir(repo_root())
+        .output()
+        .expect("install.sh runs");
+
+    assert!(
+        output.status.success(),
+        "install.sh --dry-run failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("would: mkdir -p /b/etc/jarvis/compose"),
+        "install.sh must stage under the LAST --destdir (/b) — a desynced \
+         parser resolves DESTDIR to empty or to the first value instead.\n\
+         stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("would: mkdir -p /etc/jarvis/compose"),
+        "install.sh staged under the bare (unprefixed) path — DESTDIR came \
+         out empty, which is the exact failure this test guards against.\n\
+         stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("/a/etc/jarvis/compose"),
+        "install.sh staged under the FIRST --destdir (/a) instead of the \
+         last one.\nstdout:\n{stdout}"
+    );
 }

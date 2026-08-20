@@ -83,27 +83,45 @@ if (( ! SKIP_PREFLIGHT )); then
 
     [[ "$(uname -m)" == "x86_64" ]] || die "this artifact is x86_64 only; host is $(uname -m)"
 
-    # This must be a check for DOCKER ENGINE specifically, not "any compose
-    # runtime". jarvis-deps.service (F10.9) hardcodes ExecStart against
-    # /usr/bin/docker and declares Requires=docker.service — on a podman-only
-    # host neither exists, so a preflight that accepted `podman compose` here
-    # would let the install report success onto a host where jarvis-deps can
-    # never start at boot. If podman is all that is present, say so plainly
-    # instead of passing.
-    if [[ -x /usr/bin/docker ]] && command -v docker >/dev/null 2>&1 \
-        && docker compose version >/dev/null 2>&1; then
-        ok "docker compose available"
+    # Needed by the docker.service check right below, so this must come first.
+    command -v systemctl >/dev/null 2>&1 || die "systemd is required"
+
+    # This must be a check for the DOCKER ENGINE UNIT specifically, not "a
+    # docker CLI that answers". jarvis-deps.service (F10.9) hardcodes
+    # ExecStart against /usr/bin/docker and, separately, declares
+    # Requires=docker.service — those are two different failure modes, and
+    # checking only the CLI misses the second one. The podman-docker
+    # compatibility package installs a real, executable /usr/bin/docker that
+    # shims to podman and answers `docker compose version` happily: that
+    # passes a CLI-only check and then jarvis-deps.service hard-fails at
+    # every boot, because there is still no docker.service unit for
+    # `Requires=` to resolve — the same "install reports success, daemon can
+    # never start" failure this check exists to close, one layer down. So
+    # check for the unit systemd will actually try to start.
+    #
+    # `systemctl list-unit-files docker.service` exits 0 with an empty list
+    # when the unit does not exist (it is a query, not a "get this unit"
+    # lookup) — grepping its output rather than trusting its exit code is
+    # what makes this safe to use as an `if` condition under `set -e`: an
+    # absent unit is a false condition, not a script-ending error. The
+    # `2>/dev/null` covers the case (seen in CI/sandbox containers) where
+    # systemctl cannot reach the bus at all — that is "no evidence of
+    # docker.service" too, and must fall through to the same die(), not
+    # abort the script outright.
+    if systemctl list-unit-files docker.service 2>/dev/null | grep -q '^docker\.service' \
+        && command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+        ok "docker.service registered, docker compose available"
     elif command -v podman >/dev/null 2>&1; then
         die "podman found, but jarvis-deps.service requires Docker Engine \
 specifically — it hardcodes /usr/bin/docker and Requires=docker.service \
-(F10.9). A podman-only host would pass this check and then fail at every \
+(F10.9), and no docker.service unit is registered with systemd (the \
+podman-docker compatibility shim provides a /usr/bin/docker binary but no \
+unit). A podman-only host would pass a CLI-only check and then fail at every \
 boot when jarvis-deps.service starts. Install docker.io + \
 docker-compose-plugin, or point jarvis-deps.service at podman first."
     else
-        die "no compose runtime — install docker.io + docker-compose-plugin"
+        die "no docker.service unit registered with systemd — install docker.io + docker-compose-plugin"
     fi
-
-    command -v systemctl >/dev/null 2>&1 || die "systemd is required"
 
     if ldconfig -p 2>/dev/null | grep -q libasound; then
         ok "libasound present"
@@ -166,12 +184,27 @@ if [[ "$LAYOUT" == tarball ]]; then
 else
     ok "source layout: skipping binaries (cargo build --release first)"
 fi
-run cp -r "$SRC/migrations" "$(d /var/lib/jarvis/migrations)" 2>/dev/null || true
+# `cp -r SRC DEST` NESTS SRC inside DEST when DEST already exists as a
+# directory, instead of overwriting in place — the same trap the web-assets
+# copy above already avoids with `rm -rf` first. Without it, a second run of
+# this script (exactly what the idempotence test does, and what a real
+# re-install does) produces migrations/migrations/. No `2>/dev/null || true`
+# here: jarvisd migrate embeds its own migration stream at compile time and
+# does not read this directory, but update.sh's sqlx-cli fallback (F10.9 task
+# 6) resolves it as a real candidate on a host with no jarvisd binary yet — a
+# swallowed failure here would leave that fallback failing on a confusing
+# "directory not found" instead of the loud install-time error that actually
+# explains it.
+run rm -rf "$(d /var/lib/jarvis/migrations)"
+run cp -r "$SRC/migrations" "$(d /var/lib/jarvis/migrations)"
 
 step "compose"
 compose_src="$SRC/compose"; [[ -d "$compose_src" ]] || compose_src="$SRC/infra/compose"
 run cp "$compose_src/prod.yml" "$(d /etc/jarvis/compose/prod.yml)"
 run cp "$compose_src/otel-collector.yml" "$(d /etc/jarvis/compose/otel-collector.yml)"
+# Same `cp -r` nesting trap as migrations above: rm -rf first so a re-run
+# overwrites in place instead of producing postgres-init/postgres-init/.
+run rm -rf "$(d /etc/jarvis/compose/postgres-init)"
 run cp -r "$compose_src/postgres-init" "$(d /etc/jarvis/compose/postgres-init)"
 ok "compose files installed"
 
