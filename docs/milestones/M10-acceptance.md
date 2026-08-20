@@ -118,6 +118,35 @@ four seconds; a per-hour rate computed from four seconds of audio is arithmetic,
 evidence. What it does establish is that the harness runs end to end, the corpus plumbing
 works, and the engine does not fire on three other wake words.
 
+#### A preliminary real-room reading — over budget, and it needs settling
+
+An agent left listening in a real room during M10 testing produced the first field data,
+and it is not reassuring:
+
+```
+word="alexa"   102 detections over 13.58 h   =  7.44 accepts/hour   (budget 1.00)
+```
+
+Median gap between detections two minutes; longest quiet stretch 3.7 hours. The engine's
+hysteresis is working (it re-arms below half the firing threshold, and the gate holds a
+stream open after a hit), so these are separate re-fires rather than one utterance counted
+many times.
+
+**This is a signal, not the measurement**, and the difference matters:
+
+* the word was `alexa`, not the shipped default `hey jarvis` — different models have
+  different false-accept characteristics, and nothing here transfers between them;
+* there is **no ground truth**. Some detections were a test clip being played
+  deliberately during that session, and nobody was recording who said what. The rate is an
+  upper bound on false accepts, not a count of them;
+* one room, one microphone, one day.
+
+It is recorded because a 7× overshoot is worth knowing about before sign-off, and because
+it is exactly the kind of result that never surfaces if the gate is quietly ticked. If the
+controlled run reproduces anything near this for `hey jarvis`, the threshold in
+`WakeSensitivity` is the first thing to look at — ADR-032's budget was chosen as the point
+at which people stop leaving a satellite switched on, and 7 an hour is well past it.
+
 *What remains is recording, not building.* Capture hours of ordinary household audio at
 16 kHz mono — television, conversation, kitchen noise — into a directory, then:
 
