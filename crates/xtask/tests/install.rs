@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::process::Command;
 
 fn repo_root() -> &'static Path {
     // CARGO_MANIFEST_DIR is crates/xtask; the root is two levels up.
@@ -199,4 +200,82 @@ fn first_run_finds_the_compose_file_in_an_installed_tree() {
         "first-run.sh must resolve the compose file into one variable rather \
          than repeating a path it can only be right about in a source tree"
     );
+}
+
+/// The installer must be testable without root and without a container
+/// runtime, or it will only ever be exercised on the one machine it is aimed
+/// at — which is how an installer becomes a thing nobody dares re-run.
+#[test]
+fn install_script_stages_the_full_layout_under_a_destdir() {
+    let staging = std::env::temp_dir().join(format!("jarvis-install-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+
+    let script = repo_root().join("infra/install/install.sh");
+    let output = Command::new("bash")
+        .arg(&script)
+        .arg("--destdir")
+        .arg(&staging)
+        .arg("--skip-preflight")
+        .arg("--skip-systemd")
+        .current_dir(repo_root())
+        .output()
+        .expect("install.sh runs");
+
+    assert!(
+        output.status.success(),
+        "install.sh --destdir failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    for expected in [
+        "etc/jarvis/jarvisd.toml",
+        "etc/jarvis/secrets.env",
+        "etc/jarvis/compose/prod.yml",
+        "etc/systemd/system/jarvis-deps.service",
+        "etc/systemd/system/jarvisd.service",
+        "var/lib/jarvis/artifacts",
+        "var/lib/jarvis/claude-work",
+    ] {
+        assert!(
+            staging.join(expected).exists(),
+            "install.sh did not produce {expected} under --destdir"
+        );
+    }
+
+    let secrets = std::fs::read_to_string(staging.join("etc/jarvis/secrets.env"))
+        .expect("secrets.env is readable");
+    assert!(
+        secrets.contains("JARVIS_PG_PASSWORD=") && secrets.contains("JARVIS_DB_URL=postgres://"),
+        "secrets.env must define both names the compose file and jarvisd.toml \
+         reference, got:\n{secrets}"
+    );
+    assert!(
+        !secrets.contains("jarvis-dev-only") && !secrets.contains("changeme"),
+        "install.sh must generate a real password, not ship a placeholder"
+    );
+
+    // Re-running must not rotate the password: that would orphan the existing
+    // Postgres volume, whose password was set at initdb time and is never
+    // re-read. The database would simply stop authenticating after an upgrade.
+    let output = Command::new("bash")
+        .arg(&script)
+        .arg("--destdir")
+        .arg(&staging)
+        .arg("--skip-preflight")
+        .arg("--skip-systemd")
+        .current_dir(repo_root())
+        .output()
+        .expect("install.sh re-runs");
+    assert!(output.status.success(), "install.sh is not idempotent");
+
+    let after = std::fs::read_to_string(staging.join("etc/jarvis/secrets.env"))
+        .expect("secrets.env is still readable");
+    assert_eq!(
+        secrets, after,
+        "install.sh rotated the Postgres password on re-run — the existing \
+         pgdata volume would stop authenticating"
+    );
+
+    std::fs::remove_dir_all(&staging).ok();
 }
