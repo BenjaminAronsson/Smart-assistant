@@ -40,13 +40,27 @@ compose file, and a systemd ordering dependency that is wrong.
 
 ### Build
 
-`cargo xtask dist` builds the release tarball. The GitHub Actions release job, triggered on
-a `v*` tag, calls that subcommand and uploads its output. The logic lives in `xtask`, not in
-workflow YAML, so the artifact can be built locally on the dev box and what CI publishes is
-the same thing that was tested.
+**Amended 2026-08-20: F10.7 landed first, and it changes this.**
 
-CI already runs `cargo build --workspace --release` on `ubuntu-latest` (`.github/workflows/ci.yml`)
-and discards the binaries. The release job is a small increment on an existing green path.
+The original plan was `cargo xtask dist` producing its own tarball, with F10.7 signing it
+later. F10.7 (`0730883`) shipped ahead of this feature instead, and `infra/install/release.sh`
+now builds, checksums, signs with `ssh-keygen -Y` and records an advisory-scan date — over a
+payload of exactly two binaries.
+
+Shipping a second `dist` tarball beside it would leave **`install.sh`, `prod.yml` and the
+systemd units unsigned**, next to a valid signature covering the binaries. That is worse than
+signing nothing: a root-executed installer is a better target than the binary it installs,
+and the signature makes the whole directory look checked.
+
+So there is **one artifact**. `cargo xtask dist --stage <dir>` owns *what ships* — a pure,
+dependency-free function, so a forgotten file fails a millisecond test rather than an install.
+`release.sh` calls it in place of its own `cargo build`, then checksums every file it finds
+rather than a list it must remember to update. The GitHub Actions job on a `v*` tag runs
+`release.sh` with an **ephemeral** key: that proves the pipeline produces a verifiable
+release, not that the real key signed it — the real key never goes near a runner (docs/06 §9).
+
+CI already runs `cargo build --workspace --release` on `ubuntu-latest` and discards the
+binaries, so this is a small increment on an existing green path.
 
 ABI: `ubuntu-latest` links against glibc 2.39; the host is the same family or newer, and
 glibc is forward-compatible. Plain dynamic linking. No musl, no cross-build. The host needs
@@ -65,13 +79,18 @@ jarvis-<version>-x86_64-linux-gnu.tar.zst
 ├── systemd/{jarvis-deps.service,jarvisd.service,jarvis-agent.service}
 ├── install/{install,first-run,backup,restore,update}.sh
 ├── jarvisd.toml.example
-├── README.md                         # the install half, so the tarball is self-describing
-└── MANIFEST                          # git sha, build timestamp, sha256 of every file
+├── README.md                         # the install half, so the release is self-describing
+├── SHA256SUMS                        # every file above (F10.7's manifest, widened)
+├── RELEASE                           # version, build time, advisory-scan date
+├── SIGNED-PAYLOAD + .sig             # ssh-keygen -Y over SHA256SUMS *and* RELEASE
+└── signing-key.pub
 ```
 
-Published alongside it: `<name>.sha256`. F10.7 adds signing and provenance attestation on
-top of an artifact that by then already exists — which is the correct order, because a
-release process needs something to sign before it can sign it.
+`install/verify-release.sh` (F10.7) is what an owner runs first: it checks every file against
+the manifest and **refuses an advisory scan older than 30 days**, because a signature proves
+these are the bytes that were built and says nothing about whether anyone has looked at the
+world since. It also states that it has verified integrity and not authenticity — the public
+key ships inside the release, so agreement between the parts is all it can prove.
 
 ### Runtime shape on the host
 
