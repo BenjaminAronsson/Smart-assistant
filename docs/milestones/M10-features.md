@@ -128,7 +128,7 @@ instructions the whole way, with no source tree and no help from the person who 
       Tests: a release build verifies its own signature; the checklist has no unchecked box.
       Deps: F10.3.
 
-- [ ] **F10.8 — Golden 10 + M10 acceptance** · *Sonnet*
+- [x] **F10.8 — Golden 10 + M10 acceptance** · *Sonnet*
       The exit evidence, executable where it can be: install, talk, break, restore, upgrade, roll
       back. Some of it is inherently a human at a machine — golden 10 covers the parts a script
       can hold, and the acceptance document names the rest honestly.
