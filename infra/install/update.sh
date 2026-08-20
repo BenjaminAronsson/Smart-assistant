@@ -67,6 +67,26 @@ fi
 BACKUP="$(find "$BACKUP_ROOT" -maxdepth 1 -type d -name 'jarvis-*' | sort | tail -1)"
 echo "   rollback point: $BACKUP"
 
+# Both migration paths below (jarvisd migrate, and the sqlx-cli fallback) hit
+# this same abort on failure — factored into one place so the two copies
+# cannot drift and silently start giving different rollback instructions.
+# Writes to stderr and exits non-zero, same as the inline `cat` it replaces;
+# nothing about set -euo pipefail behavior changes at the call sites.
+abort_migration_failed() {
+	cat >&2 <<EOF
+
+MIGRATION FAILED. The database may be part-migrated.
+
+Roll back by restoring the backup taken moments ago:
+
+  JARVIS__STORAGE__ARTIFACTS_ROOT=$JARVIS__STORAGE__ARTIFACTS_ROOT \\
+    $HERE/restore.sh $BACKUP --force
+
+There is no 'down' migration to run instead — see the header of this script.
+EOF
+	exit 1
+}
+
 echo "== 2/3 migrations"
 # Task 1 of this feature added `jarvisd migrate` so a host needs neither
 # sqlx-cli nor a Rust toolchain to apply the embedded migration stream — the
@@ -88,18 +108,7 @@ if command -v jarvisd >/dev/null 2>&1; then
 	# bridge the one name into the other as an environment assignment; it
 	# never becomes an argv entry either way.
 	if ! JARVIS_DB_URL="$DATABASE_URL" jarvisd migrate; then
-		cat >&2 <<EOF
-
-MIGRATION FAILED. The database may be part-migrated.
-
-Roll back by restoring the backup taken moments ago:
-
-  JARVIS__STORAGE__ARTIFACTS_ROOT=$JARVIS__STORAGE__ARTIFACTS_ROOT \\
-    $HERE/restore.sh $BACKUP --force
-
-There is no 'down' migration to run instead — see the header of this script.
-EOF
-		exit 1
+		abort_migration_failed
 	fi
 	# `jarvisd migrate` reports only success or failure, not a before/after
 	# count (it did not exist before this feature, and adding a second
@@ -114,13 +123,24 @@ else
 		echo "Install one of them: jarvisd (this host's own binary) or sqlx-cli (cargo install sqlx-cli)." >&2
 		exit 1
 	}
-	# Two real candidates, checked in the order a host is most likely to have
-	# them: /var/lib/jarvis/migrations is where install.sh puts the shipped
-	# migrations on an installed host; $SRC/migrations is where they live
-	# relative to THIS script in either layout install.sh itself detects (the
-	# tarball root, or the source tree root) — never a third, invented path.
+	# Two real candidates. $SRC/migrations goes FIRST: it lives relative to THIS
+	# script in either layout install.sh itself detects (the tarball root, or the
+	# source tree root), so it is always the migrations shipped alongside the
+	# update.sh actually being run right now - the tarball an operator is
+	# currently using to upgrade.
+	#
+	# /var/lib/jarvis/migrations is written exactly once, at the ORIGINAL install,
+	# and install.sh's upgrade branch delegates to this script and then exits
+	# immediately (it never reaches its own payload step that would refresh that
+	# directory) - so on an installed host that directory can be arbitrarily
+	# stale relative to the tarball actually being run. Checking $SRC first means
+	# a standalone `update.sh` invocation (the usage this script's own header
+	# documents) on a host where jarvisd is not on PATH picks the CURRENT
+	# migrations, not a stale set - silently applying old migrations and printing
+	# a false "ok: N -> M migrations applied" is exactly the failure this
+	# ordering prevents.
 	MIGRATIONS_DIR=""
-	for candidate in /var/lib/jarvis/migrations "$SRC/migrations"; do
+	for candidate in "$SRC/migrations" /var/lib/jarvis/migrations; do
 		if [[ -d "$candidate" ]]; then
 			MIGRATIONS_DIR="$candidate"
 			break
@@ -129,24 +149,13 @@ else
 	if [[ -z "$MIGRATIONS_DIR" ]]; then
 		echo >&2
 		echo "ABORT: could not find a migrations/ directory (looked in" >&2
-		echo "/var/lib/jarvis/migrations and $SRC/migrations)." >&2
+		echo "$SRC/migrations and /var/lib/jarvis/migrations)." >&2
 		exit 1
 	fi
 
 	BEFORE="$(sqlx migrate info --source "$MIGRATIONS_DIR" 2>/dev/null | grep -c installed || true)"
 	if ! sqlx migrate run --source "$MIGRATIONS_DIR"; then
-		cat >&2 <<EOF
-
-MIGRATION FAILED. The database may be part-migrated.
-
-Roll back by restoring the backup taken moments ago:
-
-  JARVIS__STORAGE__ARTIFACTS_ROOT=$JARVIS__STORAGE__ARTIFACTS_ROOT \\
-    $HERE/restore.sh $BACKUP --force
-
-There is no 'down' migration to run instead — see the header of this script.
-EOF
-		exit 1
+		abort_migration_failed
 	fi
 	AFTER="$(sqlx migrate info --source "$MIGRATIONS_DIR" 2>/dev/null | grep -c installed || true)"
 	echo "   ok: $BEFORE -> $AFTER migrations applied"

@@ -152,6 +152,13 @@ if [[ -z "$DESTDIR" && -f /etc/jarvis/jarvisd.toml && -x /usr/local/bin/jarvisd 
     # Binaries first: update.sh's health gate must judge the NEW daemon.
     install -m 0755 "$SRC/bin/jarvisd" "$SRC/bin/jarvis-agent" /usr/local/bin/
     rm -rf /var/lib/jarvis/web && cp -r "$SRC/web" /var/lib/jarvis/web
+    # Same reason as the binaries above: /var/lib/jarvis/migrations is one of
+    # update.sh's sqlx-cli fallback candidates (used when jarvisd is not yet on
+    # PATH). Refreshing it here means that candidate always matches the
+    # version being installed NOW, not whatever was on disk at the original
+    # install — this directory is otherwise written once, at first install,
+    # and never touched again by this branch.
+    rm -rf /var/lib/jarvis/migrations && cp -r "$SRC/migrations" /var/lib/jarvis/migrations
     set -a; . /etc/jarvis/secrets.env; set +a
     DATABASE_URL="$JARVIS_DB_URL" \
         JARVIS__STORAGE__ARTIFACTS_ROOT=/var/lib/jarvis/artifacts \
