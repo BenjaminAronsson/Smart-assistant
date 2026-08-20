@@ -63,6 +63,16 @@ pub fn export() -> Value {
     // are generated from the same schema the daemon serves, never hand-written
     // twice — a policy surface with a hand-maintained client type is a second
     // place for the rules to drift.
+    // F10.4: the diagnostics bundle. Registered like every other wire DTO even
+    // though its only consumer today is a shell script — a contract that skips
+    // the schema is a contract with no generated client type, and the next
+    // consumer hand-writes one.
+    generator.subschema_for::<crate::diagnostics::DiagnosticsBundleDto>();
+    generator.subschema_for::<crate::diagnostics::AdapterLineDto>();
+    generator.subschema_for::<crate::diagnostics::AuditShapeDto>();
+    generator.subschema_for::<crate::diagnostics::MigrationStateDto>();
+    generator.subschema_for::<crate::diagnostics::RunOutcomesDto>();
+    generator.subschema_for::<crate::diagnostics::ResourcesDto>();
     generator.subschema_for::<crate::policy::PolicyViewDto>();
     generator.subschema_for::<crate::policy::ToolPolicyDto>();
     generator.subschema_for::<crate::policy::ClassOutcomeDto>();

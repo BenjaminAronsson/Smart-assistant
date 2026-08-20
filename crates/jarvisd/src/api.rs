@@ -34,6 +34,13 @@ impl AppState {
         }
     }
 
+    /// The live adapter map, shared with the diagnostics bundle (F10.4) so a
+    /// bundle reports the same readiness the health page does rather than a
+    /// second, drifting copy of it.
+    pub fn adapter_map(&self) -> Arc<RwLock<BTreeMap<String, AdapterHealth>>> {
+        Arc::clone(&self.adapters)
+    }
+
     pub fn database(&self) -> Option<&sqlx::PgPool> {
         self.db.as_ref()
     }
@@ -141,6 +148,11 @@ pub struct Wiring {
     /// The owner-tunable settings surface (F8.8's voice section, F8.11's
     /// spend). `None` without a database — there is no override layer to read.
     pub settings: Option<crate::settings::SettingsApi>,
+    /// The diagnostics bundle (F10.4, NFR-07): one thing an owner can send when
+    /// the house misbehaves. `None` without a database — a bundle with no
+    /// migration state, no audit shapes and no counts would be a shape, not a
+    /// diagnosis.
+    pub diagnostics: Option<crate::diagnostics::DiagnosticsApi>,
     /// The read-only policy view (F10.5, FR-05): what each tool may do and what
     /// each device class is actually allowed. `None` without a tool registry —
     /// there is nothing to describe, and an empty view would read as "nothing
@@ -182,6 +194,7 @@ impl Default for Wiring {
             maps: None,
             timers: None,
             automations: None,
+            diagnostics: None,
             policy: None,
             settings: None,
             lists: None,
@@ -216,6 +229,7 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
         maps,
         timers,
         automations,
+        diagnostics,
         policy,
         settings,
         lists,
@@ -335,6 +349,20 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
                 Router::new()
                     .route("/ws/v1", get(crate::ws::ws_upgrade))
                     .with_state(ws),
+            );
+        }
+        if let Some(api) = diagnostics {
+            // `ui`-scoped and authenticated, unlike the health page. Health
+            // answers "are you alive" for an install script on loopback; this
+            // assembles a picture of the household, and a satellite has no
+            // business doing that.
+            protected = protected.merge(
+                Router::new()
+                    .route(
+                        "/api/v1/diagnostics/bundle",
+                        get(crate::diagnostics::get_bundle),
+                    )
+                    .with_state(api),
             );
         }
         if let Some(view) = policy {

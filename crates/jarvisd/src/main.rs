@@ -751,9 +751,18 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
         },
     );
     report_capabilities(&state, &config, &bridge_registry);
+    // Captured before `state` is moved into the router: the bundle shares the
+    // live map rather than a snapshot, so it reports the same readiness the
+    // health page does instead of a second copy free to drift.
+    let adapter_map = state.adapter_map();
     let app = jarvisd::api::router_with(
         state,
         jarvisd::api::Wiring {
+            diagnostics: Some(jarvisd::diagnostics::DiagnosticsApi::new(
+                pool.clone(),
+                bridge_registry.clone(),
+                adapter_map,
+            )),
             // The same registry the tool plane executes from — not a copy, not a
             // startup snapshot. A view of policy that could be stale relative to
             // the engine is the one thing F10.5 must not ship.
