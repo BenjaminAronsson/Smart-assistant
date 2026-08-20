@@ -119,7 +119,7 @@ instructions the whole way, with no source tree and no help from the person who 
       Tests: an automated axe pass plus a keyboard-only walkthrough of every route.
       Deps: F10.5 (audit the surface once it is complete).
 
-- [ ] **F10.7 — Signed releases and the security checklist (docs/06, NFR-14)** · *strong model*
+- [x] **F10.7 — Signed releases and the security checklist (docs/06, NFR-14)** · *strong model*
       Reproducible release artifacts, signed; the checklist in docs/06 run and recorded; the
       `cargo deny` advisory posture made durable rather than incidental.
       **Note from M8:** the advisory check is *time-dependent* — RUSTSEC-2026-0258 turned a green

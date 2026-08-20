@@ -119,3 +119,59 @@ A generated web app is a **bundle artifact, not trusted code**:
 5. Diagnostics bundle contains no secrets or full sensitive prompts by default.
 6. `cargo deny`/`cargo audit`, container, and artifact-builder scans show no unaccepted
    critical findings.
+
+## 9. Signed releases (F10.7, NFR-14)
+
+```bash
+JARVIS_RELEASE_KEY=~/.ssh/id_ed25519 infra/install/release.sh dist/
+infra/install/verify-release.sh dist/jarvis-<version> --signers ~/.jarvis/allowed_signers
+```
+
+A release directory carries the binaries, a SHA-256 manifest over them, an `ssh-keygen -Y`
+signature over that manifest **and** the release record, and the timestamp of the advisory
+scan that gated it.
+
+### How old an advisory scan may be at sign-off: 30 days
+
+This is the clause the M8 gate demanded, and it exists because the supply-chain check is
+the only **time-dependent** gate here. RUSTSEC-2026-0258 turned a green pipeline red with
+no code change at all — the code had not moved, the world had learned something.
+
+A signature proves these bytes are the bytes that were built. It proves nothing about
+whether they were known-vulnerable, and nothing about how long ago anyone last looked. An
+artifact signed a year ago is exactly as cryptographically valid as one signed this
+morning, and its "cargo deny passed" is worth far less. So `verify-release.sh` **refuses**
+a release whose scan is older than 30 days (`JARVIS_MAX_ADVISORY_AGE_DAYS`) rather than
+letting a stale green tick launder itself into a fresh assurance.
+
+### Integrity is not authenticity
+
+`signing-key.pub` ships inside the release, and verification without `--signers` checks the
+signature against it. That proves the parts agree; it does **not** prove who built them,
+because a forger who replaced the binaries would replace the bundled key too.
+`verify-release.sh` says so in its output rather than letting a green tick imply more than
+it earned. Real authenticity requires `--signers` with a key you already trust.
+
+### The signed payload is regenerated, not trusted
+
+Verification rebuilds the payload from `SHA256SUMS` + `RELEASE` and compares before
+checking the signature. Otherwise the manifest could be rewritten to match a swapped binary
+while the original signed payload sat untouched — the signature would verify perfectly,
+over bytes nobody looked at again. There is a test for exactly that attack.
+
+### §8 gate status, run 2026-08-19
+
+| gate | status | evidence |
+|---|---|---|
+| 1. arch test | **pass** | `cargo xtask arch-test` — 9 crates, dependency rules hold |
+| 2. adversarial suite | **pass** | `jarvis-application` adversarial tests |
+| 3. R2/R3 approval text, timeouts | **pass** | policy tests (14) |
+| 4. tool sandbox profiles | **pass** | app-builder profile tests (M6) |
+| 5. diagnostics bundle carries no secrets | **NOT MET — the bundle does not exist** | F10.4 is outstanding; see below |
+| 6. `cargo deny` clean | **pass** | `advisories ok`, scanned 2026-08-19 |
+
+Gate 5 is recorded as unmet rather than ticked. F10.4 shipped capability reporting on the
+health endpoint — which is what made a real diagnosis possible — but the *bundle command*
+with redaction that this gate is about has not been built. A checklist that ticks a box for
+an adjacent feature is worse than one with an honest gap, because the gap is what a
+reviewer needs to see.
