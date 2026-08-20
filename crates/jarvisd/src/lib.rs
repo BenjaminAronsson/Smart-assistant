@@ -10,6 +10,7 @@ pub mod artifacts;
 pub mod auth;
 pub mod automations;
 pub mod cards;
+pub mod cli;
 pub mod config;
 pub mod deepdive;
 pub mod deferred;

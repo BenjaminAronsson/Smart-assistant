@@ -24,11 +24,41 @@ use tokio_util::sync::CancellationToken;
 use tower_http::trace::TraceLayer;
 
 fn main() -> anyhow::Result<()> {
+    let command = match jarvisd::cli::parse(std::env::args()) {
+        Ok(command) => command,
+        Err(usage) => {
+            eprintln!("{usage}");
+            std::process::exit(2);
+        }
+    };
+
     let config = jarvisd::config::Config::load()?;
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build()?
-        .block_on(run(config))
+        .build()?;
+
+    match command {
+        jarvisd::cli::Command::Serve => runtime.block_on(run(config)),
+        jarvisd::cli::Command::Migrate => runtime.block_on(migrate(config)),
+    }
+}
+
+/// Apply the embedded forward migrations and exit (F10.9).
+///
+/// Separate from `run` on purpose: it takes an eager connection rather than the
+/// lazy pool the daemon uses. A daemon may start with the database unreachable
+/// and report it degraded (docs/02 §12); a migration that cannot reach the
+/// database has failed and must say so with a non-zero exit, because
+/// `install.sh` and `update.sh` gate on that exit code.
+async fn migrate(config: jarvisd::config::Config) -> anyhow::Result<()> {
+    let db_url = jarvisd::config::resolve_secret_ref_async(&config.database.url_secret).await?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(db_url.expose())
+        .await?;
+    jarvis_infra::MIGRATOR.run(&pool).await?;
+    println!("migrations applied");
+    Ok(())
 }
 
 async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
