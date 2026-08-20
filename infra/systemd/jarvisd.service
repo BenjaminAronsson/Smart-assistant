@@ -14,9 +14,9 @@ Documentation=https://github.com/BenjaminAronsson/Smart-assistant
 #
 # It is a CONTAINER, so the unit to order after is jarvis-deps.service, which
 # runs `compose up -d --wait` and therefore does not complete until Postgres
-# answers pg_isready. This previously ordered after a native postgresql
-# service unit — one that does not exist on this host, which systemd ignores
-# silently, leaving the daemon to start before the database on every boot.
+# answers pg_isready. This previously said `After=postgresql.service` — a unit
+# that does not exist on this host, which systemd ignores silently, leaving
+# the daemon to start before the database on every boot.
 After=network-online.target jarvis-deps.service
 Requires=jarvis-deps.service
 Wants=network-online.target
