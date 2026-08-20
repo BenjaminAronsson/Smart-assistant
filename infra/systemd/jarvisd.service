@@ -11,7 +11,14 @@ Description=Jarvis daemon
 Documentation=https://github.com/BenjaminAronsson/Smart-assistant
 # Postgres is a hard requirement, not a soft one: jarvisd fails fast without
 # it rather than starting into a half-working state.
-After=network-online.target postgresql.service
+#
+# It is a CONTAINER, so the unit to order after is jarvis-deps.service, which
+# runs `compose up -d --wait` and therefore does not complete until Postgres
+# answers pg_isready. This previously ordered after a native postgresql
+# service unit — one that does not exist on this host, which systemd ignores
+# silently, leaving the daemon to start before the database on every boot.
+After=network-online.target jarvis-deps.service
+Requires=jarvis-deps.service
 Wants=network-online.target
 
 [Service]
@@ -25,6 +32,12 @@ RestartSec=5s
 # Config and secrets. The database URL is a *reference* resolved at startup
 # (invariant 5) — this file names where to look, never the value.
 Environment=JARVIS_CONFIG=/etc/jarvis/jarvisd.toml
+# JARVIS_DB_URL, referenced by jarvisd.toml as env:JARVIS_DB_URL. systemd reads
+# this file AS ROOT before dropping to User=jarvis, so the service account never
+# needs read access to it (mode 0600, root:root). The keyring cannot serve a
+# system unit: no login session means no D-Bus session bus means no Secret
+# Service (F10.9).
+EnvironmentFile=/etc/jarvis/secrets.env
 WorkingDirectory=/var/lib/jarvis
 
 # Hardening. Everything the daemon needs is under /var/lib/jarvis; nothing

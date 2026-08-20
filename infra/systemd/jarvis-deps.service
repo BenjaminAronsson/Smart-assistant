@@ -1,0 +1,35 @@
+# Jarvis dependencies: Postgres, the OTel collector, and the voice services
+# (F10.9, docs/09 §2).
+#
+# The reason this unit exists rather than a `Requires=docker.service` on
+# jarvisd: systemd can order the daemon after the container ENGINE, but not
+# after the container CONTENTS. `compose up -d --wait` blocks on the
+# healthchecks in prod.yml, so "after jarvis-deps" means "Postgres is
+# accepting connections" — which is the guarantee jarvisd actually needs,
+# because it fails fast without a database.
+#
+#   sudo systemctl enable --now jarvis-deps
+
+[Unit]
+Description=Jarvis dependencies (Postgres, OTel, voice)
+Documentation=https://github.com/BenjaminAronsson/Smart-assistant
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Without RemainAfterExit the unit goes inactive the moment compose returns,
+# and every unit ordered after it loses the ordering guarantee.
+
+WorkingDirectory=/etc/jarvis/compose
+ExecStart=/usr/bin/docker compose --env-file /etc/jarvis/secrets.env -f /etc/jarvis/compose/prod.yml up -d --wait
+ExecStop=/usr/bin/docker compose --env-file /etc/jarvis/secrets.env -f /etc/jarvis/compose/prod.yml down
+
+# Pulling four images on a cold first start is not a two-minute job on a
+# domestic connection.
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

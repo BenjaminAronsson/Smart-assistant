@@ -46,3 +46,57 @@ fn shipped_config_resolves_the_database_url_from_the_environment() {
          reference cannot resolve in a system service with no session bus. Got: {url_secret}"
     );
 }
+
+/// A live bug, not a hypothetical: jarvisd.service orders itself after
+/// `postgresql.service`, which does not exist on a host whose Postgres is a
+/// container. systemd silently ignores an ordering dependency on an absent
+/// unit, so the daemon starts before the database and fail-fasts every boot.
+#[test]
+fn jarvisd_orders_after_the_dependency_unit_not_a_host_postgres() {
+    let unit = read("infra/systemd/jarvisd.service");
+
+    assert!(
+        !unit.contains("postgresql.service"),
+        "jarvisd.service still orders after postgresql.service, which does not \
+         exist when Postgres is a container — the ordering is silently vacuous"
+    );
+    assert!(
+        unit.contains("After=") && unit.contains("jarvis-deps.service"),
+        "jarvisd.service must order after jarvis-deps.service"
+    );
+}
+
+/// The daemon cannot read its own database URL without this line, and the
+/// resulting failure is a fatal config error at startup.
+#[test]
+fn jarvisd_reads_the_secrets_file() {
+    let unit = read("infra/systemd/jarvisd.service");
+    assert!(
+        unit.contains("EnvironmentFile=/etc/jarvis/secrets.env"),
+        "jarvisd.service must read /etc/jarvis/secrets.env — that is where \
+         JARVIS_DB_URL lives (F10.9)"
+    );
+}
+
+/// `up -d` alone returns as soon as containers are RUNNING. Postgres running
+/// is not Postgres accepting connections, so without `--wait` the ordering
+/// guarantee this unit exists to provide does not exist.
+#[test]
+fn the_dependency_unit_waits_for_healthchecks() {
+    let unit = read("infra/systemd/jarvis-deps.service");
+
+    assert!(
+        unit.contains("--wait"),
+        "jarvis-deps.service must use `compose up -d --wait`, or ordering after \
+         it means only that compose was invoked"
+    );
+    assert!(
+        unit.contains("RemainAfterExit=yes"),
+        "a Type=oneshot unit that does not remain after exit is immediately \
+         inactive, and units ordered after it lose the guarantee"
+    );
+    assert!(
+        unit.contains("/etc/jarvis/compose/prod.yml"),
+        "jarvis-deps.service must point at the installed compose file"
+    );
+}
