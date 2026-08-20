@@ -65,6 +65,21 @@ for candidate in podman docker; do
     command -v "$candidate" >/dev/null 2>&1 && { RUNTIME="$candidate"; break; }
 done
 
+# Which compose file describes this host's dependencies.
+#
+# The script ships in two places and both are real: a source tree, where the
+# dev stack is what is running, and inside the release tarball on an installed
+# host, where `infra/` does not exist at all. Hardcoding the dev path made the
+# database check report a false FAILURE on every installed host — the exact
+# mistake this script's header warns about, in the other direction.
+COMPOSE_FILE=""
+for candidate in /etc/jarvis/compose/prod.yml infra/compose/dev.yml; do
+    if [[ -f "$candidate" ]]; then
+        COMPOSE_FILE="$candidate"
+        break
+    fi
+done
+
 # --- provisioning ------------------------------------------------------------
 #
 # jarvisd ships PRODUCTION defaults: /var/lib/jarvis/claude-work and
@@ -144,18 +159,26 @@ fi
 step "database"
 if [[ -z "$COMPOSE" ]]; then
     bad "no compose runtime found (docker compose / podman compose)"
-elif $COMPOSE -f infra/compose/dev.yml ps postgres 2>/dev/null | grep -q 'Up\|running\|healthy'; then
-    ok "postgres is running"
+elif [[ -z "$COMPOSE_FILE" ]]; then
+    bad "no compose file found — looked for /etc/jarvis/compose/prod.yml and infra/compose/dev.yml"
+elif $COMPOSE -f "$COMPOSE_FILE" ps postgres 2>/dev/null | grep -q 'Up\|running\|healthy'; then
+    ok "postgres is running ($COMPOSE_FILE)"
 else
-    bad "postgres is not running — '$COMPOSE -f infra/compose/dev.yml up -d postgres'"
+    bad "postgres is not running — '$COMPOSE -f $COMPOSE_FILE up -d postgres'"
 fi
 
 step "migrations"
-if [[ -n "${DATABASE_URL:-}" ]] && command -v sqlx >/dev/null 2>&1; then
+# `jarvisd migrate` runs the stream embedded in the binary (F10.9), so an
+# installed host needs neither sqlx-cli nor a Rust toolchain. Prefer it; fall
+# back to sqlx-cli in a source tree where the binary may not be built yet.
+if command -v jarvisd >/dev/null 2>&1; then
+    note "apply with: sudo systemctl stop jarvisd && sudo -E jarvisd migrate"
+    ok "jarvisd on PATH — migrations can be applied without sqlx-cli"
+elif [[ -n "${DATABASE_URL:-}" ]] && command -v sqlx >/dev/null 2>&1; then
     sqlx migrate info 2>/dev/null | tail -3 || bad "could not read migration state"
-    ok "migration state readable"
+    ok "migration state readable (sqlx-cli)"
 else
-    note "skipped: set DATABASE_URL and install sqlx-cli to check"
+    note "skipped: no jarvisd on PATH, and no DATABASE_URL + sqlx-cli"
 fi
 
 step "daemon health"

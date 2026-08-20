@@ -179,3 +179,24 @@ fn compose_files_agree_on_shared_image_tags() {
         );
     }
 }
+
+/// first-run.sh is the install's own verification, and it is shipped INSIDE
+/// the tarball — where `infra/compose/dev.yml` does not exist. Checking a
+/// hardcoded dev path reports "postgres is not running" against a perfectly
+/// healthy installed database: a false failure, which this script's own header
+/// argues is as bad as a false pass.
+#[test]
+fn first_run_finds_the_compose_file_in_an_installed_tree() {
+    let script = read("infra/install/first-run.sh");
+
+    assert!(
+        script.contains("/etc/jarvis/compose/prod.yml"),
+        "first-run.sh must look for the installed compose file, not only \
+         infra/compose/dev.yml"
+    );
+    assert!(
+        script.contains("COMPOSE_FILE"),
+        "first-run.sh must resolve the compose file into one variable rather \
+         than repeating a path it can only be right about in a source tree"
+    );
+}
