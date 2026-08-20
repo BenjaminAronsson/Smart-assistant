@@ -27,7 +27,22 @@ cert_path = "/var/lib/jarvis/tls/cert.pem"
 key_path = "/var/lib/jarvis/tls/key.pem"
 
 [database]
-url_secret = "keyring:jarvis/database-url"
+# NOT a keyring reference, and the reason is load-bearing (F10.9).
+#
+# jarvisd runs as a systemd SYSTEM service: User=jarvis, ProtectHome=true, no
+# login session and therefore no D-Bus session bus. keyring's Secret Service
+# backend has nothing to talk to, the lookup fails, and an unresolvable secret
+# reference is a fatal config error — the daemon would not start at all.
+#
+# install.sh writes JARVIS_DB_URL into /etc/jarvis/secrets.env (root-only,
+# mode 0600) and jarvisd.service reads it with EnvironmentFile=. systemd reads
+# that file as root BEFORE dropping to User=jarvis, so the service account
+# never needs read access, and the value never appears in a command line
+# (invariant 5).
+#
+# The keyring remains correct for jarvis-agent, which is a USER unit inside a
+# graphical session, and for interactively-provisioned secrets below.
+url_secret = "env:JARVIS_DB_URL"
 max_connections = 8
 
 # --- voice ----------------------------------------------------------------
