@@ -47,16 +47,34 @@ first restore tests passed with `pg_restore` replaced by `echo`.
 
 These are the honest gaps. None is blocked; all need a person and hardware.
 
-### 2.1 A genuine clean-machine install
+### 2.1 A genuine clean-machine install — **build half done, hardware half outstanding**
 
-`docs/TRY-IT.md` is verified, but it was verified on a machine that already had a Rust
-toolchain, a container runtime, a warm build cache and a working audio stack. **A test
-running inside that cache cannot simulate its absence.** What is unproven is the first
-twenty minutes on a machine that has never seen this project.
+Originally recorded here as entirely owner-only. That was too quick: the *prerequisites and
+build* half does not need the owner's hardware, only a machine with nothing on it — and a
+clean container is exactly that.
 
-*Method:* a fresh VM or a reimaged laptop, `docs/TRY-IT.md` followed literally, nothing
-skipped. What matters is not whether it works but **where it stops** — a missing package,
-an unstated assumption, a permission.
+**Done (2026-08-20).** A `debian:13` container with no toolchain, no Node, no build cache,
+source obtained by `git clone` so nothing came with it. It found a real defect:
+
+| stopped at | cause | fixed |
+|---|---|---|
+| ``error: linker `cc` not found`` | `build-essential` was not in the prerequisite list | TRY-IT.md §0 |
+| `jarvis-agent` build failure | `libasound2-dev` not listed (ALSA, for cpal) | TRY-IT.md §0 |
+| `git clone` / rustup impossible | `curl`, `git`, `ca-certificates` not listed | TRY-IT.md §0 |
+| `ng build` refuses | apt's Node is v20; Angular needs ≥ 22.22 | TRY-IT.md §0 names it |
+
+The list was also **narrowed** by testing, not guessed: `jarvisd` needs only
+`build-essential`; `pkg-config`, `libssl-dev` and `cmake` are not required, because TLS is
+rustls throughout and nothing links OpenSSL.
+
+**Still outstanding, and genuinely owner-only.** A container has no sound card, no
+microphone, no compositor and no session bus. What remains unverified on a clean machine is
+everything past the build: pairing a real browser, a real audio device opening, the wake
+word firing in a room, and `room-node` under Hyprland. That needs a reimaged laptop, and
+`docs/TRY-IT.md` followed literally on it.
+
+*Method for the rest:* fresh VM or reimaged laptop, TRY-IT.md followed literally, nothing
+skipped. What matters is not whether it works but **where it stops**.
 
 ### 2.2 NFR-04 on the reference hardware
 
@@ -64,14 +82,51 @@ Measured on the dev host: **432.7 ms** transcript, **91.7 ms** first audio (budg
 / 1200 ms). Re-measured during M10 against live Wyoming: 621 ms / 119 ms.
 
 Both are a fast desktop. **The budget in docs/01 §4.1 is the 8 GB ultrabook**, and nothing
-has run there. `cargo test -p jarvisd --test voice_latency_real` with `JARVIS_NFR04_REAL=1`
-is the harness; it needs the reference machine.
+has run there.
 
-### 2.3 False-accept corpus for the wake word
+Deliberately not approximated. Constraining CPU on this host would produce a number, and a
+number that looks like a measurement but was taken on different silicon is worse than an
+admitted gap — the figures are dominated by Whisper and Piper, so throttling the harness
+without throttling them would measure nothing at all, and throttling them would be a
+guess at hardware nobody has profiled.
+
+*Method:* on the reference machine, with the voice compose stack running:
+
+```bash
+JARVIS_NFR04_REAL=1 cargo test -p jarvisd --test voice_latency_real -- --nocapture
+```
+
+It prints both figures against their budgets and fails if either is exceeded.
+
+### 2.3 False-accept corpus for the wake word — **harness ready, corpus outstanding**
 
 ADR-032 consequence 2. A wake word that fires while you are watching television is not a
-working wake word, and no fixture measures that. Needs hours of real room audio on real
-hardware.
+working wake word.
+
+**The harness exists and is verified working** (2026-08-20):
+`the_false_accept_rate_over_a_noise_corpus_is_within_budget` in
+`crates/jarvis-agent/tests/wake_onnx.rs`, budget one accept per hour. Exercised against
+real non-matching speech — the `alexa`, `hey mycroft` and `hey jane` clips — with the
+`hey jarvis` model:
+
+```
+false-accept measurement: word="hey_jarvis" clips=3 hours=0.001 accepts=0 rate=0.000/hour
+```
+
+**That number is not the measurement, and must not be quoted as one.** Three clips is about
+four seconds; a per-hour rate computed from four seconds of audio is arithmetic, not
+evidence. What it does establish is that the harness runs end to end, the corpus plumbing
+works, and the engine does not fire on three other wake words.
+
+*What remains is recording, not building.* Capture hours of ordinary household audio at
+16 kHz mono — television, conversation, kitchen noise — into a directory, then:
+
+```bash
+JARVIS_WAKE_NOISE_CORPUS=/path/to/corpus JARVIS_AGENT_WAKE_WORD=hey_jarvis \
+  cargo test -p jarvis-agent --features wake-word-onnx --test wake_onnx the_false_accept_rate -- --nocapture
+```
+
+It fails the build if the rate exceeds one per hour, so the result is a gate, not a note.
 
 ### 2.4 The two-binary upgrade
 

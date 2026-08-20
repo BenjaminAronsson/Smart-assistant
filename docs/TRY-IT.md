@@ -16,10 +16,27 @@ download.
 
 ## 0. What you need
 
+- `curl`, `git`, `ca-certificates` — to fetch the source and the toolchain at all
+- **`build-essential`** (or your distribution's C toolchain) — Rust needs a C linker,
+  and without it the very first build stops at ``error: linker `cc` not found``
+- **`libasound2-dev`** — only for `jarvis-agent`; ALSA headers for the microphone.
+  `jarvisd` alone does not need it
 - Rust (the pinned toolchain installs itself from `rust-toolchain.toml`)
 - Docker or Podman with compose
-- Node 24 (for the web shell)
+- **Node ≥ 22.22 / 24** for the web shell — Debian and Ubuntu's `apt` Node is v20 and
+  the Angular CLI refuses it by name, so install from nodejs.org or nvm
 - A microphone and speakers, if you want the hands-free part
+
+On a Debian-family machine, that is:
+
+```bash
+sudo apt-get install -y build-essential curl git ca-certificates libasound2-dev
+```
+
+This list was produced by **actually running the install on a machine that had none of
+it** — a clean `debian:13` container, no toolchain, no build cache — and recording where
+it stopped. `pkg-config`, `libssl-dev` and `cmake` are deliberately *not* here: TLS is
+rustls throughout, so nothing links against OpenSSL.
 
 ## 1. Start Postgres, and the speech services
 
