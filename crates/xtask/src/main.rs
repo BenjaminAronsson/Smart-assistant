@@ -92,6 +92,23 @@ fn golden() -> anyhow::Result<()> {
         "golden 8: generated app requests an undeclared capability; bridge rejects",
     )?;
 
+    // Trace 10 — M10's exit evidence: the operational lifecycle a script can
+    // hold. Install and the two-binary upgrade are named as human steps in
+    // docs/milestones/M10-acceptance.md rather than faked here.
+    run_scenario(
+        &[
+            "test",
+            "-p",
+            "jarvisd",
+            "--test",
+            "golden10_the_house_survives",
+        ],
+        None,
+        1,
+        "golden 10: a lived-in house is backed up, lost, restored — and is still \
+         schedulable and writable",
+    )?;
+
     // Trace 12 — M8's exit evidence, daemon side. The node-side halves (nothing
     // streams before the wake word, a detection opens one bracketed stream,
     // playback does not self-trigger) run in jarvis-agent's own suite, because
@@ -373,7 +390,7 @@ fn golden() -> anyhow::Result<()> {
         "golden 11: node pairs over TLS → surface → voice → revoked",
     )?;
 
-    println!("✓ Golden traces 1–7, 9, 11 + M3a/M3b/M5 acceptance scenarios passed");
+    println!("✓ Golden traces 1–7, 9–12 + M3a/M3b/M5/M6 acceptance scenarios passed");
     println!("  - Orchestrator: simple/complex question, degraded mode recovery");
     println!("  - Policy: R0/R1 auto tool path, result sanitization, denial");
     println!("  - Approval: R2 approve/deny/edit, grant mint/validate, adversarial text");
