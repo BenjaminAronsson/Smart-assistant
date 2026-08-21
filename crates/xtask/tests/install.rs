@@ -361,3 +361,55 @@ fn install_script_uses_the_last_destdir_flag() {
          last one.\nstdout:\n{stdout}"
     );
 }
+
+/// The layout is a pure function so it can be tested in milliseconds. Staging
+/// for real needs a release build plus an npm build — minutes, and wrong for a
+/// unit test. This asserts nothing was forgotten; CI (Task 8) stages the real
+/// thing and installs it.
+#[test]
+fn the_release_payload_carries_everything_a_host_needs() {
+    let layout = xtask::dist::staged_layout("0.1.0");
+    let destinations: Vec<&str> = layout.iter().map(|(_, dest)| dest.as_str()).collect();
+
+    for required in [
+        "bin/jarvisd",
+        "bin/jarvis-agent",
+        "web",
+        "migrations",
+        "compose/prod.yml",
+        "compose/otel-collector.yml",
+        "compose/postgres-init",
+        "systemd/jarvis-deps.service",
+        "systemd/jarvisd.service",
+        "systemd/jarvis-agent.service",
+        "install/install.sh",
+        "install/first-run.sh",
+        "install/backup.sh",
+        "install/restore.sh",
+        "install/update.sh",
+        "install/verify-release.sh",
+        "jarvisd.toml.example",
+        "README.md",
+    ] {
+        assert!(
+            destinations.contains(&required),
+            "the release payload is missing {required}; a host cannot be \
+             installed without it. Present: {destinations:#?}"
+        );
+    }
+}
+
+/// Catches a file renamed in one place and not the other — months later, at
+/// the moment someone is trying to cut a release.
+#[test]
+fn every_staged_source_path_exists() {
+    for (source, dest) in xtask::dist::staged_layout("0.1.0") {
+        if source.starts_with("target") || source.starts_with("web/dist") {
+            continue; // build outputs; absent until a release build has run
+        }
+        assert!(
+            repo_root().join(&source).exists(),
+            "staged_layout maps {source:?} -> {dest}, but that path does not exist"
+        );
+    }
+}

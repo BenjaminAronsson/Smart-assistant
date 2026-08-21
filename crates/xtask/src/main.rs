@@ -7,6 +7,8 @@ use std::process::Command;
 
 mod perf;
 
+use xtask::dist;
+
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let task = args.next().unwrap_or_default();
@@ -15,8 +17,14 @@ fn main() -> anyhow::Result<()> {
         "codegen" => codegen::run(args.next().as_deref() == Some("--check")),
         "golden" => golden(),
         "perf" => perf::run(args.next().as_deref()),
+        // `--stage <dir>`: build and stage the installable payload. release.sh
+        // (F10.7) checksums and signs whatever lands there.
+        "dist" => match (args.next().as_deref(), args.next()) {
+            (Some("--stage"), Some(dir)) => dist::stage(std::path::Path::new(&dir), None),
+            _ => anyhow::bail!("usage: cargo xtask dist --stage <directory>"),
+        },
         _ => anyhow::bail!(
-            "usage: cargo xtask <arch-test|codegen [--check]|golden|perf <--rss|--voice>>"
+            "usage: cargo xtask <arch-test|codegen [--check]|golden|perf <--rss|--voice>|dist --stage <dir>>"
         ),
     }
 }

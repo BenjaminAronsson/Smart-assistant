@@ -261,3 +261,37 @@ fn verifying_without_a_trusted_key_says_what_it_did_not_prove() {
         "verification without a trusted key must not read as proof of origin: {said}"
     );
 }
+
+/// F10.9 widened what a release contains, and therefore what the signature
+/// covers.
+///
+/// Before: the payload was two binaries. Everything else an owner runs —
+/// `install.sh`, executed as root; `prod.yml`, which decides what the daemon
+/// connects to; the systemd units — travelled unsigned, or not at all. A
+/// tampered installer beside a valid signature is a strictly better attack
+/// than a tampered binary, because the signature makes the whole directory
+/// look checked.
+#[test]
+fn the_manifest_covers_the_installer_not_only_the_binaries() {
+    let script_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("repo root")
+        .join("infra/install/release.sh");
+    let script = std::fs::read_to_string(&script_path).expect("release.sh is readable");
+
+    assert!(
+        !script.contains(r#"sha256sum "${BINARIES[@]}""#),
+        "release.sh still checksums only the binaries; install.sh and the \
+         systemd units would ship unsigned"
+    );
+    assert!(
+        script.contains("find") && script.contains("SHA256SUMS"),
+        "release.sh must checksum every staged file, not a fixed list"
+    );
+    assert!(
+        script.contains("xtask dist --stage"),
+        "release.sh must stage through xtask so there is one definition of \
+         what ships"
+    );
+}

@@ -40,7 +40,9 @@ fi
 # The namespace scopes the signature: a signature made for `jarvis-release`
 # cannot be replayed as a git commit signature, or vice versa.
 NAMESPACE="jarvis-release"
-BINARIES=(jarvisd jarvis-agent)
+# What ships is defined in ONE place — crates/xtask/src/dist.rs — and staged by
+# `cargo xtask dist --stage`. A second list here is how a release ends up
+# shipping an installer without the compose file it needs (F10.9).
 
 VERSION="$(grep -m1 '^version' "$REPO/crates/jarvisd/Cargo.toml" | cut -d'"' -f2)"
 DEST="$OUT_ROOT/jarvis-$VERSION"
@@ -66,17 +68,25 @@ else
 fi
 echo "   ok: advisories clean at $SCAN_AT"
 
-echo "== 2/4 build"
-(cd "$REPO" && cargo build --release --locked -p jarvisd -p jarvis-agent)
-for bin in "${BINARIES[@]}"; do
-	cp "$REPO/target/release/$bin" "$DEST/$bin"
-done
-echo "   ok: ${BINARIES[*]}"
+echo "== 2/4 build and stage"
+# Builds the binaries AND the web assets, then stages the full installable
+# payload: bin/, web/, migrations/, compose/, systemd/, install/, the config
+# example and the README. See crates/xtask/src/dist.rs for the layout.
+(cd "$REPO" && cargo xtask dist --stage "$DEST")
+echo "   ok: payload staged"
 
 echo "== 3/4 manifest"
-# Sorted, relative paths: the manifest must be byte-identical for identical
-# inputs, or the signature is over an accident of directory order.
-(cd "$DEST" && sha256sum "${BINARIES[@]}" | LC_ALL=C sort > SHA256SUMS)
+# Every staged file, not a fixed list. install.sh runs as root and prod.yml
+# decides what the daemon connects to; leaving either outside the signature
+# while signing the binaries is worse than signing nothing, because the
+# signature makes the whole directory look checked.
+#
+# Relative paths, LC_ALL=C sort: the manifest must be byte-identical for
+# identical inputs, or the signature is over an accident of directory order.
+(cd "$DEST" && find . -type f \
+    ! -name SHA256SUMS ! -name RELEASE ! -name SIGNED-PAYLOAD \
+    ! -name 'SIGNED-PAYLOAD.sig' ! -name signing-key.pub \
+    -printf '%P\n' | LC_ALL=C sort | xargs sha256sum > SHA256SUMS)
 cat > "$DEST/RELEASE" <<EOF
 jarvis-release 1
 version=$VERSION
