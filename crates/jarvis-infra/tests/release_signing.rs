@@ -262,6 +262,70 @@ fn verifying_without_a_trusted_key_says_what_it_did_not_prove() {
     );
 }
 
+/// F10.7's version extraction read `crates/jarvisd/Cargo.toml`, which does not
+/// carry its own version — it says `version.workspace = true`. A grep of that
+/// file for `^version` matches the inheritance line, finds no quotes on it,
+/// and `cut -d'"' -f2` hands back the whole line unchanged. The release
+/// directory ends up named `jarvis-version.workspace = true`, and that same
+/// TOML fragment is written into `RELEASE` and signed inside `SIGNED-PAYLOAD`
+/// — a release that verifies cleanly because it is consistently wrong about
+/// its own version. `verify-release.sh` cannot catch this: nothing about the
+/// signature is broken, only its content is nonsense.
+///
+/// This test extracts `release.sh`'s `VERSION=` line and runs it for real
+/// against the actual workspace tree, asserting the result is a plausible
+/// version string rather than merely checking that the script "mentions"
+/// Cargo.toml. Against the old one-line grep of `crates/jarvisd/Cargo.toml`
+/// this fails immediately (`version.workspace = true` contains whitespace and
+/// `=`); against the fix, reading `[workspace.package]` from the repo-root
+/// `Cargo.toml`, it produces `0.1.0`.
+#[test]
+fn release_sh_derives_a_plausible_version_not_a_toml_fragment() {
+    let root = repo_root();
+    let script = std::fs::read_to_string(root.join("infra/install/release.sh"))
+        .expect("release.sh is readable");
+
+    // Pull out exactly the `VERSION="$(...)"` assignment release.sh uses, so
+    // this test runs the script's real extraction rather than a hand-rolled
+    // stand-in that could drift from it.
+    let assign_line = script
+        .lines()
+        .find(|line| line.trim_start().starts_with("VERSION="))
+        .expect("release.sh must have a VERSION= assignment");
+
+    let out = Command::new("bash")
+        .arg("-c")
+        .arg(format!(
+            "set -euo pipefail; REPO='{repo}'; {assign}; echo \"$VERSION\"",
+            repo = root.display(),
+            assign = assign_line.trim()
+        ))
+        .output()
+        .expect("running release.sh's VERSION= assignment");
+
+    assert!(
+        out.status.success(),
+        "release.sh's version extraction must succeed against the real workspace tree:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let version = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+
+    assert!(!version.is_empty(), "the derived version must not be empty");
+    assert!(
+        !version.contains(char::is_whitespace),
+        "a version containing whitespace is a TOML fragment, not a version: {version:?}"
+    );
+    assert!(
+        !version.contains('='),
+        "a version containing '=' is a TOML fragment (e.g. an unstripped \
+         'version.workspace = true'), not a version: {version:?}"
+    );
+    assert!(
+        version.chars().next().is_some_and(|c| c.is_ascii_digit()),
+        "a plausible version starts with a digit, got: {version:?}"
+    );
+}
+
 /// F10.9 widened what a release contains, and therefore what the signature
 /// covers.
 ///

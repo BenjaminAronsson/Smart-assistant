@@ -44,7 +44,23 @@ NAMESPACE="jarvis-release"
 # `cargo xtask dist --stage`. A second list here is how a release ends up
 # shipping an installer without the compose file it needs (F10.9).
 
-VERSION="$(grep -m1 '^version' "$REPO/crates/jarvisd/Cargo.toml" | cut -d'"' -f2)"
+# jarvisd does not carry its own version — crates/jarvisd/Cargo.toml says
+# `version.workspace = true`. A grep of *that* file for `^version` matches the
+# inheritance line, finds no quotes on it, and `cut` hands back the whole line
+# unchanged: VERSION becomes the literal string "version.workspace = true",
+# which then gets baked into the release directory name and signed inside
+# RELEASE. It is internally consistent — verify-release.sh passes — and
+# entirely wrong. The real version lives at the workspace root, under
+# [workspace.package]; read it from there, matching workspace_version() in
+# crates/xtask/src/dist.rs so the two extractions cannot disagree about what
+# is being released.
+VERSION="$(grep -m1 '^version = "' "$REPO/Cargo.toml" | cut -d'"' -f2 || true)"
+if [[ -z "$VERSION" ]] || [[ "$VERSION" == *[[:space:]]* ]] || [[ "$VERSION" == *"="* ]]; then
+	echo "ABORT: could not determine the workspace version from $REPO/Cargo.toml (got: '$VERSION')" >&2
+	echo "  Expected a top-level 'version = \"X.Y.Z\"' under [workspace.package]." >&2
+	echo "  Proceeding would sign a release named after a TOML fragment, not a version." >&2
+	exit 2
+fi
 DEST="$OUT_ROOT/jarvis-$VERSION"
 mkdir -p "$DEST"
 
