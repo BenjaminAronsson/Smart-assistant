@@ -474,3 +474,67 @@ fn every_staged_source_path_exists() {
         );
     }
 }
+
+/// The README ships inside the tarball, where it is the only documentation a
+/// host has. It must lead with installing rather than with how the project was
+/// built, and its facts must be current — a wrong instruction here costs more
+/// than a wrong instruction anywhere else, because it is read before anything
+/// works.
+#[test]
+fn readme_leads_with_installing_and_is_not_stale() {
+    let readme = read("README.md");
+
+    let install_at = readme
+        .find("## Install")
+        .expect("README has an Install section");
+    let build_at = readme
+        .find("## Building it yourself")
+        .expect("README has a Building it yourself section");
+    assert!(
+        install_at < build_at,
+        "Install must come before the build/contributor material — the README \
+         ships inside the release tarball"
+    );
+
+    for stale in ["ready for M0", "Milestones M0–M8", "ADR-001 … ADR-026"] {
+        assert!(
+            !readme.contains(stale),
+            "README still claims {stale:?}, which stopped being true milestones ago"
+        );
+    }
+
+    for required in [
+        "install.sh",
+        "verify-release.sh",
+        "systemctl",
+        "backup.sh",
+        "restore.sh",
+    ] {
+        assert!(
+            readme.contains(required),
+            "the README must show {required} — an owner should not have to find \
+             backup and restore in docs/09 §3"
+        );
+    }
+}
+
+/// Verifying must come before installing, in that order, on the page.
+///
+/// install.sh runs as root. A README that shows the install command first and
+/// mentions verification afterwards has already lost: the reader ran the
+/// script. F10.7 built verify-release.sh precisely so this step exists.
+#[test]
+fn readme_verifies_before_it_installs() {
+    let readme = read("README.md");
+    let verify = readme
+        .find("verify-release.sh")
+        .expect("README shows verification");
+    let install = readme
+        .find("sudo ./install/install.sh")
+        .expect("README shows the install command");
+    assert!(
+        verify < install,
+        "the README tells an owner to run install.sh as root before verifying \
+         the signature over it"
+    );
+}

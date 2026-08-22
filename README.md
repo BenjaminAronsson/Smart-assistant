@@ -1,65 +1,185 @@
-# Jarvis — Local-First Personal Assistant
+# Jarvis
 
-**Design baseline v4.1 (final handover) · 17 July 2026 · Rust core, Claude-CLI-only provider**
+A personal, local-first assistant. It takes text or voice, understands what is on
+screen and in the house, plans bounded work, asks before anything consequential,
+runs typed tools, shows live results on one or more displays, and remembers only
+what policy permits.
 
-Jarvis is a personal, local-first operating layer: it accepts text or voice, understands
-active context, plans bounded work, requests approval for consequential actions, executes
-typed tools, presents live results on one or more displays, and remembers only what policy
-permits.
+It runs on your hardware. Nothing the model says — and nothing any web page, tool
+result or generated app says — grants authority; authority comes only from an
+authenticated identity, policy rules, and exact expiring execution grants.
 
-This repository contains the complete implementation-ready design. It supersedes the
-.NET-based *Jarvis Technical Design (v1)* document; the material change is the core
-technology decision (Rust replaces .NET — see [ADR-001](docs/adr/README.md#adr-001)) and a
-requirements-first reorganization. The security model, orchestration model, and reuse
-strategy from v1 are retained and tightened.
+## Install
 
-## How to use this with Claude Code
+One x86_64 Debian or Ubuntu machine. It needs **Docker Engine specifically** (a
+running `docker.service` unit — podman's `docker`-compatible shim registers no
+such unit and `jarvis-deps.service` will not start), ALSA, and systemd. **No
+Rust, no Node, no source tree.**
 
-1. Create the implementation repo and copy `docs/`, `CLAUDE.md`, and `.claude/` into its
-   root. The `.claude/` tree ships the subagents, skills, slash commands, and
-   permission/hook settings — the loops are one keystroke.
-2. Open Claude Code in the repo and run `/milestone`. It decomposes M0 into a feature
-   list and stops for your approval before writing any code.
-3. Drive features with `/feature`, close milestones with `/gate` (you sign off every
-   gate), keep docs truthful with `/sync-docs`, record decisions with `/adr`.
-4. The process, loops, and your non-delegable decision points are defined in
-   [docs/11-development-process.md](docs/11-development-process.md).
+```bash
+sudo apt install docker.io docker-compose-plugin libasound2t64   # libasound2 on older releases
+
+VERSION=0.1.0
+BASE=https://github.com/BenjaminAronsson/Smart-assistant/releases/download/v$VERSION
+curl -LO $BASE/jarvis-$VERSION-x86_64-linux-gnu.tar.zst
+tar --zstd -xf jarvis-$VERSION-x86_64-linux-gnu.tar.zst
+cd jarvis-$VERSION
+
+# Verify BEFORE installing — install.sh runs as root.
+./install/verify-release.sh .
+
+sudo ./install/install.sh
+```
+
+`verify-release.sh` checks that every file matches the signed manifest and that
+the advisory scan behind the release is less than 30 days old — a signature
+proves these are the bytes that were built, not that anyone has looked at the
+world since. It will also tell you, plainly, that by default it checks
+**integrity and not authenticity**: the public key travels with the release, so
+agreement between the parts is all that proves. Checking against a key you
+already trust is your job (`./install/verify-release.sh . --signers
+<allowed_signers>`), and `docs/06-security.md` §9 explains how.
+
+That creates the `jarvis` service user, installs to `/usr/local/bin` and
+`/var/lib/jarvis`, writes `/etc/jarvis/jarvisd.toml`, starts Postgres and the
+voice services as containers, applies migrations, and enables two services.
+It finishes by checking its own work and telling you what is wrong. Run it
+again on a host that already has Jarvis and it upgrades instead — see
+"Back up, update, roll back" below.
+
+Then open **<http://127.0.0.1:8741/>** and pair:
+
+```bash
+journalctl -u jarvisd | grep -i pairing     # the one-time code
+```
+
+**A fresh install talks to nothing.** Voice, web search, Home Assistant, media
+and maps each stay switched off until `/etc/jarvis/jarvisd.toml` names them.
+That file is commented throughout; `docs/09-operations.md` §1 is the reference.
+
+### Add a satellite
+
+A node with a microphone and speakers that answers to "hey jarvis". It is a
+**user** service — it needs your graphical session's audio devices.
+
+```bash
+sudo install -m0755 bin/jarvis-agent /usr/local/bin/
+jarvis-agent pair --server https://jarvis.lan:8741 --name kitchen
+mkdir -p ~/.config/systemd/user && cp systemd/jarvis-agent.service ~/.config/systemd/user/
+systemctl --user enable --now jarvis-agent
+```
+
+### Check it
+
+```bash
+sudo ./install/first-run.sh --check-only
+curl -s http://127.0.0.1:8741/api/v1/diagnostics/health
+```
+
+## Back up, update, roll back
+
+The database holds your sessions, timers, devices, automations, memories and the
+audit trail; the artifact store holds the bytes those rows point at. **Back up one
+without the other and the restore looks complete and is not** — so these scripts
+cross-check the two and refuse when they disagree.
+
+```bash
+# nightly, via a systemd timer — run as root so it can read the installed secrets
+sudo bash -c '
+  set -a; . /etc/jarvis/secrets.env; set +a
+  DATABASE_URL="$JARVIS_DB_URL" JARVIS__STORAGE__ARTIFACTS_ROOT=/var/lib/jarvis/artifacts \
+    ./install/backup.sh /var/backups/jarvis
+'
+
+sudo ./install/install.sh    # upgrade: takes its own backup, migrates, health-gates
+```
+
+**Rollback is restore from backup. There is no `down` migration**, and that is a
+decision rather than an omission: a `down` that drops the column a failed upgrade
+just populated destroys data you still had. Restoring the backup the upgrade took
+seconds earlier does not — but restoring the database alone is not enough; run
+the matching **old** binary against it too, or you reproduce the failure.
+
+```bash
+sudo bash -c '
+  set -a; . /etc/jarvis/secrets.env; set +a
+  DATABASE_URL="$JARVIS_DB_URL" JARVIS__STORAGE__ARTIFACTS_ROOT=/var/lib/jarvis/artifacts \
+    ./install/restore.sh /var/backups/jarvis/jarvis-<timestamp> --force
+'
+```
+
+`--force` is required because restoring over a populated, live database is
+refused otherwise — it is not reversible and the mistake is expensive. See
+`docs/09-operations.md` §3 and §3a for the full procedure, including why the
+database is dumped before the blobs and not after.
+
+## What it does, and what it does not
+
+It answers questions, searches and reads the web, sets timers and alarms, keeps
+lists, controls Home Assistant devices, plays and casts media, writes code into
+patch artifacts, builds small generated apps, remembers what you tell it to, and
+speaks answers aloud on whichever node you spoke to.
+
+It does **not**: support more than one owner (single-owner, multi-device by
+design), run a local reasoning model (it drives the Claude Code CLI), execute
+anything at risk tier R2 or above without an explicit approval that mints a
+scoped, expiring grant, or monetise a recommendation — ever (ADR-021).
+
+## Building it yourself
+
+Rust is pinned by `rust-toolchain.toml`; Node 24 for the shell.
+
+```bash
+docker compose -f infra/compose/dev.yml up -d postgres
+cargo test --workspace
+cargo xtask arch-test && cargo xtask golden
+JARVIS_RELEASE_KEY=~/.ssh/id_ed25519 \
+  infra/install/release.sh dist/   # advisory-scans, builds, stages, signs
+```
+
+`cargo xtask dist --stage <dir>` (the `xtask` alias is defined in
+`.cargo/config.toml`) stages the same installable payload alone, without
+signing — useful for inspecting what ships, but `release.sh` is the command
+that produces something `verify-release.sh` will accept.
+
+`docs/TRY-IT.md` runs the whole stack from a source tree without installing it.
+`CLAUDE.md` carries the conventions and the invariants.
+
+## Working on it with Claude Code
+
+The `.claude/` tree ships the subagents, skills and slash commands the project is
+built with. `/milestone` decomposes a milestone, `/feature` drives one vertical
+feature, `/gate` produces the exit evidence for sign-off, `/adr` records a
+decision. The loops are defined in `docs/11-development-process.md`.
 
 ## Document map
 
 | File | Contents |
 |---|---|
-| [`CLAUDE.md`](CLAUDE.md) | Project instructions for Claude Code: conventions, commands, guardrails. |
-| [`docs/00-vision.md`](docs/00-vision.md) | Problem, product definition, design principles, non-goals. |
-| [`docs/01-requirements.md`](docs/01-requirements.md) | Assumptions, functional & non-functional requirements, acceptance criteria, hardware sizing. |
-| [`docs/02-architecture.md`](docs/02-architecture.md) | System architecture, crate/module boundaries, runtime flows, deployment topology. |
-| [`docs/03-tech-stack.md`](docs/03-tech-stack.md) | Rust stack in detail: crates, patterns, and the .NET comparison. |
+| [`CLAUDE.md`](CLAUDE.md) | Conventions, commands, and the non-negotiable invariants. |
+| [`docs/00-vision.md`](docs/00-vision.md) | Problem, product definition, principles, non-goals. |
+| [`docs/01-requirements.md`](docs/01-requirements.md) | Requirements, acceptance criteria, hardware sizing. |
+| [`docs/02-architecture.md`](docs/02-architecture.md) | Architecture, crate boundaries, runtime flows, deployment. |
+| [`docs/03-tech-stack.md`](docs/03-tech-stack.md) | The Rust stack in detail. |
 | [`docs/04-data-model.md`](docs/04-data-model.md) | Entities, PostgreSQL schemas, artifact store. |
-| [`docs/05-api-contracts.md`](docs/05-api-contracts.md) | REST endpoints, WebSocket event protocol, core Rust contracts. |
-| [`docs/06-security.md`](docs/06-security.md) | Trust zones, threat model, risk tiers, execution grants, release gates. |
+| [`docs/05-api-contracts.md`](docs/05-api-contracts.md) | REST endpoints, WebSocket protocol, core contracts. |
+| [`docs/06-security.md`](docs/06-security.md) | Trust zones, threat model, risk tiers, execution grants, signed releases. |
 | [`docs/07-testing.md`](docs/07-testing.md) | Test pyramid, golden traces, definition of done. |
-| [`docs/08-roadmap.md`](docs/08-roadmap.md) | Milestones M0–M8, first slice, handover checklist, deferred decisions, risks. |
-| [`docs/09-operations.md`](docs/09-operations.md) | Configuration reference, deployment units, backup/restore, runbooks. |
-| [`docs/10-references.md`](docs/10-references.md) | External sources and Rust-stack references. |
-| [`docs/11-development-process.md`](docs/11-development-process.md) | The four nested build loops, subagents, gates, human-in-the-loop points. |
-| [`docs/13-use-case-catalog.md`](docs/13-use-case-catalog.md) | ~50 realistic interactions validated against the design; source for golden traces and acceptance walks. |
-| [`docs/12-ui-design.md`](docs/12-ui-design.md) | UI design (normative): voice-first HUD, card grammar, panel lifecycle, backgrounds, real maps. |
-| [`docs/design-refs/`](docs/design-refs/) | Working HTML design references — `jarvis-hud-final.html` is the intended feel; earlier iterations kept for history. |
-| [`.claude/`](.claude/) | Claude Code scaffolding: 6 subagents, 8 skills, 7 slash-command workflows, settings + hooks. |
-| [`docs/adr/README.md`](docs/adr/README.md) | Architecture decision records (ADR-001 … ADR-026). |
-
-## The decision in one paragraph
-
-Build a small, deterministic **Rust core** (`jarvisd`) that owns policy, orchestration,
-memory, artifacts, and audit. Reuse Home Assistant, Wyoming voice services, MCP tool
-servers, Ollama/llama.cpp, and the Claude Code CLI strictly as replaceable edge adapters
-behind typed boundaries. The Angular web shell renders conversation, run timeline,
-approvals, and artifacts over a versioned WebSocket protocol. Nothing the model says, and
-nothing any untrusted content says, ever grants authority — authority comes only from
-authenticated identity, policy rules, and exact expiring execution grants.
+| [`docs/08-roadmap.md`](docs/08-roadmap.md) | Milestones and their exit evidence, deferred decisions, risks. |
+| [`docs/09-operations.md`](docs/09-operations.md) | Configuration, deployment units, backup/restore, runbooks. |
+| [`docs/11-development-process.md`](docs/11-development-process.md) | The four build loops and the human decision points. |
+| [`docs/12-ui-design.md`](docs/12-ui-design.md) | UI design (normative): the HUD, card grammar, backgrounds, maps. |
+| [`docs/13-use-case-catalog.md`](docs/13-use-case-catalog.md) | ~50 validated interactions; source for golden traces. |
+| [`docs/adr/README.md`](docs/adr/README.md) | Architecture decision records — 34 on this branch. |
+| [`docs/TRY-IT.md`](docs/TRY-IT.md) | Running the whole stack from a source tree. |
 
 ## Status
 
-Architecture baseline, ready for M0. Licenses, provider terms, and model capabilities
-change; re-verify external references before redistribution. This is technical guidance,
-not legal advice.
+Milestone M10, "product hardening", in progress. Install, verification, backup,
+restore and upgrade are built and tested (`cargo test -p xtask --test install`).
+CI has a job that cuts a signed release and installs it on a container that has
+never had Jarvis (`.github/workflows/ci.yml`'s `install-artifact`); it has not
+run yet, so that claim is untested rather than false.
+
+Licenses, provider terms and model capabilities change; re-verify external
+references before redistribution. This is technical guidance, not legal advice.
