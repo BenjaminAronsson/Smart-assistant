@@ -169,16 +169,40 @@ fi
 
 step "migrations"
 # `jarvisd migrate` runs the stream embedded in the binary (F10.9), so an
-# installed host needs neither sqlx-cli nor a Rust toolchain. Prefer it; fall
-# back to sqlx-cli in a source tree where the binary may not be built yet.
-if command -v jarvisd >/dev/null 2>&1; then
-    note "apply with: sudo systemctl stop jarvisd && sudo -E jarvisd migrate"
-    ok "jarvisd on PATH — migrations can be applied without sqlx-cli"
+# installed host needs neither sqlx-cli nor a Rust toolchain. But `jarvisd` on
+# PATH only proves the BINARY exists, and on an installed host it exists BY
+# CONSTRUCTION — jarvisd IS the installation. A check that stops at
+# `command -v jarvisd` can therefore never fail: it reports a green "migrations
+# ok" while verifying nothing about migration state, which is exactly the
+# false-assurance failure mode this script's header warns about, and strictly
+# weaker than the `sqlx migrate info` call it replaced.
+#
+# So read the real state: sqlx records every applied migration in
+# `_sqlx_migrations`, reachable through compose Postgres on any installed host
+# without adding a psql dependency to the host itself. A local-socket
+# connection inside the container needs no password (Invariant 5).
+if [[ -n "$COMPOSE" && -n "$COMPOSE_FILE" ]] && \
+    applied="$($COMPOSE -f "$COMPOSE_FILE" exec -T postgres \
+        psql -U jarvis -d jarvis -tAc 'select count(*) from _sqlx_migrations' 2>/dev/null)" && \
+    [[ "$applied" =~ ^[0-9]+$ ]]; then
+    if (( applied > 0 )); then
+        ok "$applied migration(s) applied (checked via _sqlx_migrations)"
+    else
+        # A real problem, not an unknown: the table exists and is empty, so
+        # the schema was never migrated. Reporting this "ok" is the exact
+        # defect this check replaces.
+        bad "_sqlx_migrations has zero rows — no migrations have been applied"
+    fi
+elif [[ -n "$COMPOSE" && -n "$COMPOSE_FILE" ]]; then
+    bad "could not read _sqlx_migrations via '$COMPOSE -f $COMPOSE_FILE exec postgres psql' — postgres may be down (see 'database' check above), or the table does not exist because no migration has ever been applied"
 elif [[ -n "${DATABASE_URL:-}" ]] && command -v sqlx >/dev/null 2>&1; then
     sqlx migrate info 2>/dev/null | tail -3 || bad "could not read migration state"
     ok "migration state readable (sqlx-cli)"
 else
-    note "skipped: no jarvisd on PATH, and no DATABASE_URL + sqlx-cli"
+    note "could not check migration state: no compose runtime/file, and no DATABASE_URL + sqlx-cli"
+fi
+if command -v jarvisd >/dev/null 2>&1; then
+    note "apply with: sudo systemctl stop jarvisd && sudo -E jarvisd migrate"
 fi
 
 step "daemon health"

@@ -202,6 +202,67 @@ fn first_run_finds_the_compose_file_in_an_installed_tree() {
     );
 }
 
+/// The "migrations" check reported `ok` from `command -v jarvisd` alone. On
+/// an installed host `jarvisd` is present BY CONSTRUCTION — it IS the
+/// installation — so that check could never fail: a green "migrations ok"
+/// heading that verified nothing about migration state. It replaced a `sqlx
+/// migrate info` call that read real state, so it was strictly weaker
+/// evidence than what it displaced, which is exactly the false-assurance
+/// failure mode this script's own header warns about.
+///
+/// This asserts the check actually queries sqlx's bookkeeping table
+/// (`_sqlx_migrations`, via a real `psql` query through compose) and that the
+/// `command -v jarvisd` branch — kept only as an informational note — cannot
+/// by itself produce an `ok`. Reverting to
+/// `if command -v jarvisd; then ok "..."` fails the second assertion: that
+/// branch would print `ok` again from tool presence alone.
+#[test]
+fn first_run_migrations_check_queries_real_migration_state() {
+    let script = read("infra/install/first-run.sh");
+
+    let step_start = script
+        .find("step \"migrations\"")
+        .expect("first-run.sh has a migrations step");
+    let step_end = script[step_start..]
+        .find("step \"daemon health\"")
+        .map(|offset| step_start + offset)
+        .expect("first-run.sh has a step after migrations");
+    let migrations_step = &script[step_start..step_end];
+
+    assert!(
+        migrations_step.contains("_sqlx_migrations"),
+        "the migrations step must query sqlx's own _sqlx_migrations \
+         bookkeeping table for real state, not merely check that a binary is \
+         on PATH. Got:\n{migrations_step}"
+    );
+    assert!(
+        migrations_step.contains("psql"),
+        "the migrations step must run a real query against Postgres (e.g. \
+         via compose exec psql), not merely detect tool presence. \
+         Got:\n{migrations_step}"
+    );
+
+    let jarvisd_check_start = migrations_step.find("if command -v jarvisd").expect(
+        "migrations step should still note that jarvisd is on PATH \
+             (informational), just not gate success on it",
+    );
+    let jarvisd_block = &migrations_step[jarvisd_check_start..];
+    let jarvisd_block_end = jarvisd_block
+        .find("\nfi")
+        .map(|offset| offset + "\nfi".len())
+        .unwrap_or(jarvisd_block.len());
+    let jarvisd_block = &jarvisd_block[..jarvisd_block_end];
+
+    assert!(
+        !jarvisd_block.contains("ok \""),
+        "a `command -v jarvisd` branch must not itself call `ok` — jarvisd \
+         is present on every installed host BY CONSTRUCTION (it is the \
+         installation), so a check gated only on its presence can never \
+         fail. This is the exact defect the migrations check must not \
+         reintroduce. Got:\n{jarvisd_block}"
+    );
+}
+
 /// The installer must be testable without root and without a container
 /// runtime, or it will only ever be exercised on the one machine it is aimed
 /// at — which is how an installer becomes a thing nobody dares re-run.

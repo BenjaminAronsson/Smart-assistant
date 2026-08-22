@@ -99,9 +99,17 @@ echo "== 3/4 manifest"
 #
 # Relative paths, LC_ALL=C sort: the manifest must be byte-identical for
 # identical inputs, or the signature is over an accident of directory order.
+#
+# The five exclusions are ANCHORED to the top level (`-path './NAME'`, not
+# `-name NAME`): `-name` matches a basename at ANY depth, so a future payload
+# file that happens to share a name with one of these — e.g.
+# `migrations/RELEASE` — would be silently dropped from SHA256SUMS while still
+# shipping inside the release: present in the tarball, absent from what the
+# signature covers. These five are release metadata that only ever exist at
+# the top of $DEST, so anchoring changes nothing about today's layout.
 (cd "$DEST" && find . -type f \
-    ! -name SHA256SUMS ! -name RELEASE ! -name SIGNED-PAYLOAD \
-    ! -name 'SIGNED-PAYLOAD.sig' ! -name signing-key.pub \
+    ! -path './SHA256SUMS' ! -path './RELEASE' ! -path './SIGNED-PAYLOAD' \
+    ! -path './SIGNED-PAYLOAD.sig' ! -path './signing-key.pub' \
     -printf '%P\n' | LC_ALL=C sort | xargs sha256sum > SHA256SUMS)
 cat > "$DEST/RELEASE" <<EOF
 jarvis-release 1

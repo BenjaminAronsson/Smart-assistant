@@ -359,3 +359,119 @@ fn the_manifest_covers_the_installer_not_only_the_binaries() {
          what ships"
     );
 }
+
+/// `-name` matches a basename at ANY depth. A future payload file that
+/// happens to share a name with one of the five metadata exclusions — e.g.
+/// `migrations/RELEASE` — would be silently dropped from `SHA256SUMS` while
+/// still shipping inside the tarball: present in the release, absent from
+/// what the signature covers. That defeats the exact property the manifest
+/// exists to provide.
+///
+/// This runs release.sh's OWN `find … > SHA256SUMS` pipeline (extracted from
+/// the script, not a hand-rolled stand-in that could drift from it) against a
+/// staged directory containing a nested file named `RELEASE`, and asserts it
+/// survives into the manifest while the five real top-level metadata files
+/// stay excluded. Against the old `-name`-based exclusions this fails
+/// immediately: `migrations/RELEASE` is dropped just like the real
+/// `./RELEASE`. Against the anchored `-path './RELEASE'` fix, only the
+/// top-level file is excluded.
+#[test]
+fn manifest_exclusions_are_anchored_to_the_top_level_not_any_depth() {
+    let root = repo_root();
+    let script = std::fs::read_to_string(root.join("infra/install/release.sh"))
+        .expect("release.sh is readable");
+
+    // Static check: `-name` un-anchored would still "contain find and
+    // SHA256SUMS" (the existing coverage test above), so it does not catch a
+    // regression to `-name`. Assert the exclusions are path-anchored.
+    for excluded in [
+        "SHA256SUMS",
+        "RELEASE",
+        "SIGNED-PAYLOAD",
+        "SIGNED-PAYLOAD.sig",
+        "signing-key.pub",
+    ] {
+        let unanchored = format!("-name {excluded}");
+        let unanchored_quoted = format!("-name '{excluded}'");
+        assert!(
+            !script.contains(&unanchored) && !script.contains(&unanchored_quoted),
+            "release.sh excludes {excluded} with -name, which matches at ANY \
+             depth — a future payload file such as migrations/{excluded} \
+             would be silently dropped from SHA256SUMS while still shipping \
+             inside the release"
+        );
+        let anchored = format!("-path './{excluded}'");
+        assert!(
+            script.contains(&anchored),
+            "release.sh must exclude {excluded} with an anchored -path \
+             './{excluded}', not a bare basename match. Got script:\n{script}"
+        );
+    }
+
+    // Behavioral check: extract the exact multi-line find pipeline release.sh
+    // runs and execute it for real.
+    let start = script
+        .find("(cd \"$DEST\" && find . -type f")
+        .expect("release.sh has the manifest find pipeline");
+    let tail = &script[start..];
+    let end = tail
+        .find("> SHA256SUMS)")
+        .expect("the pipeline redirects into SHA256SUMS")
+        + "> SHA256SUMS)".len();
+    let find_pipeline = &tail[..end];
+
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let dest = scratch.path();
+    std::fs::create_dir_all(dest.join("migrations")).expect("migrations dir");
+    // A payload file that is NOT metadata, but shares a basename with one.
+    std::fs::write(
+        dest.join("migrations/RELEASE"),
+        b"0001_init.sql is not release metadata\n",
+    )
+    .expect("nested RELEASE");
+    std::fs::write(dest.join("jarvisd"), b"pretend binary\n").expect("binary");
+    for metadata in [
+        "SHA256SUMS",
+        "RELEASE",
+        "SIGNED-PAYLOAD",
+        "SIGNED-PAYLOAD.sig",
+        "signing-key.pub",
+    ] {
+        std::fs::write(dest.join(metadata), b"pretend metadata\n").expect("write metadata");
+    }
+
+    let out = Command::new("bash")
+        .arg("-c")
+        .arg(format!("DEST='{}'; {find_pipeline}", dest.display()))
+        .output()
+        .expect("running release.sh's manifest find pipeline");
+    assert!(
+        out.status.success(),
+        "the extracted manifest pipeline failed:\n{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let sums = std::fs::read_to_string(dest.join("SHA256SUMS")).expect("SHA256SUMS written");
+    assert!(
+        sums.contains("migrations/RELEASE"),
+        "a nested payload file named RELEASE must be checksummed into \
+         SHA256SUMS — an unanchored exclusion drops it silently. Got:\n{sums}"
+    );
+    for metadata in [
+        "SHA256SUMS",
+        "RELEASE",
+        "SIGNED-PAYLOAD",
+        "SIGNED-PAYLOAD.sig",
+        "signing-key.pub",
+    ] {
+        assert!(
+            !sums.lines().any(|line| line
+                .split_whitespace()
+                .nth(1)
+                .is_some_and(|path| path == metadata)),
+            "top-level metadata file {metadata} must stay excluded from \
+             SHA256SUMS. Got:\n{sums}"
+        );
+    }
+}
