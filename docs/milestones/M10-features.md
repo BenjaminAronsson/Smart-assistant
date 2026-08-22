@@ -134,6 +134,48 @@ instructions the whole way, with no source tree and no help from the person who 
       can hold, and the acceptance document names the rest honestly.
       Deps: F10.1–F10.7.
 
+- [ ] **F10.9 — The install artifact (docs/09 §2)** · *strong model*
+      M10's exit evidence starts with "the owner installs on a machine that has never had
+      Jarvis", and there was nothing to install: `docs/TRY-IT.md` is a clone, two toolchains
+      and eight exported environment variables, which does not survive a reboot.
+      `cargo xtask dist --stage` defines and stages the payload — a `jarvisd migrate`
+      subcommand so an installed host needs no `sqlx-cli` and therefore no Rust toolchain,
+      `infra/compose/prod.yml` (a file `docs/09` §2 had cited since M2 without it existing),
+      `infra/systemd/jarvis-deps.service`, a reordered `jarvisd.service` with
+      `EnvironmentFile=`, and `infra/install/install.sh` with `first-run.sh`/`update.sh` made
+      to work on an installed host rather than only a source checkout. `release.sh` stages
+      through it and signs every file; CI gained `install-artifact` and `release` jobs; the
+      README was rewritten around the tarball instead of the clone.
+      **Added 2026-08-19 after F10.6; landed after F10.7 rather than ahead of it.** The
+      brief originally assumed the reverse ordering ("signed releases presume an artifact
+      exists to sign"), but F10.7 shipped first and signed the two binaries that existed at
+      the time. What actually happened is F10.9 *widened* that signature rather than adding
+      a second one: everything an owner actually *runs* — `install.sh` as root, `prod.yml`,
+      the unit files — would otherwise have travelled unsigned beside a valid signature that
+      made the whole directory look checked.
+      **Four defects were found and fixed while building this, none reachable by any
+      pre-existing test:** (1) `jarvisd.service` ordered after `postgresql.service`, which
+      does not exist when Postgres is a container — systemd ignores an ordering dependency
+      on an absent unit silently, so the daemon started before its database on every boot;
+      (2) the packaged config resolved the database URL from the **keyring**, which a
+      systemd *system* service (no login session, no D-Bus session bus) cannot reach, and an
+      unresolvable secret reference is fatal by design — the daemon could never have started
+      on the machine this milestone exists to set up; (3) `release.sh` derived its version
+      from `crates/jarvisd/Cargo.toml`, which says `version.workspace = true`; `cut -d'"'`
+      found no quotes and returned the whole line, so every release was named
+      `jarvis-version.workspace = true` with that string signed inside `RELEASE` —
+      `verify-release.sh` passed, because it was consistently wrong; (4) `update.sh` ran
+      `sqlx migrate run --source "$HERE/../../migrations"`, requiring `sqlx-cli` and pointing
+      *above* the tarball root, so `install.sh`'s upgrade path could never have worked on an
+      installed host. Also: `first-run.sh` checked a dev-tree compose path, so it reported a
+      false failure on every installed host.
+      Tests: the payload layout carries every path a host needs; `install.sh --destdir`
+      stages the full layout and is idempotent; unit files are asserted against both
+      regressions; the signed manifest covers the installer and not only the binaries; CI
+      cuts a real signed release and installs it into a pristine `ubuntu:24.04` with no Rust,
+      no Node and no source tree — that job has not yet run to green.
+      Deps: F10.3 (upgrade delegates to `update.sh`), F10.7 (`release.sh` stages and signs).
+
 ---
 
 ## Carried in — decide where each lands
