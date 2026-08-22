@@ -53,14 +53,34 @@ Then open **<http://127.0.0.1:8741/>** and pair:
 journalctl -u jarvisd | grep -i pairing     # the one-time code
 ```
 
-**A fresh install talks to nothing.** Voice, web search, Home Assistant, media
-and maps each stay switched off until `/etc/jarvis/jarvisd.toml` names them.
-That file is commented throughout; `docs/09-operations.md` §1 is the reference.
+**A fresh install talks to nothing, and nothing talks to it.** Voice, web
+search, Home Assistant, media and maps each stay switched off until
+`/etc/jarvis/jarvisd.toml` names them — and the daemon binds **loopback only**,
+so until you open it up on purpose (next section) the only thing that can reach
+it is this machine. That file is commented throughout;
+`docs/09-operations.md` §1 is the reference.
+
+### Open it to the LAN (needed for satellites)
+
+jarvisd refuses to bind anything but loopback without TLS — it will not serve
+device tokens in the clear on a network. So the certificate comes first:
+
+```bash
+sudo ./install/generate-tls-cert.sh          # writes /var/lib/jarvis/tls
+sudo nano /etc/jarvis/jarvisd.toml           # bind = "0.0.0.0:8741"; uncomment [server.tls]
+sudo systemctl restart jarvisd
+```
+
+It is self-signed, and that is the design: there is no CA in a house, so each
+node **pins** this certificate's fingerprint when it pairs (ADR-031 §4).
+Generate it **once** — regenerating it invalidates every paired node, which is
+why the script refuses to overwrite an existing one.
 
 ### Add a satellite
 
 A node with a microphone and speakers that answers to "hey jarvis". It is a
-**user** service — it needs your graphical session's audio devices.
+**user** service — it needs your graphical session's audio devices, and it
+needs the LAN listener above.
 
 ```bash
 sudo install -m0755 bin/jarvis-agent /usr/local/bin/
@@ -84,10 +104,13 @@ without the other and the restore looks complete and is not** — so these scrip
 cross-check the two and refuse when they disagree.
 
 ```bash
-# nightly, via a systemd timer — run as root so it can read the installed secrets
+# nightly, via a systemd timer — run as root so it can read the installed secrets.
+# JARVIS_PG_CONTAINER runs pg_dump inside Postgres's own container: an installed
+# host has no postgresql-client, and the container's tools always match its server.
 sudo bash -c '
   set -a; . /etc/jarvis/secrets.env; set +a
   DATABASE_URL="$JARVIS_DB_URL" JARVIS__STORAGE__ARTIFACTS_ROOT=/var/lib/jarvis/artifacts \
+    JARVIS_PG_CONTAINER=jarvis-postgres-1 \
     ./install/backup.sh /var/backups/jarvis
 '
 
@@ -104,6 +127,7 @@ the matching **old** binary against it too, or you reproduce the failure.
 sudo bash -c '
   set -a; . /etc/jarvis/secrets.env; set +a
   DATABASE_URL="$JARVIS_DB_URL" JARVIS__STORAGE__ARTIFACTS_ROOT=/var/lib/jarvis/artifacts \
+    JARVIS_PG_CONTAINER=jarvis-postgres-1 \
     ./install/restore.sh /var/backups/jarvis/jarvis-<timestamp> --force
 '
 ```

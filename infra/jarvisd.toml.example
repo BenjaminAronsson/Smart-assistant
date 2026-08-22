@@ -14,17 +14,37 @@
 #     otherwise. A fresh install talks to nothing.
 
 [server]
-# 0.0.0.0 only once TLS is configured below: nodes reach this over the LAN,
-# and everything they send is authenticated but not, without TLS, private.
-bind = "0.0.0.0:8741"
+# LOOPBACK BY DEFAULT, and the third rule of this file: a fresh install is not
+# reachable from the network until you say so.
+#
+# jarvisd refuses to bind anything but loopback without [server.tls] below
+# (docs/06 §7) — it will not serve device tokens in the clear on a LAN. So the
+# two settings move together, and the packaged default is the pair that works
+# with nothing else installed: loopback, plaintext, `http://127.0.0.1:8741/`.
+#
+# To let satellites reach this daemon over the LAN, do both, in this order:
+#
+#   sudo infra/install/generate-tls-cert.sh      # writes /var/lib/jarvis/tls
+#   then set bind = "0.0.0.0:8741" and uncomment [server.tls] below.
+#
+# The order matters: with 0.0.0.0 + [server.tls] pointing at a certificate that
+# is not there yet, the daemon fail-fasts at startup rather than binding — by
+# design, since the alternative is a listener whose identity nodes cannot pin.
+bind = "127.0.0.1:8741"
 
-[server.tls]
+# Static Angular assets. install.sh rewrites this line to the installed path
+# (/var/lib/jarvis/web) — it MUST stay inside this [server] table: a second
+# `[server]` header later in the file is invalid TOML and the daemon refuses to
+# load at all.
+# web_assets = "/var/lib/jarvis/web"
+
+# [server.tls]
 # Generate with infra/install/generate-tls-cert.sh. Self-signed and PINNED by
 # each node at pairing (ADR-031 §4) — regenerating these invalidates every
 # paired node, which is the correct behaviour and a real inconvenience, so do
 # it deliberately.
-cert_path = "/var/lib/jarvis/tls/cert.pem"
-key_path = "/var/lib/jarvis/tls/key.pem"
+# cert_path = "/var/lib/jarvis/tls/cert.pem"
+# key_path = "/var/lib/jarvis/tls/key.pem"
 
 [database]
 # NOT a keyring reference, and the reason is load-bearing (F10.9).

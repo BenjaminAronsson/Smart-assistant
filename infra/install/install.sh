@@ -145,24 +145,35 @@ if [[ -z "$DESTDIR" && -f /etc/jarvis/jarvisd.toml && -x /usr/local/bin/jarvisd 
     ok "delegating to update.sh (backup → migrate → health gate)"
     printf '   backups: %s\n' "$BACKUP_ROOT"
     if (( DRY_RUN )); then
-        printf '   would: systemctl stop jarvisd; %s/update.sh %s\n' "$HERE" "$BACKUP_ROOT"
+        printf '   would: systemctl stop jarvisd; %s/update.sh --payload %s %s\n' \
+            "$HERE" "$SRC" "$BACKUP_ROOT"
         exit 0
     fi
     systemctl stop jarvisd || true
-    # Binaries first: update.sh's health gate must judge the NEW daemon.
-    install -m 0755 "$SRC/bin/jarvisd" "$SRC/bin/jarvis-agent" /usr/local/bin/
-    rm -rf /var/lib/jarvis/web && cp -r "$SRC/web" /var/lib/jarvis/web
-    # Same reason as the binaries above: /var/lib/jarvis/migrations is one of
-    # update.sh's sqlx-cli fallback candidates (used when jarvisd is not yet on
-    # PATH). Refreshing it here means that candidate always matches the
-    # version being installed NOW, not whatever was on disk at the original
-    # install — this directory is otherwise written once, at first install,
-    # and never touched again by this branch.
-    rm -rf /var/lib/jarvis/migrations && cp -r "$SRC/migrations" /var/lib/jarvis/migrations
+    # THE PAYLOAD IS NOT INSTALLED HERE. It is handed to update.sh with
+    # --payload, which installs it in the one window where that is safe: after
+    # the verified backup, before the migrations.
+    #
+    # This script used to overwrite /usr/local/bin/jarvisd first, so that
+    # update.sh's health gate would judge the new daemon. But update.sh's very
+    # first step is the backup, and its abort message on a failed backup says
+    # "Your house is untouched" — which by then was a lie: jarvisd was stopped
+    # and the old binary was gone, leaving an operator with neither a backup
+    # nor the binary matching the schema on disk. Ordering, not wording, is the
+    # fix: nothing is mutated until there is something to roll back to.
     set -a; . /etc/jarvis/secrets.env; set +a
+    # backup.sh runs pg_dump inside the SERVER'S OWN CONTAINER when this is
+    # set, and on a stock installed host that is the only way it can run at
+    # all: `apt install docker.io docker-compose-plugin libasound2t64` (the
+    # README's line) installs no postgresql-client, so a host pg_dump is simply
+    # not found and the backup — and therefore the whole upgrade — fails.
+    # Using the container also guarantees the client/server version match that
+    # backup.sh already refuses to proceed without. prod.yml sets
+    # `name: jarvis` and the service is `postgres`, hence jarvis-postgres-1.
     DATABASE_URL="$JARVIS_DB_URL" \
+        JARVIS_PG_CONTAINER="${JARVIS_PG_CONTAINER:-jarvis-postgres-1}" \
         JARVIS__STORAGE__ARTIFACTS_ROOT=/var/lib/jarvis/artifacts \
-        "$HERE/update.sh" "$BACKUP_ROOT"
+        "$HERE/update.sh" --payload "$SRC" "$BACKUP_ROOT"
     exit $?
 fi
 
@@ -229,6 +240,15 @@ elif (( DRY_RUN )); then
     printf '   would: generate %s\n' "$secrets"
 else
     password="$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 32)"
+    # The umask is scoped to a SUBSHELL. A bare `umask 077` here leaked into
+    # everything the rest of this script created — jarvisd.toml and both unit
+    # files came out 0600 root-only, and jarvisd (User=jarvis) then failed to
+    # read its own config on every boot.
+    #
+    # It still has to be a umask and not just the chmod below: umask closes the
+    # window between creat() and chmod() during which the password would be
+    # world-readable on a multi-user host.
+    (
     umask 077
     cat > "$secrets" <<EOF
 # Written by install.sh. Root-only, mode 0600 (F10.9).
@@ -242,6 +262,7 @@ else
 JARVIS_PG_PASSWORD=$password
 JARVIS_DB_URL=postgres://jarvis:$password@127.0.0.1:5432/jarvis
 EOF
+    )
     chmod 0600 "$secrets"
     ok "generated $secrets"
 fi
@@ -255,10 +276,31 @@ else
     example="$SRC/jarvisd.toml.example"; [[ -f "$example" ]] || example="$SRC/infra/jarvisd.toml.example"
     run cp "$example" "$config"
     if (( ! DRY_RUN )); then
-        printf '\n[server]\nweb_assets = "/var/lib/jarvis/web"\n' >> "$config"
+        # Set web_assets INSIDE the [server] table the example already
+        # declares. This used to append a whole second `[server]` header, which
+        # TOML forbids ("Cannot declare ('server',) twice") — and since
+        # Config::load() runs before the subcommand match in jarvisd's main(),
+        # the `jarvisd migrate` step below died and EVERY fresh install aborted
+        # on `migrations failed — jarvisd was NOT started`.
+        #
+        # Rewriting the packaged (commented) line rather than inserting one
+        # keeps the anchor visible in the example file, so this cannot silently
+        # start writing into the wrong table after an edit up there. If the
+        # anchor is gone, stop: a config with no web_assets serves no UI, and
+        # discovering that from a blank page later is far worse than here.
+        grep -qE '^[[:space:]]*#?[[:space:]]*web_assets[[:space:]]*=' "$config" \
+            || die "the packaged jarvisd.toml.example has no web_assets line under [server] to set"
+        sed -i -E 's|^[[:space:]]*#?[[:space:]]*web_assets[[:space:]]*=.*|web_assets = "/var/lib/jarvis/web"|' "$config"
     fi
     ok "wrote $config from the packaged example"
 fi
+# Unconditionally, including on the keep-the-existing branch above: jarvisd
+# runs as User=jarvis and reads this file itself. An earlier install.sh leaked
+# `umask 077` out of the secrets heredoc and left this file 0600 root-only —
+# /etc/jarvis is 0755 so the path resolves, then figment's read returns EACCES,
+# an unreadable config is a fatal error, and the daemon fail-fasts on every
+# boot. Re-running the installer must heal a host in that state.
+run chmod 0644 "$config"
 
 # --- systemd -----------------------------------------------------------------
 step "systemd units"
@@ -266,6 +308,11 @@ units_src="$SRC/systemd"; [[ -d "$units_src" ]] || units_src="$SRC/infra/systemd
 run mkdir -p "$(d /etc/systemd/system)"
 run cp "$units_src/jarvis-deps.service" "$(d /etc/systemd/system/jarvis-deps.service)"
 run cp "$units_src/jarvisd.service" "$(d /etc/systemd/system/jarvisd.service)"
+# Same reason as the config above: these were 0600 root-only under the leaked
+# umask. systemd reads them as root so it did boot, but `systemctl cat jarvisd`
+# as the owner did not, and the mode is wrong for a world-readable unit file.
+run chmod 0644 "$(d /etc/systemd/system/jarvis-deps.service)"
+run chmod 0644 "$(d /etc/systemd/system/jarvisd.service)"
 ok "units installed (jarvis-agent.service is a USER unit — see the README)"
 
 if (( SKIP_SYSTEMD )) || [[ -n "$DESTDIR" ]]; then

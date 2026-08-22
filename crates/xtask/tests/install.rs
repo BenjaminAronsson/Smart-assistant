@@ -518,6 +518,453 @@ fn readme_leads_with_installing_and_is_not_stale() {
     }
 }
 
+/// Stages a fresh install under a private `--destdir` and returns its root.
+///
+/// Shared by the tests below so each one asserts on the file the installer
+/// ACTUALLY PRODUCES rather than on the example it copies from — the two
+/// diverged for the entire life of this feature, and every substring check
+/// against the example stayed green while no fresh install could start.
+fn stage_install(tag: &str) -> std::path::PathBuf {
+    let staging = std::env::temp_dir().join(format!(
+        "jarvis-install-{tag}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&staging);
+
+    let script = repo_root().join("infra/install/install.sh");
+    let output = Command::new("bash")
+        .arg(&script)
+        .arg("--destdir")
+        .arg(&staging)
+        .arg("--skip-preflight")
+        .arg("--skip-systemd")
+        .current_dir(repo_root())
+        .output()
+        .expect("install.sh runs");
+    assert!(
+        output.status.success(),
+        "install.sh --destdir failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    staging
+}
+
+/// Reads the staged `jarvisd.toml` through a real TOML parser and reports the
+/// three facts these tests care about, one per line.
+///
+/// Python's `tomllib` rather than a Rust crate because this crate takes on no
+/// new dependency to read one file, and `Command` is already how this file
+/// runs shell. A parser is the point: the defect below was invalid *syntax*,
+/// which no substring check can see.
+fn parse_staged_config(staging: &Path) -> String {
+    let config = staging.join("etc/jarvis/jarvisd.toml");
+    let output = Command::new("python3")
+        .arg("-c")
+        .arg(
+            r#"
+import sys, tomllib
+with open(sys.argv[1], "rb") as handle:
+    config = tomllib.load(handle)
+server = config.get("server", {})
+print("bind=%s" % server.get("bind"))
+print("web_assets=%s" % server.get("web_assets"))
+print("tls=%s" % ("yes" if server.get("tls") else "no"))
+"#,
+        )
+        .arg(&config)
+        .output()
+        .expect("python3 runs (used here as a TOML parser)");
+    assert!(
+        output.status.success(),
+        "the config install.sh produced is not valid TOML.\n\
+         file: {config:?}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// The blocker that made every fresh install abort.
+///
+/// install.sh appended `\n[server]\nweb_assets = …` to a config whose example
+/// ALREADY declares `[server]`. TOML forbids declaring a table twice, so the
+/// produced file failed to parse — and `Config::load()` runs before the
+/// subcommand match in jarvisd's `main()`, so the installer's own
+/// `jarvisd migrate` step died and the install ended on "migrations failed —
+/// jarvisd was NOT started". Every test in this file was green throughout: they
+/// all read `infra/jarvisd.toml.example`, which is fine, and none read the file
+/// the installer writes.
+#[test]
+fn the_config_install_sh_produces_parses_and_points_at_the_web_assets() {
+    let staging = stage_install("config");
+    let facts = parse_staged_config(&staging);
+
+    assert!(
+        facts.contains("web_assets=/var/lib/jarvis/web"),
+        "the staged config must set [server].web_assets to the installed \
+         path, or the daemon serves no UI. Got:\n{facts}"
+    );
+
+    std::fs::remove_dir_all(&staging).ok();
+}
+
+/// jarvisd runs as `User=jarvis` and reads its own config.
+///
+/// `umask 077` was set for the secrets heredoc and never restored, so it
+/// leaked into everything install.sh created afterwards: jarvisd.toml and both
+/// unit files came out 0600 root:root. /etc/jarvis is 0755, so the path
+/// resolves and then the read returns EACCES — an unreadable config is a fatal
+/// error, and the daemon fail-fasts on every boot of the machine this feature
+/// exists to set up.
+///
+/// The other half matters just as much: secrets.env must NOT drift open while
+/// this is being fixed.
+#[test]
+fn the_installed_files_carry_the_modes_the_service_account_needs() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let staging = stage_install("modes");
+    let mode = |relative: &str| -> u32 {
+        std::fs::metadata(staging.join(relative))
+            .unwrap_or_else(|error| panic!("stat {relative}: {error}"))
+            .permissions()
+            .mode()
+            & 0o777
+    };
+
+    assert_eq!(
+        mode("etc/jarvis/secrets.env"),
+        0o600,
+        "secrets.env holds the Postgres password; systemd reads it as root \
+         before dropping to User=jarvis, so nothing else may read it"
+    );
+    for readable in [
+        "etc/jarvis/jarvisd.toml",
+        "etc/systemd/system/jarvisd.service",
+        "etc/systemd/system/jarvis-deps.service",
+    ] {
+        assert_eq!(
+            mode(readable),
+            0o644,
+            "{readable} must be readable by User=jarvis — 0600 here is the \
+             leaked-umask bug, and it fail-fasts the daemon on every boot"
+        );
+    }
+
+    std::fs::remove_dir_all(&staging).ok();
+}
+
+/// A fresh install must be able to serve on the address it was configured for.
+///
+/// The shipped config had `bind = "0.0.0.0:8741"` with an ACTIVE
+/// `[server.tls]` pointing at `/var/lib/jarvis/tls/{cert,key}.pem`, and
+/// nothing in install.sh ever generated a certificate there. jarvisd loads the
+/// certificate unconditionally and propagates the error, deliberately — so the
+/// daemon refused to start before binding anything.
+///
+/// Both halves of the pair are checked, so either resolution passes and a
+/// half-applied one does not: loopback-plaintext (the shipped default), or
+/// non-loopback with TLS *and* an install.sh that generates the certificate.
+/// Note the second branch is not dead — it is what makes this test still
+/// correct if the default is ever flipped back.
+#[test]
+fn the_staged_config_never_names_a_certificate_nobody_generates() {
+    let staging = stage_install("tls");
+    let facts = parse_staged_config(&staging);
+    let installer = read("infra/install/install.sh");
+
+    let loopback = facts.contains("bind=127.0.0.1:") || facts.contains("bind=[::1]:");
+    let tls = facts.contains("tls=yes");
+
+    if tls {
+        assert!(
+            installer.contains("generate-tls-cert.sh"),
+            "the staged config enables [server.tls], so install.sh must \
+             generate the certificate it names — jarvisd loads it before it \
+             binds and refuses to start without it. Got:\n{facts}"
+        );
+    } else {
+        assert!(
+            loopback,
+            "the staged config has no [server.tls], so it may only bind \
+             loopback: jarvisd refuses a non-loopback bind without TLS \
+             (docs/06 §7) and would fail-fast on every boot. Got:\n{facts}"
+        );
+    }
+
+    std::fs::remove_dir_all(&staging).ok();
+}
+
+/// The README is the only documentation a host has, and it tells the owner to
+/// open `http://127.0.0.1:8741/`. That URL is a claim about the packaged
+/// config: plaintext, on loopback. Either the config matches it or the README
+/// is wrong the first time anyone reads it.
+#[test]
+fn the_readme_url_matches_the_packaged_bind() {
+    let staging = stage_install("readme-url");
+    let facts = parse_staged_config(&staging);
+    let readme = read("README.md");
+
+    if readme.contains("http://127.0.0.1:8741") {
+        assert!(
+            facts.contains("bind=127.0.0.1:8741") && facts.contains("tls=no"),
+            "the README sends the owner to http://127.0.0.1:8741/, but the \
+             packaged config does not serve plaintext there. Got:\n{facts}"
+        );
+    }
+    assert!(
+        readme.contains("generate-tls-cert.sh"),
+        "the README must document how to turn TLS on — satellites cannot pair \
+         without it, and the config no longer enables it by default"
+    );
+
+    std::fs::remove_dir_all(&staging).ok();
+}
+
+/// Ordering, in the one script that owns it.
+///
+/// install.sh used to install the new binaries and THEN call update.sh, whose
+/// first step is the backup. So a failed backup aborted with "Your house is
+/// untouched" over a host whose daemon was stopped and whose old binary was
+/// already gone — the operator had neither a rollback point nor the binary
+/// that matched the schema on disk.
+///
+/// This asserts on offsets in update.sh rather than on a substring anywhere in
+/// it, because the defect was never a missing step: every step was present, in
+/// the wrong order. Running a real upgrade needs root, systemd and a live
+/// database, none of which a unit test may have — so the ordering is checked
+/// where it is decided.
+#[test]
+fn the_upgrade_backs_up_before_it_replaces_anything() {
+    let update = read("infra/install/update.sh");
+
+    let backup_at = update
+        .find("\"$HERE/backup.sh\"")
+        .expect("update.sh calls backup.sh");
+    let payload_at = update
+        .find("install -m 0755 \"$PAYLOAD/bin/jarvisd\"")
+        .expect("update.sh installs the delegated payload");
+    let migrate_at = update
+        .find("jarvisd migrate")
+        .expect("update.sh applies migrations");
+
+    assert!(
+        backup_at < payload_at,
+        "update.sh replaces the binaries before taking the backup — its own \
+         abort message then says 'your house is untouched' about a host that \
+         has already lost its old daemon"
+    );
+    assert!(
+        payload_at < migrate_at,
+        "update.sh migrates before installing the payload — the OLD binary's \
+         embedded migration stream would run, and the health gate would judge \
+         the OLD daemon: an upgrade that reports success without upgrading"
+    );
+
+    let installer = read("infra/install/install.sh");
+    let upgrade_branch_at = installer
+        .find("existing install detected")
+        .expect("install.sh has an upgrade branch");
+    let delegation_at = installer[upgrade_branch_at..]
+        .find("update.sh")
+        .map(|offset| upgrade_branch_at + offset)
+        .expect("the upgrade branch delegates to update.sh");
+    let upgrade_branch = &installer[upgrade_branch_at..delegation_at];
+    assert!(
+        !upgrade_branch.contains("/usr/local/bin/"),
+        "install.sh writes /usr/local/bin before delegating to update.sh — the \
+         payload must be handed over with --payload so it lands after the \
+         verified backup. Got:\n{upgrade_branch}"
+    );
+    assert!(
+        installer.contains("--payload"),
+        "install.sh must hand the payload to update.sh with --payload"
+    );
+}
+
+/// The backup has to be able to RUN, and on a stock host it could not.
+///
+/// backup.sh uses a host `pg_dump` unless `JARVIS_PG_CONTAINER` names a
+/// container — and the README's `apt install` line installs no
+/// postgresql-client, install.sh's preflight does not check for one, and
+/// install.sh never set the variable. So `pg_dump` was not found, the backup
+/// failed, and the upgrade aborted on a host that had already been changed.
+///
+/// The container name is derived from prod.yml rather than hardcoded twice:
+/// compose builds it as `<project>-<service>-1`, so renaming the project in
+/// prod.yml alone would silently point the backup at a container that does not
+/// exist — and the symptom would again be an upgrade that cannot back up.
+#[test]
+fn the_upgrade_backs_up_through_the_database_container() {
+    let installer = read("infra/install/install.sh");
+    let prod = read("infra/compose/prod.yml");
+
+    let project = prod
+        .lines()
+        .find_map(|line| line.strip_prefix("name:"))
+        .map(str::trim)
+        .expect("prod.yml sets a compose project name");
+    let expected = format!("{project}-postgres-1");
+
+    assert!(
+        installer.contains("JARVIS_PG_CONTAINER"),
+        "install.sh must pass JARVIS_PG_CONTAINER when it delegates an \
+         upgrade: an installed host has no pg_dump, so backup.sh — and \
+         therefore the whole upgrade — cannot run without it"
+    );
+    assert!(
+        installer.contains(&expected),
+        "install.sh must name the container compose actually creates \
+         ({expected}, from prod.yml's `name: {project}` plus the postgres \
+         service). Got a different name, which backup.sh would fail to exec into."
+    );
+
+    let readme = read("README.md");
+    assert!(
+        readme.contains("JARVIS_PG_CONTAINER"),
+        "the README's backup recipe must set JARVIS_PG_CONTAINER too — run \
+         verbatim on a stock host it fails on a missing pg_dump"
+    );
+}
+
+/// Nothing ever restarted the daemon, so every documented upgrade failed.
+///
+/// update.sh's step 3 printed "start jarvisd now, then this script waits" —
+/// written for a human driving it by hand. install.sh runs it
+/// non-interactively after `systemctl stop jarvisd` and never started it
+/// again, so `sudo ./install/install.sh` polled a stopped daemon for two
+/// minutes and then printed restore instructions over a database that had
+/// migrated perfectly well.
+///
+/// This runs the real script with stubs: a backup that succeeds, a `jarvisd`
+/// on PATH that "migrates", a health URL nothing answers, and one attempt
+/// instead of sixty. The start hook must have fired before the poll — proven
+/// by the marker file it leaves — and the script must still fail, because the
+/// daemon never came up. Nothing here touches /usr/local/bin: no --payload is
+/// passed.
+#[test]
+fn the_upgrade_starts_the_daemon_before_it_health_gates_it() {
+    let sandbox = std::env::temp_dir().join(format!("jarvis-update-start-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&sandbox);
+    let bin = sandbox.join("bin");
+    let backups = sandbox.join("backups");
+    std::fs::create_dir_all(&bin).expect("sandbox bin");
+    std::fs::create_dir_all(&backups).expect("sandbox backups");
+
+    // A backup that succeeds and leaves a rollback point where update.sh
+    // looks for one.
+    let stub_dir = sandbox.join("install");
+    std::fs::create_dir_all(&stub_dir).expect("sandbox install dir");
+    std::fs::copy(
+        repo_root().join("infra/install/update.sh"),
+        stub_dir.join("update.sh"),
+    )
+    .expect("copy update.sh");
+    write_executable(
+        &stub_dir.join("backup.sh"),
+        "#!/usr/bin/env bash\nmkdir -p \"$1/jarvis-00000000T000000Z\"\nexit 0\n",
+    );
+    // `jarvisd migrate` succeeds; the upgrade then depends entirely on step 3.
+    write_executable(&bin.join("jarvisd"), "#!/usr/bin/env bash\nexit 0\n");
+
+    let marker = sandbox.join("started");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = Command::new("bash")
+        .arg(stub_dir.join("update.sh"))
+        .arg(&backups)
+        .env("PATH", path)
+        .env("DATABASE_URL", "postgres://jarvis:x@127.0.0.1:5432/jarvis")
+        .env("JARVIS__STORAGE__ARTIFACTS_ROOT", sandbox.join("artifacts"))
+        .env("JARVIS_START_CMD", format!("touch {}", marker.display()))
+        // Port 1 answers nothing, so the gate fails on its first attempt.
+        .env("JARVIS_HEALTH_URL", "http://127.0.0.1:1/health")
+        .env("JARVIS_HEALTH_ATTEMPTS", "1")
+        .output()
+        .expect("update.sh runs");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        marker.exists(),
+        "update.sh reached its health gate without starting the daemon — the \
+         exact reason every non-interactive upgrade timed out.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !output.status.success(),
+        "a daemon that never reports healthy must fail the upgrade"
+    );
+    assert!(
+        stderr.contains("restore.sh"),
+        "the F10.3 failure message (how to roll back) must survive.\nstderr:\n{stderr}"
+    );
+
+    // The standalone, human-driven path this script documents must still
+    // exist: with the start command explicitly empty, it asks rather than acts.
+    let output = Command::new("bash")
+        .arg(stub_dir.join("update.sh"))
+        .arg(&backups)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env("DATABASE_URL", "postgres://jarvis:x@127.0.0.1:5432/jarvis")
+        .env("JARVIS__STORAGE__ARTIFACTS_ROOT", sandbox.join("artifacts"))
+        .env("JARVIS_START_CMD", "")
+        .env("JARVIS_HEALTH_URL", "http://127.0.0.1:1/health")
+        .env("JARVIS_HEALTH_ATTEMPTS", "1")
+        .output()
+        .expect("update.sh runs standalone");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("start jarvisd now"),
+        "the standalone path must still tell a human what to do.\nstdout:\n{stdout}"
+    );
+
+    std::fs::remove_dir_all(&sandbox).ok();
+}
+
+/// `--payload` is new argument parsing on the script that owns the upgrade, so
+/// it is checked the way install.sh's parser is: by running it. A payload that
+/// is not an unpacked release must be refused BEFORE the backup, since the
+/// alternative is discovering it after the database has been migrated.
+#[test]
+fn update_refuses_a_payload_that_is_not_a_release() {
+    let script = repo_root().join("infra/install/update.sh");
+    let output = Command::new("bash")
+        .arg(&script)
+        .args(["--payload", "/nonexistent-payload", "/nonexistent-backups"])
+        .env("DATABASE_URL", "postgres://jarvis:x@127.0.0.1:5432/jarvis")
+        .output()
+        .expect("update.sh runs");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("does not look like an unpacked release"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("1/3 backup"),
+        "a bad --payload must be caught before anything is touched"
+    );
+}
+
+fn write_executable(path: &Path, contents: &str) {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::write(path, contents).unwrap_or_else(|error| panic!("writing {path:?}: {error}"));
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        .unwrap_or_else(|error| panic!("chmod {path:?}: {error}"));
+}
+
 /// Verifying must come before installing, in that order, on the page.
 ///
 /// install.sh runs as root. A README that shows the install command first and

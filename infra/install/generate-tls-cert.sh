@@ -36,7 +36,22 @@ openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
 chmod 600 "$OUT_DIR/key.pem"
 chmod 644 "$OUT_DIR/cert.pem"
 
+# The daemon that has to READ this key runs as User=jarvis (a system unit with
+# ProtectHome=true). Root-owned 0600 under a 0700 directory is exactly right
+# for a private key and exactly unreadable for jarvisd: it would fail to load
+# [server.tls], and a certificate that cannot be loaded stops startup before
+# anything binds (crates/jarvisd/src/main.rs). Hand it to the service account
+# here — install.sh's `chown -R` has already run by the time anyone gets here,
+# so nothing else will.
+if id jarvis >/dev/null 2>&1 && [[ "$(id -u)" -eq 0 ]]; then
+    chown -R jarvis:jarvis "$OUT_DIR"
+    echo "owner: jarvis:jarvis (the service account that reads the key)"
+fi
+
 echo "wrote $OUT_DIR/cert.pem and $OUT_DIR/key.pem"
+echo
+echo "Now edit /etc/jarvis/jarvisd.toml: set bind = \"0.0.0.0:8741\" and"
+echo "uncomment [server.tls], then: systemctl restart jarvisd"
 echo
 echo "fingerprint nodes will pin (sha256 of the DER):"
 openssl x509 -in "$OUT_DIR/cert.pem" -outform DER | sha256sum | cut -d' ' -f1

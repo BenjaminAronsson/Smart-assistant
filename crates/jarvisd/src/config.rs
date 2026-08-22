@@ -1310,6 +1310,61 @@ mod tests {
         Config::from_figment(Figment::new().merge(Toml::string(toml)))
     }
 
+    /// The file every installed host starts from must load through the real
+    /// type — `deny_unknown_fields`, defaults, `validate()` and all — not
+    /// merely look plausible to a substring check.
+    ///
+    /// The `[server]` assertions are the F10.9 blocker in miniature:
+    /// install.sh set `web_assets` by APPENDING a second `[server]` header,
+    /// which TOML forbids, so the config it produced could not be parsed at
+    /// all and `jarvisd migrate` died on every fresh install. The fix is a
+    /// commented anchor line inside the one `[server]` table for install.sh to
+    /// rewrite in place; these two assertions are what keep that anchor there.
+    /// (What the installer actually writes is checked end-to-end in
+    /// crates/xtask/tests/install.rs — this test guards the input to it.)
+    ///
+    /// The bind/TLS assertion is weaker than it looks and deliberately so:
+    /// `validate()` accepts `0.0.0.0` + `[server.tls]` naming files that do
+    /// not exist, because paths are checked when the listener loads them, not
+    /// here. Whether anything generates that certificate is therefore asserted
+    /// where it can be observed — against the staged install, in install.rs.
+    #[test]
+    fn the_packaged_example_config_loads_and_validates() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../infra/jarvisd.toml.example")
+            .canonicalize()
+            .expect("infra/jarvisd.toml.example exists");
+        let text = std::fs::read_to_string(&path).expect("the example config is readable");
+
+        let config = load(&text).expect("the packaged example config must load and validate");
+
+        // install.sh sets this by rewriting the commented line in place. If
+        // the anchor disappears the installer die()s, but say so here too:
+        // this is the line whose absence used to be "fixed" by appending a
+        // second [server] header.
+        assert!(
+            text.lines()
+                .any(|line| line.trim_start().starts_with("# web_assets")),
+            "the example must keep a commented web_assets line inside [server] \
+             for install.sh to rewrite — appending a second [server] table \
+             instead is invalid TOML"
+        );
+        assert_eq!(
+            text.matches("\n[server]").count(),
+            1,
+            "[server] may be declared exactly once"
+        );
+
+        // The packaged pair is loopback + plaintext: nothing generates a
+        // certificate during a fresh install, and validate() would refuse a
+        // non-loopback bind without one anyway.
+        assert!(
+            config.bind_addr().ip().is_loopback() || config.server.tls.is_some(),
+            "the packaged bind {} needs TLS and the example does not configure it",
+            config.server.bind
+        );
+    }
+
     #[test]
     fn elevenlabs_without_a_voice_pipeline_is_refused() {
         let error = load(
