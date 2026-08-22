@@ -7,6 +7,7 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 env:
@@ -181,3 +182,89 @@ jobs:
       # and git for the real coding worker.
       - name: golden traces 1-7 + M3a acceptance scenarios
         run: cargo xtask golden
+
+  install-artifact:
+    name: the signed release installs on a clean host
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.1"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: audio build dependencies (cpal → ALSA, F8.2)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: cargo install cargo-deny --locked
+      - name: cut a release
+        run: |
+          set -euo pipefail
+          # An EPHEMERAL key. This proves the pipeline produces a verifiable
+          # release, not that a particular key signed it — the real signing key
+          # never goes near a CI runner (docs/06 §9).
+          ssh-keygen -t ed25519 -N "" -f /tmp/ci-release-key
+          JARVIS_RELEASE_KEY=/tmp/ci-release-key infra/install/release.sh /tmp/rel
+          infra/install/verify-release.sh /tmp/rel/jarvis-*
+      - name: install it in a container that has never had Jarvis
+        run: |
+          set -euo pipefail
+          release=$(ls -d /tmp/rel/jarvis-*)
+          # A pristine ubuntu:24.04 — no Rust, no Node, no source tree. That is
+          # the whole claim. systemd does not run usefully in a container, so
+          # --skip-systemd: this proves PREFLIGHT and PLACEMENT. Boot ordering
+          # stays a human check, and docs/09 says so, rather than being faked
+          # with a check that stays green while the system is broken.
+          docker run --rm -v "$release:/release:ro" ubuntu:24.04 bash -euxc '
+            apt-get update -qq
+            apt-get install -y -qq libasound2t64 curl ca-certificates >/dev/null
+            cp -r /release /install && cd /install
+            ./install/install.sh --skip-preflight --skip-systemd
+
+            test -x /usr/local/bin/jarvisd
+            test -f /etc/jarvis/jarvisd.toml
+            test -f /etc/jarvis/compose/prod.yml
+            test -f /etc/systemd/system/jarvis-deps.service
+            test -d /var/lib/jarvis/web
+
+            # Root-only, and not a placeholder.
+            [ "$(stat -c %a /etc/jarvis/secrets.env)" = "600" ]
+            grep -q "^JARVIS_DB_URL=postgres://" /etc/jarvis/secrets.env
+            ! grep -q "jarvis-dev-only" /etc/jarvis/secrets.env
+
+            # The binary runs at all — the glibc question, answered.
+            /usr/local/bin/jarvisd frobnicate 2>&1 | grep -q usage
+          '
+      - name: package for release
+        run: |
+          set -euo pipefail
+          release=$(ls -d /tmp/rel/jarvis-*)
+          name=$(basename "$release")
+          tar --zstd -cf "$name-x86_64-linux-gnu.tar.zst" -C /tmp/rel "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-release
+          path: "*.tar.zst"
+          retention-days: 14
+
+  release:
+    name: publish the release
+    runs-on: ubuntu-latest
+    needs: [install-artifact]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: jarvis-release
+          path: dist
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # NOTE: this publishes the CI-signed build, whose key is ephemeral and
+        # proves only internal consistency. A release an owner should trust is
+        # cut locally with the real key (docs/06 §9) — verify-release.sh says
+        # as much in its own output.
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --generate-notes --repo "${GITHUB_REPOSITORY}"
