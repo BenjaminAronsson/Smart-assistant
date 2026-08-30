@@ -69,7 +69,20 @@ PG_CONTAINER="${JARVIS_PG_CONTAINER:-}"
 # percent-encoded to be a valid URI, and libpq decodes it — PGPASSWORD does not.
 DSN="$DATABASE_URL"
 if [[ "$DATABASE_URL" =~ ^([a-zA-Z][a-zA-Z0-9+.-]*://)([^:@/]+):([^@]*)@(.*)$ ]]; then
-	PGPASSWORD="$(printf '%b' "${BASH_REMATCH[3]//%/\\x}")"
+	# Only when there is something to decode, and with literal backslashes
+	# protected first: `printf %b` interprets \n, \t and friends, so a password
+	# containing a backslash came out as a different password and Postgres
+	# answered "password authentication failed" for a credential that was right.
+	# A bare `%` not followed by two hex digits is not a valid URI password to
+	# begin with (it MUST be percent-encoded to appear here at all), so leaving
+	# that case to produce nonsense is the same answer libpq gives.
+	raw="${BASH_REMATCH[3]}"
+	if [[ "$raw" == *%* ]]; then
+		esc="${raw//\\/\\\\}"
+		PGPASSWORD="$(printf '%b' "${esc//%/\\x}")"
+	else
+		PGPASSWORD="$raw"
+	fi
 	export PGPASSWORD
 	DSN="${BASH_REMATCH[1]}${BASH_REMATCH[2]}@${BASH_REMATCH[4]}"
 fi

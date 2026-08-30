@@ -26,9 +26,10 @@ DESTDIR=""
 DRY_RUN=0
 SKIP_PREFLIGHT=0
 SKIP_SYSTEMD=0
+SKIP_VERIFY=0
 BACKUP_ROOT="${JARVIS_BACKUP_ROOT:-/var/backups/jarvis}"
 
-USAGE='usage: install.sh [--destdir DIR] [--dry-run] [--skip-preflight] [--skip-systemd]'
+USAGE='usage: install.sh [--destdir DIR] [--dry-run] [--skip-verify] [--skip-preflight] [--skip-systemd]'
 
 # Defined here rather than beside step()/ok()/die() below, because the argument
 # loop must be able to abort. THIS SCRIPT'S DOCUMENTED INVOCATION IS
@@ -59,6 +60,10 @@ while (( "$#" )); do
         --destdir=*)
             DESTDIR="${1#*=}"
             [[ -n "$DESTDIR" ]] || usage_error "--destdir= was given an empty directory; an empty DESTDIR installs onto this host"
+            # Same guard as the separate-word arm below. `--destdir=-x` is the
+            # same typo as `--destdir -x`, and refusing one while accepting the
+            # other is how the next person concludes the check is decorative.
+            [[ "$DESTDIR" != -* ]] || usage_error "--destdir was given '$DESTDIR', which looks like a flag rather than a directory"
             shift
             ;;
         --destdir)
@@ -73,6 +78,7 @@ while (( "$#" )); do
             shift 2
             ;;
         --dry-run)        DRY_RUN=1; shift ;;
+        --skip-verify)    SKIP_VERIFY=1; shift ;;
         --skip-preflight) SKIP_PREFLIGHT=1; shift ;;
         --skip-systemd)   SKIP_SYSTEMD=1; shift ;;
         -h|--help)        sed -n '2,20p' "$0"; exit 0 ;;
@@ -101,6 +107,37 @@ run() {
 }
 
 d() { printf '%s%s' "$DESTDIR" "$1"; }   # destdir-prefixed path
+
+# --- verify the artifact, before running any of it as root -------------------
+#
+# Everything below this line copies files out of $SRC and onto the host, and the
+# README tells the owner to run this script with sudo. Until now the only thing
+# enforcing "verify first" was the ORDER OF TWO LINES IN THE README — and the
+# test that guards that (install.rs::readme_verifies_before_it_installs) asserts
+# the documentation is in the right order, not that anything checks. An owner who
+# skipped a line, or whose verify-release.sh failed while they were reading the
+# output rather than $?, got a root install of an unverified tarball.
+#
+# So the installer checks for itself. Only in the tarball layout: a source tree
+# has no signature to check, and is the developer's own working copy anyway.
+#
+# --skip-verify exists for the case where verification already happened out of
+# band (CI cuts a release, verifies it, and then installs it), and it has to say
+# so out loud, because a silent escape hatch is how this protection gets turned
+# off in a script nobody re-reads.
+if [[ "$LAYOUT" == tarball ]] && (( ! SKIP_VERIFY )); then
+    step "release signature"
+    if [[ ! -f "$SRC/SHA256SUMS" ]]; then
+        die "$SRC has bin/ but no SHA256SUMS — this is not a signed release.
+   Download the release again, or pass --skip-verify if you built it yourself."
+    fi
+    "$HERE/verify-release.sh" "$SRC" \
+        || die "the release did not verify — NOT installing.
+   Re-download it. Do not pass --skip-verify to get past this."
+elif [[ "$LAYOUT" == tarball ]]; then
+    step "release signature"
+    printf '   SKIPPED (--skip-verify): installing an artifact this script has not checked.\n'
+fi
 
 # --- preflight ---------------------------------------------------------------
 #
@@ -201,7 +238,13 @@ if [[ -z "$DESTDIR" && -f /etc/jarvis/jarvisd.toml && -x /usr/local/bin/jarvisd 
     # Using the container also guarantees the client/server version match that
     # backup.sh already refuses to proceed without. prod.yml sets
     # `name: jarvis` and the service is `postgres`, hence jarvis-postgres-1.
+    # JARVIS_SKIP_VERIFY=1 unconditionally: this script has already verified
+    # $SRC (or was explicitly told not to, which update.sh must honour the same
+    # way). Passing our decision on rather than letting update.sh re-derive it
+    # keeps one policy, and keeps `--skip-verify` meaning the same thing on both
+    # sides of the delegation.
     DATABASE_URL="$JARVIS_DB_URL" \
+        JARVIS_SKIP_VERIFY=1 \
         JARVIS_PG_CONTAINER="${JARVIS_PG_CONTAINER:-jarvis-postgres-1}" \
         JARVIS__STORAGE__ARTIFACTS_ROOT=/var/lib/jarvis/artifacts \
         "$HERE/update.sh" --payload "$SRC" "$BACKUP_ROOT"
@@ -346,17 +389,31 @@ run chmod 0644 "$(d /etc/systemd/system/jarvis-deps.service)"
 run chmod 0644 "$(d /etc/systemd/system/jarvisd.service)"
 ok "units installed (jarvis-agent.service is a USER unit — see the README)"
 
+# Ownership is NOT a systemd concern, and bundling it into the branch below meant
+# `--skip-systemd` left /var/lib/jarvis root-owned on a real host — so `User=jarvis`
+# could not write the artifact store the first time anyone did start the unit.
+# (`update.sh` guards the same thing explicitly on the upgrade path.) It is still
+# skipped for a staging install: with --destdir there is no jarvis account to own
+# anything, and the files belong to whoever unpacks them later.
+if [[ -z "$DESTDIR" ]]; then
+    run chown -R jarvis:jarvis /var/lib/jarvis
+fi
+
 if (( SKIP_SYSTEMD )) || [[ -n "$DESTDIR" ]]; then
     ok "not touching systemd (--skip-systemd or --destdir)"
 else
-    run chown -R jarvis:jarvis /var/lib/jarvis
     run systemctl daemon-reload
     run systemctl enable --now jarvis-deps
 
     step "migrations"
     if (( ! DRY_RUN )); then
         set -a; . /etc/jarvis/secrets.env; set +a
-        JARVIS_CONFIG=/etc/jarvis/jarvisd.toml /usr/local/bin/jarvisd migrate \
+        # No JARVIS_CONFIG= here: Config::load() reads /etc/jarvis/jarvisd.toml,
+        # $HOME/.config/jarvis/jarvisd.toml and JARVIS__-prefixed variables, and
+        # nothing named JARVIS_CONFIG. Setting it looked like it selected the
+        # config and selected nothing; it worked only because the value happened
+        # to equal the hard-coded path.
+        /usr/local/bin/jarvisd migrate \
             || die "migrations failed — jarvisd was NOT started"
         ok "migrations applied"
     fi

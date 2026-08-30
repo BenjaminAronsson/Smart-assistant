@@ -105,6 +105,36 @@ pub fn stage(dest: &Path, version: Option<&str>) -> anyhow::Result<()> {
     sh(&root.join("web"), "npm", &["run", "build"])?;
 
     println!("staging into {}...", dest.display());
+
+    // THE DESTINATION IS EMPTIED FIRST, and that is load-bearing since F10.9
+    // made SHA256SUMS an ENUMERATION OF WHAT IS ON DISK rather than a fixed
+    // list. Removing only the paths in `staged_layout` leaves behind anything a
+    // previous stage wrote that has since been renamed or deleted from the tree
+    // — a removed web/ chunk, a script that got a new name — and that leftover
+    // is then checksummed, signed, shipped, and accepted by verify-release.sh,
+    // because it is listed. `assert_manifest_plausible` does not catch it
+    // either: it enforces a floor, not an exact set.
+    //
+    // Guarded, because this is `rm -rf` on a caller-supplied path: an existing
+    // destination must be empty or look like a previous stage (release.sh
+    // stages into `$OUT_ROOT/jarvis-$VERSION`). `cargo xtask dist --stage ~`
+    // must not be a way to lose a home directory.
+    if dest.exists() {
+        let is_previous_stage = dest.join("bin").is_dir() || dest.join("install").is_dir();
+        let is_empty = std::fs::read_dir(dest)?.next().is_none();
+        let named_like_a_release = dest
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("jarvis-"));
+        if !(is_empty || is_previous_stage || named_like_a_release) {
+            bail!(
+                "{dest:?} already exists and does not look like a staging directory \
+                 (no bin/, no install/, not named jarvis-*, not empty). Refusing to \
+                 clear it — stage into a fresh directory instead."
+            );
+        }
+        std::fs::remove_dir_all(dest).with_context(|| format!("clearing {dest:?}"))?;
+    }
     std::fs::create_dir_all(dest)?;
 
     let layout = staged_layout(&version);
@@ -117,7 +147,16 @@ pub fn stage(dest: &Path, version: Option<&str>) -> anyhow::Result<()> {
         if let Some(parent) = to.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let _ = std::fs::remove_dir_all(&to);
+        // `remove_dir_all` failing for any reason OTHER than "not there" means
+        // the `cp -r` below NESTS (web/browser, migrations/migrations) and the
+        // stage reports success — the same defect install.sh has a regression
+        // test for. The destination is wiped above, so this is normally a no-op;
+        // it stays for the case where two layout entries share a parent.
+        match std::fs::remove_dir_all(&to) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => bail!("clearing {to:?} before staging {source:?}: {e}"),
+        }
         if from.is_dir() {
             sh(
                 &root,

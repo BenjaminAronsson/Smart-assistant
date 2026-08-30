@@ -195,6 +195,20 @@ root before dropping to `User=jarvis`, so the service account never needs access
 to the file. The keyring remains correct for `jarvis-agent` (a user unit) and for
 interactively-provisioned secrets.
 
+That `EnvironmentFile` has a cost, and it is paid explicitly. A child process inherits its
+parent's environment, so the plaintext DSN was being handed to everything the daemon
+spawns — including `claude`, the process most exposed to model output and fetched web
+pages, and the app-builder worker, which runs with the network enabled when no worker image
+is configured. Every spawn site in `jarvisd` and `jarvis-adapters` therefore calls
+`jarvis_adapters::host_env::scrub_secrets`, which removes `JARVIS_DB_URL` and
+`JARVIS_PG_PASSWORD` before `spawn()`. A test walks both crates' sources and fails the build
+if a `Command::new` appears without it, because the way this leak comes back is by someone
+adding a spawn site, and nothing about a new `Command::new` looks wrong.
+
+`env_remove`, not `env_clear`: the Claude CLI needs `HOME`, `PATH` and its own credential
+paths, and a child spawned with an empty environment fails in ways that look like anything
+but a security control.
+
 **The Postgres password is never rotated by a re-install.** It is baked into the
 data volume at `initdb` time and never re-read; rotating it in `secrets.env`
 would leave a database nobody can authenticate to and nothing to say why.

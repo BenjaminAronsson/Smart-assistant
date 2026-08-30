@@ -79,17 +79,49 @@ macro_rules! require_ssh_keygen {
 /// happens when it is old — and waiting a month is not a test strategy.
 fn signed_release(dir: &Path, scan_at: &str, status: &str) {
     std::fs::create_dir_all(dir).expect("release dir");
-    std::fs::write(dir.join("jarvisd"), b"pretend this is a daemon\n").expect("binary");
-    std::fs::write(dir.join("jarvis-agent"), b"pretend this is an agent\n").expect("binary");
-    // A nested payload directory, because the interesting F10.9 case is not a
-    // top-level file: compose/postgres-init/ is mounted at
-    // /docker-entrypoint-initdb.d and executed by Postgres as superuser.
-    std::fs::create_dir_all(dir.join("compose/postgres-init")).expect("postgres-init");
-    std::fs::write(
-        dir.join("compose/postgres-init/01-extensions.sql"),
-        b"create extension if not exists vector;\n",
-    )
-    .expect("init sql");
+
+    // THE FIXTURE IS SHAPED LIKE A REAL RELEASE, not like the two files these
+    // tests happen to need. It used to be `jarvisd` and `jarvis-agent` at the
+    // top level, which no release has ever looked like — and `verify-release.sh`
+    // now enforces the same floor `release.sh` refuses to sign under (at least
+    // twenty paths, and the specific files an owner runs must be covered), so a
+    // toy fixture would have "passed" a check the real layout has to satisfy.
+    // That is the fixture-vs-caller trap this project has been bitten by before.
+    //
+    // compose/postgres-init/ matters specifically: it is mounted at
+    // /docker-entrypoint-initdb.d and executed by Postgres AS SUPERUSER, so it
+    // is the interesting target for a file smuggled into a release.
+    for (path, contents) in [
+        ("bin/jarvisd", "pretend this is a daemon\n"),
+        ("bin/jarvis-agent", "pretend this is an agent\n"),
+        ("install/install.sh", "#!/usr/bin/env bash\n"),
+        ("install/verify-release.sh", "#!/usr/bin/env bash\n"),
+        ("install/release-manifest.sh", "# sourced\n"),
+        ("install/first-run.sh", "#!/usr/bin/env bash\n"),
+        ("install/update.sh", "#!/usr/bin/env bash\n"),
+        ("install/backup.sh", "#!/usr/bin/env bash\n"),
+        ("install/restore.sh", "#!/usr/bin/env bash\n"),
+        ("install/diagnostics.sh", "#!/usr/bin/env bash\n"),
+        ("compose/prod.yml", "name: jarvis\n"),
+        (
+            "compose/postgres-init/01-extensions.sql",
+            "create extension if not exists vector;\n",
+        ),
+        ("systemd/jarvisd.service", "[Unit]\n"),
+        ("systemd/jarvis-deps.service", "[Unit]\n"),
+        ("systemd/jarvis-agent.service", "[Unit]\n"),
+        ("migrations/0001_init.sql", "create schema runs;\n"),
+        ("migrations/0002_audit.sql", "create schema audit;\n"),
+        ("web/index.html", "<!doctype html>\n"),
+        ("web/main.js", "console.log(1)\n"),
+        ("web/styles.css", "body{}\n"),
+        ("jarvisd.toml.example", "[server]\n"),
+        ("README.md", "# jarvis\n"),
+    ] {
+        let file = dir.join(path);
+        std::fs::create_dir_all(file.parent().expect("payload parent")).expect("payload dir");
+        std::fs::write(&file, contents).expect("payload file");
+    }
 
     // Built with release.sh's OWN enumeration, so the fixture is a release as
     // release.sh would have produced one rather than as this test imagines it.
@@ -202,7 +234,7 @@ fn a_swapped_binary_is_caught_by_the_signed_checksums() {
     let dir = scratch.path().join("jarvis-0.1.0");
     signed_release(&dir, &now(), "pass");
 
-    std::fs::write(dir.join("jarvisd"), b"something else entirely\n").expect("tamper");
+    std::fs::write(dir.join("bin/jarvisd"), b"something else entirely\n").expect("tamper");
 
     let out = verify(&dir);
     assert!(
@@ -224,7 +256,7 @@ fn rewriting_the_manifest_without_resigning_is_caught() {
     let dir = scratch.path().join("jarvis-0.1.0");
     signed_release(&dir, &now(), "pass");
 
-    std::fs::write(dir.join("jarvisd"), b"something else entirely\n").expect("tamper");
+    std::fs::write(dir.join("bin/jarvisd"), b"something else entirely\n").expect("tamper");
     let sums = Command::new("bash")
         .arg("-c")
         .arg("sha256sum jarvisd jarvis-agent | LC_ALL=C sort")
@@ -396,8 +428,17 @@ fn the_manifest_covers_the_installer_not_only_the_binaries() {
         script.contains("release_payload_paths") && script.contains("SHA256SUMS"),
         "release.sh must checksum every staged file, not a fixed list"
     );
+    // Comments stripped: `xtask dist --stage` appears twice in release.sh's
+    // prose explaining why it stages through xtask. Delete the actual
+    // invocation and a whole-file `contains` still passes — leaving a release
+    // built from whatever was already in $DEST, which is the exact failure the
+    // staging discipline exists to prevent. An assertion a comment can satisfy
+    // is documentation, not a test.
     assert!(
-        script.contains("xtask dist --stage"),
+        script
+            .lines()
+            .map(str::trim_start)
+            .any(|line| !line.starts_with('#') && line.contains("xtask dist --stage")),
         "release.sh must stage through xtask so there is one definition of \
          what ships"
     );
@@ -726,4 +767,66 @@ fn manifest_exclusions_are_anchored_to_the_top_level_not_any_depth() {
              SHA256SUMS. Got:\n{sums}"
         );
     }
+}
+
+/// The floor belongs on BOTH sides of the signature.
+///
+/// `assert_manifest_plausible` refuses to SIGN a manifest that cannot describe a
+/// release — no binaries, no install.sh, fewer than twenty paths. It was called
+/// only from `release.sh`, which is the wrong half: a release cut by an older or
+/// patched builder is exactly the case where the builder's copy of the check did
+/// not run, and it is the artifact, not the builder, that an owner is about to
+/// install as root.
+#[test]
+fn the_verifier_refuses_a_manifest_that_cannot_describe_a_release() {
+    require_ssh_keygen!();
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let dir = scratch.path().join("jarvis-0.1.0");
+    signed_release(&dir, &now(), "pass");
+    assert!(
+        verify(&dir).status.success(),
+        "the fixture must verify before this test breaks it"
+    );
+
+    // Every payload file goes, and so does its manifest entry — so the release
+    // stays INTERNALLY CONSISTENT: every listed file matches, nothing unlisted
+    // is present, the signature is valid over exactly these bytes. Integrity is
+    // intact and the release is empty. That combination is the one the floor
+    // exists to catch, and the one `sha256sum -c` is happiest about.
+    for entry in std::fs::read_to_string(dir.join("SHA256SUMS"))
+        .expect("manifest")
+        .lines()
+        .filter_map(|line| line.get(66..).map(str::to_owned))
+        .collect::<Vec<_>>()
+    {
+        std::fs::remove_file(dir.join(entry)).ok();
+    }
+    std::fs::write(dir.join("SHA256SUMS"), "").expect("emptied manifest");
+
+    // Re-sign with the same throwaway key signed_release generated, so the
+    // failure cannot be blamed on a broken signature.
+    let key = dir.parent().expect("parent").join("key");
+    let payload = [
+        std::fs::read(dir.join("SHA256SUMS")).expect("sums"),
+        std::fs::read(dir.join("RELEASE")).expect("release"),
+    ]
+    .concat();
+    std::fs::write(dir.join("SIGNED-PAYLOAD"), &payload).expect("payload");
+    assert!(
+        Command::new("ssh-keygen")
+            .args(["-Y", "sign", "-n", "jarvis-release", "-f"])
+            .arg(&key)
+            .arg(dir.join("SIGNED-PAYLOAD"))
+            .output()
+            .expect("sign")
+            .status
+            .success()
+    );
+
+    let out = verify(&dir);
+    assert!(
+        !out.status.success(),
+        "verify-release.sh accepted a release whose manifest covers nothing.\nstdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }

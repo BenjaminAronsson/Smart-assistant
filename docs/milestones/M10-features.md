@@ -134,7 +134,7 @@ instructions the whole way, with no source tree and no help from the person who 
       can hold, and the acceptance document names the rest honestly.
       Deps: F10.1–F10.7.
 
-- [ ] **F10.9 — The install artifact (docs/09 §2)** · *strong model*
+- [x] **F10.9 — The install artifact (docs/09 §2)** · *strong model*
       M10's exit evidence starts with "the owner installs on a machine that has never had
       Jarvis", and there was nothing to install: `docs/TRY-IT.md` is a clone, two toolchains
       and eight exported environment variables, which does not survive a reboot.
@@ -173,7 +173,24 @@ instructions the whole way, with no source tree and no help from the person who 
       stages the full layout and is idempotent; unit files are asserted against both
       regressions; the signed manifest covers the installer and not only the binaries; CI
       cuts a real signed release and installs it into a pristine `ubuntu:24.04` with no Rust,
-      no Node and no source tree — that job has not yet run to green.
+      no Node and no source tree — **that job ran green on PR #82.**
+      **Review (PR #82) found six more, of the same shape — something that looked checked and
+      was not:** (5) the signed manifest was not a CLOSED SET, so a file smuggled into
+      `compose/postgres-init/` — executed by Postgres *as superuser* on first init — passed
+      verification cleanly; (6) `release.sh` could sign an *empty* staging directory and
+      report success, because `find | xargs sha256sum` with no input still hashes stdin;
+      (7) `backup.sh`/`restore.sh` passed the whole `DATABASE_URL` as a command-line
+      argument, publishing the production password in world-readable `/proc/<pid>/cmdline`;
+      (8) `install.sh`'s own verification ended in `|| true`, so it printed `PROBLEM` lines
+      and exited 0, and it never checked the signature of the release it was installing as
+      root — the only thing enforcing "verify first" was the order of two README lines;
+      (9) `jarvisd` inherited the DSN into its environment via `EnvironmentFile=` and passed
+      it to every child it spawns, `claude` included (invariant 5); (10) `jarvisd migrate`
+      could block forever on `pg_advisory_lock`, with both installers gated on it.
+      And CI caught one no local run could: under `set -o pipefail`, `first-run.sh
+      --check-only` died silently at "provider workdir" on any host with **no config file**
+      — which is every fresh host, and the exact invocation the README gives an owner for
+      checking a new install.
       Deps: F10.3 (upgrade delegates to `update.sh`), F10.7 (`release.sh` stages and signs).
 
 ---

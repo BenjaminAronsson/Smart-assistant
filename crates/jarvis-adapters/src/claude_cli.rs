@@ -110,6 +110,10 @@ impl ModelProvider for ClaudeCliModel {
         // controlled workdir. `--verbose` is required by the CLI to stream JSON
         // under `-p`; `--include-partial-messages` yields token-level deltas.
         let mut command = tokio::process::Command::new(&self.config.binary);
+        // Before anything else: `claude` is the process most exposed to model
+        // output and fetched web pages, and since F10.9 the daemon's own
+        // environment carries the database DSN. A child inherits it by default.
+        crate::host_env::scrub_secrets(&mut command);
         command
             .arg("-p")
             .arg("--output-format")

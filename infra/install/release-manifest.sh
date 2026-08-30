@@ -15,10 +15,14 @@
 
 # All payload paths inside a release directory, relative and stably ordered.
 #
-# `\( -type f -o -type l \)` and not `-type f`: a symlink anywhere in the
-# payload (web/ is an npm build output, which is one `ln -s` away from having
-# one) is a file that SHIPS. Under `-type f` it would ship outside SHA256SUMS —
-# inside the release, outside the signature.
+# `! -type d` and not `-type f`: a symlink anywhere in the payload (web/ is an
+# npm build output, which is one `ln -s` away from having one) is a file that
+# SHIPS. Under `-type f` it would ship outside SHA256SUMS — inside the release,
+# outside the signature. The predicate is stated as "not a directory" rather
+# than "a regular file or a symlink" so that the odd entries are caught too: a
+# fifo at compose/postgres-init/00-init.sql is covered by neither `-type f` nor
+# `-type l`, ships unlisted, survives install.sh's `cp -r`, and hangs the
+# Postgres init entrypoint on first boot.
 #
 # The five exclusions are ANCHORED to the top level (`-path './NAME'`, not
 # `-name NAME`): `-name` matches a basename at ANY depth, so a future payload
@@ -33,7 +37,7 @@
 # verify-release.sh needs the same collation for the same reason.
 release_payload_paths() { # release_payload_paths <release-directory>
 	(
-		cd "$1" && find . \( -type f -o -type l \) \
+		cd "$1" && find . ! -type d \
 			! -path './SHA256SUMS' ! -path './RELEASE' ! -path './SIGNED-PAYLOAD' \
 			! -path './SIGNED-PAYLOAD.sig' ! -path './signing-key.pub' \
 			-printf '%P\n' | LC_ALL=C sort

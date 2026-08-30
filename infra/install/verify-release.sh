@@ -45,16 +45,64 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=release-manifest.sh
 . "$HERE/release-manifest.sh"
 
-SRC="${1:-}"
-if [[ -z "$SRC" ]]; then
-	echo "usage: $0 <release-directory> [--signers <allowed_signers>]" >&2
+USAGE="usage: $0 <release-directory> [--signers <allowed_signers>]"
+usage_error() {
+	printf '\nPROBLEM: %s\n%s\n' "$1" "$USAGE" >&2
 	exit 2
-fi
+}
+
+# The old parser was `[[ "${2:-}" == "--signers" ]] && SIGNERS="${3:-}"`, which
+# is the same bug class install.sh was hardened against in this release: it
+# swallows what it cannot interpret. `--signers` with the file forgotten,
+# `--signers=path`, a typo'd `--signer`, all left SIGNERS empty and exited 0 with
+# "release verified" — an integrity-only check reported to the one operator who
+# had just asked for authenticity. Every unrecognised form now refuses.
+SRC=""
 SIGNERS=""
-[[ "${2:-}" == "--signers" ]] && SIGNERS="${3:-}"
+while (($#)); do
+	case "$1" in
+	--signers=*)
+		SIGNERS="${1#*=}"
+		[[ -n "$SIGNERS" ]] || usage_error "--signers= was given no file"
+		shift
+		;;
+	--signers)
+		(($# >= 2)) || usage_error "--signers needs an allowed_signers file; it was the last argument"
+		[[ -n "$2" ]] || usage_error "--signers was given an empty path"
+		[[ "$2" != -* ]] || usage_error "--signers was given '$2', which looks like a flag rather than a file"
+		SIGNERS="$2"
+		shift 2
+		;;
+	-h | --help)
+		echo "$USAGE"
+		exit 0
+		;;
+	-*) usage_error "unknown argument '$1'" ;;
+	*)
+		[[ -z "$SRC" ]] || usage_error "more than one release directory given ('$SRC' and '$1')"
+		SRC="$1"
+		shift
+		;;
+	esac
+done
+[[ -n "$SRC" ]] || usage_error "no release directory given"
 
 NAMESPACE="jarvis-release"
 MAX_ADVISORY_AGE_DAYS="${JARVIS_MAX_ADVISORY_AGE_DAYS:-30}"
+
+# A verifier that ships inside the thing it verifies cannot be the root of
+# trust, and this one sources its enumeration (release-manifest.sh) from the
+# same directory — so a tampered release could redefine `release_payload_paths`
+# to hide the path it added while leaving verify-release.sh byte-identical.
+# There is no way around that from in here; the honest move is to say so, so a
+# reader is not misled about what the green line at the end means.
+if [[ -d "$SRC" && "$HERE" == "$(cd "$SRC" && pwd)"/* ]]; then
+	echo "NOTE: this verifier and its manifest library came from the release being"
+	echo "checked. For a release you did not cut yourself, run the copy from a"
+	echo "source checkout (infra/install/verify-release.sh) against the unpacked"
+	echo "directory, and pass --signers."
+	echo
+fi
 
 for f in SHA256SUMS RELEASE SIGNED-PAYLOAD SIGNED-PAYLOAD.sig signing-key.pub; do
 	[[ -f "$SRC/$f" ]] || { echo "ABORT: $SRC/$f is missing — not a signed release." >&2; exit 2; }
@@ -73,7 +121,12 @@ fi
 IDENTITY="jarvis-release"
 if [[ -n "$SIGNERS" ]]; then
 	[[ -f "$SIGNERS" ]] || { echo "ABORT: no such allowed_signers file: $SIGNERS" >&2; exit 2; }
-	IDENTITY="$(awk '{print $1; exit}' "$SIGNERS")"
+	# First NON-COMMENT, non-blank line. `awk '{print $1; exit}'` on a file
+	# whose first line is `# my release key` yields IDENTITY='#', and
+	# `ssh-keygen -Y verify` then fails with an opaque "signature does not
+	# verify" for a key that is present and correct.
+	IDENTITY="$(awk '!/^[[:space:]]*(#|$)/ {print $1; exit}' "$SIGNERS")"
+	[[ -n "$IDENTITY" ]] || { echo "ABORT: $SIGNERS names no principal (only comments and blank lines)." >&2; exit 2; }
 	ALLOWED="$SIGNERS"
 	TRUST="authenticity (against $SIGNERS)"
 else
@@ -129,6 +182,13 @@ if [[ -n "$UNLISTED" ]]; then
 EOF
 	exit 1
 fi
+
+# The same floor release.sh refuses to sign under. It belongs on BOTH sides: a
+# release cut by an older or patched release.sh is exactly the case where the
+# builder's copy of this check was not run, and it is the artifact — not the
+# builder — that an owner is about to install.
+assert_manifest_plausible "$SRC" || exit 1
+
 echo "   ok: $(wc -l < "$SRC/SHA256SUMS") artifacts match, and nothing else is present"
 
 echo "== 3/3 advisory freshness"

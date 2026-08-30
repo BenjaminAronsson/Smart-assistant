@@ -176,8 +176,29 @@ fi
 
 # Whatever the config says, prove the workdir is actually usable.
 step "provider workdir"
-workdir="$(sed -n '/^\[providers\.claude-cli\]/,/^\[/p' "$CONFIG" 2>/dev/null \
-    | sed -n 's/^ *workdir *= *"\(.*\)"/\1/p' | head -1)"
+# `set -o pipefail` + `set -e` + a $CONFIG that does not exist = THE SCRIPT DIES
+# HERE, silently, having printed the step header and nothing under it. `sed` on a
+# missing file exits 2; `2>/dev/null` hid the message but not the status, the
+# pipeline failed, the command substitution failed, and `set -e` took the whole
+# run down. `head -1` closing the pipe early can do the same to the second sed.
+#
+# The host this happened on is not exotic: `--check-only` explicitly does NOT
+# create the config, so EVERY fresh machine reached this line without one — which
+# means the one invocation the README gives an owner to check a new install was
+# the one that could not finish. It surfaced in CI, on a runner with no
+# ~/.config/jarvis/jarvisd.toml, and not on any developer's box, because a
+# developer has a config.
+#
+# A missing config is a NOTE, not a failure: the packaged default is what jarvisd
+# will use, and checking whether that default is writable is the actual point of
+# this step.
+workdir=""
+if [[ -r "$CONFIG" ]]; then
+    workdir="$(sed -n '/^\[providers\.claude-cli\]/,/^\[/p' "$CONFIG" \
+        | sed -n 's/^ *workdir *= *"\(.*\)"/\1/p' | head -1 || true)"
+else
+    note "no config at $CONFIG yet — checking the packaged default instead"
+fi
 workdir="${workdir:-/var/lib/jarvis/claude-work}"
 if mkdir -p "$workdir" 2>/dev/null && [[ -w "$workdir" ]]; then
     ok "$workdir is writable"

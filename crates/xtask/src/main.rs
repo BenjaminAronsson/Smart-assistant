@@ -19,8 +19,17 @@ fn main() -> anyhow::Result<()> {
         "perf" => perf::run(args.next().as_deref()),
         // `--stage <dir>`: build and stage the installable payload. release.sh
         // (F10.7) checksums and signs whatever lands there.
-        "dist" => match (args.next().as_deref(), args.next()) {
-            (Some("--stage"), Some(dir)) => dist::stage(std::path::Path::new(&dir), None),
+        // Trailing arguments refused, not dropped — same reason jarvisd's own
+        // parser refuses them: this is the command that decides what ships, and
+        // `dist --stage /tmp/x --clean` silently ignoring a flag is how someone
+        // ends up believing they asked for something they did not get.
+        "dist" => match (args.next().as_deref(), args.next(), args.next()) {
+            (Some("--stage"), Some(dir), None) => dist::stage(std::path::Path::new(&dir), None),
+            (Some("--stage"), Some(_), Some(extra)) => {
+                anyhow::bail!(
+                    "unexpected argument {extra:?}\nusage: cargo xtask dist --stage <directory>"
+                )
+            }
             _ => anyhow::bail!("usage: cargo xtask dist --stage <directory>"),
         },
         _ => anyhow::bail!(

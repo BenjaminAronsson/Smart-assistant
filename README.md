@@ -22,10 +22,16 @@ sudo apt install docker.io docker-compose-plugin libasound2t64   # libasound2 on
 VERSION=0.1.0
 BASE=https://github.com/BenjaminAronsson/Smart-assistant/releases/download/v$VERSION
 curl -LO $BASE/jarvis-$VERSION-x86_64-linux-gnu.tar.zst
-tar --zstd -xf jarvis-$VERSION-x86_64-linux-gnu.tar.zst
+
+# --no-same-owner --no-same-permissions: this archive has not been checked yet,
+# and unpacking is the first thing that touches your disk.
+tar --zstd --no-same-owner --no-same-permissions -xf jarvis-$VERSION-x86_64-linux-gnu.tar.zst
 cd jarvis-$VERSION
 
-# Verify BEFORE installing — install.sh runs as root.
+# Verify BEFORE installing — install.sh runs as root. WITHOUT --signers this
+# proves the release is internally consistent, NOT who built it: the public key
+# it checks against travels inside the release. Read the next paragraph before
+# you treat a green line here as trust.
 ./install/verify-release.sh .
 
 sudo ./install/install.sh
@@ -39,6 +45,18 @@ world since. It will also tell you, plainly, that by default it checks
 agreement between the parts is all that proves. Checking against a key you
 already trust is your job (`./install/verify-release.sh . --signers
 <allowed_signers>`), and `docs/06-security.md` §9 explains how.
+
+`install.sh` re-runs that check itself before it copies anything, and refuses to
+install a release that does not verify — the ordering of two lines in a README is
+not a security control. It also prints a NOTE when the verifier it ran came from
+inside the release being checked, which is the case in the flow above: for a
+release you did not cut yourself, run `verify-release.sh` from a source checkout
+against the unpacked directory, and pass `--signers`.
+
+**Releases are cut locally, not by CI.** CI builds and installs the artifact on a
+clean host every run, but signs it with a throwaway key, and does not publish it.
+A signature that proves nothing about who produced it is worse than no signature,
+because the check still comes out green.
 
 That creates the `jarvis` service user, installs to `/usr/local/bin` and
 `/var/lib/jarvis`, writes `/etc/jarvis/jarvisd.toml`, starts Postgres and the
@@ -159,6 +177,14 @@ cargo test --workspace
 cargo xtask arch-test && cargo xtask golden
 JARVIS_RELEASE_KEY=~/.ssh/id_ed25519 \
   infra/install/release.sh dist/   # advisory-scans, builds, stages, signs
+```
+
+Publishing one is the same command plus an upload, and it is deliberately a
+local step — the signing key never goes near a CI runner (`docs/06` §9):
+
+```bash
+tar --zstd -cf jarvis-$VERSION-x86_64-linux-gnu.tar.zst -C dist jarvis-$VERSION
+gh release create v$VERSION jarvis-$VERSION-x86_64-linux-gnu.tar.zst --generate-notes
 ```
 
 `cargo xtask dist --stage <dir>` (the `xtask` alias is defined in

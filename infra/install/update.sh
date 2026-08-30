@@ -130,6 +130,22 @@ echo "   rollback point: $BACKUP"
 # what the health gate is for.
 if [[ -n "$PAYLOAD" ]]; then
 	echo "== payload"
+	# The binaries about to replace /usr/local/bin/jarvisd come out of $PAYLOAD,
+	# and this script runs as root. install.sh verifies before it delegates, but
+	# `update.sh --payload <dir>` is also a documented standalone invocation, and
+	# on that path nothing had checked the directory at all. Verified here too:
+	# double-checking costs a second, and the alternative is that the safety of a
+	# root binary replacement depends on which entry point the operator used.
+	# JARVIS_SKIP_VERIFY=1 is the same escape hatch install.sh --skip-verify uses,
+	# and is passed through by it so the check is not run twice on that path.
+	if [[ -f "$PAYLOAD/SHA256SUMS" && "${JARVIS_SKIP_VERIFY:-0}" != 1 ]]; then
+		"$HERE/verify-release.sh" "$PAYLOAD" || {
+			echo >&2
+			echo "ABORT: the payload did not verify. Nothing has been replaced, and the" >&2
+			echo "backup taken above is still your rollback point." >&2
+			exit 1
+		}
+	fi
 	install -m 0755 "$PAYLOAD/bin/jarvisd" "$PAYLOAD/bin/jarvis-agent" /usr/local/bin/
 	rm -rf /var/lib/jarvis/web && cp -r "$PAYLOAD/web" /var/lib/jarvis/web
 	# /var/lib/jarvis/migrations is one of the sqlx-cli fallback candidates

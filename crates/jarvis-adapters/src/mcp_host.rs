@@ -191,9 +191,14 @@ impl McpHost {
     /// (invariant #4): a wedged or hostile child cannot hang host startup — on
     /// timeout or cancellation the transport is dropped, reaping the child.
     pub async fn connect(
-        command: tokio::process::Command,
+        mut command: tokio::process::Command,
         cancel: CancellationToken,
     ) -> Result<Self, McpHostError> {
+        // Here rather than at the caller: the `Command` arrives fully built from
+        // outside this crate, and an MCP server is a third-party binary. It has
+        // no business reading the host's database credential out of the
+        // environment it inherited (invariant 5, F10.9).
+        crate::host_env::scrub_secrets(&mut command);
         let transport = TokioChildProcess::new(command).map_err(McpHostError::Spawn)?;
         // Capture the pid before the transport is consumed by `serve`, so the
         // child can be identified for lifecycle/tests.

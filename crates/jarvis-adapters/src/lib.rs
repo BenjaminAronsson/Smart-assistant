@@ -10,6 +10,7 @@ pub mod coding;
 pub mod elevenlabs;
 pub mod embeddings;
 pub mod home_assistant;
+pub mod host_env;
 pub mod mcp_host;
 pub mod media_mpris;
 pub mod smtp;

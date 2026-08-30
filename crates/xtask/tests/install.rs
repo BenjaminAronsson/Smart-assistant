@@ -282,10 +282,21 @@ fn compose_files_agree_on_shared_image_tags() {
 fn first_run_finds_the_compose_file_in_an_installed_tree() {
     let script = read("infra/install/first-run.sh");
 
+    // Scoped to the candidate LOOP, not the whole file: the same path appears in
+    // the `bad "no compose file found — looked for …"` message. Remove it from
+    // the loop and keep the message, and a whole-file `contains` stays green
+    // while first-run.sh can once again only see infra/compose/dev.yml — the
+    // precise regression this test exists to catch.
+    // There are two candidate loops — one picks the container runtime, one picks
+    // the compose file — so this must select the second by what it enumerates.
+    let candidates = script
+        .lines()
+        .find(|line| line.trim_start().starts_with("for candidate in") && line.contains(".yml"))
+        .expect("first-run.sh must resolve the compose file from a candidate list");
     assert!(
-        script.contains("/etc/jarvis/compose/prod.yml"),
+        candidates.contains("/etc/jarvis/compose/prod.yml"),
         "first-run.sh must look for the installed compose file, not only \
-         infra/compose/dev.yml"
+         infra/compose/dev.yml. Candidate line: {candidates}"
     );
     assert!(
         script.contains("COMPOSE_FILE"),
@@ -1215,9 +1226,26 @@ fn first_run_hands_compose_the_env_file_prod_yml_requires() {
         // Nothing answers here, so the daemon checks fail fast instead of
         // reaching out to whatever is on this machine's port 8741.
         .env("JARVIS_BASE_URL", "http://127.0.0.1:1")
+        // BOTH, and pointed at an empty sandbox. first-run.sh derives $CONFIG
+        // from `${XDG_CONFIG_HOME:-$HOME/.config}`, and GitHub's runners set
+        // XDG_CONFIG_HOME — so overriding only HOME left the test reading the
+        // real machine's config. That is what made this pass on every developer
+        // box (which has a config) and fail in CI (which does not), and the
+        // thing it was failing on was a genuine bug: under `set -o pipefail`,
+        // `sed` on a missing $CONFIG killed the whole script at "provider
+        // workdir". A fresh host is the no-config case, so the test must be too.
         .env("HOME", &sandbox)
+        .env("XDG_CONFIG_HOME", sandbox.join("config"))
         .output()
         .expect("first-run.sh runs");
+
+    let stdout_early = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        stdout_early.contains("== database"),
+        "first-run.sh --check-only stopped before the database step on a host with \
+         no config file — which is every fresh host, and the one invocation the \
+         README gives an owner for checking a new install.\nstdout:\n{stdout_early}"
+    );
 
     let recorded = std::fs::read_to_string(&log).unwrap_or_else(|error| {
         panic!(
@@ -1469,4 +1497,149 @@ fn readme_verifies_before_it_installs() {
         "the README tells an owner to run install.sh as root before verifying \
          the signature over it"
     );
+}
+
+/// A root install of an artifact nobody checked.
+///
+/// `install.sh` sits inside the release it installs, next to `SHA256SUMS`,
+/// `SIGNED-PAYLOAD.sig` and `verify-release.sh` — and it never looked at any of
+/// them. The only thing enforcing "verify first" was the ORDER OF TWO LINES IN
+/// THE README, which `readme_verifies_before_it_installs` checks: that test
+/// asserts the documentation is in the right order, not that anything verifies.
+/// An owner who skipped a line, or who read the output rather than `$?`, got a
+/// root install of a tarball that had failed its own check.
+#[test]
+fn install_refuses_a_release_that_does_not_verify() {
+    let sandbox =
+        std::env::temp_dir().join(format!("jarvis-install-verify-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&sandbox);
+    let release = sandbox.join("jarvis-0.0.0");
+    let staging = sandbox.join("stage");
+    std::fs::create_dir_all(release.join("bin")).expect("release tree");
+    std::fs::create_dir_all(release.join("install")).expect("install dir");
+
+    // `bin/` is what install.sh uses to recognise the tarball layout, and
+    // SHA256SUMS is what makes it a release rather than a build directory.
+    std::fs::write(release.join("bin/jarvisd"), "not a real binary").expect("stub binary");
+    std::fs::write(release.join("SHA256SUMS"), "0000  bin/jarvisd\n").expect("stub manifest");
+    std::fs::copy(
+        repo_root().join("infra/install/install.sh"),
+        release.join("install/install.sh"),
+    )
+    .expect("install.sh copied");
+    // The verifier's verdict is the whole point, so it is stubbed to refuse:
+    // this test is about what install.sh does with a NO, not about signatures.
+    write_executable(
+        &release.join("install/verify-release.sh"),
+        "#!/usr/bin/env bash\necho 'PROBLEM: stub verifier refuses' >&2\nexit 1\n",
+    );
+
+    let output = Command::new("bash")
+        .arg(release.join("install/install.sh"))
+        .arg("--destdir")
+        .arg(&staging)
+        .arg("--skip-preflight")
+        .arg("--skip-systemd")
+        .current_dir(&sandbox)
+        .output()
+        .expect("install.sh runs");
+
+    assert!(
+        !output.status.success(),
+        "install.sh installed a release whose verification FAILED.\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        !staging.exists() || std::fs::read_dir(&staging).into_iter().flatten().count() == 0,
+        "install.sh copied files out of a release that did not verify"
+    );
+
+    // And the escape hatch still works, because CI verifies out of band and
+    // then installs — but it has to be asked for explicitly.
+    let skipped = Command::new("bash")
+        .arg(release.join("install/install.sh"))
+        .arg("--destdir")
+        .arg(&staging)
+        .arg("--skip-preflight")
+        .arg("--skip-systemd")
+        .arg("--skip-verify")
+        .current_dir(&sandbox)
+        .output()
+        .expect("install.sh runs");
+    let said = String::from_utf8_lossy(&skipped.stdout);
+    assert!(
+        said.contains("SKIPPED (--skip-verify)"),
+        "--skip-verify must say out loud that nothing was checked.\nstdout:\n{said}"
+    );
+
+    std::fs::remove_dir_all(&sandbox).ok();
+}
+
+/// `--skip-systemd` is about systemd, and nothing else.
+///
+/// The `chown -R jarvis:jarvis /var/lib/jarvis` used to live inside the same
+/// branch, so `--skip-systemd` on a real host left the artifact store
+/// root-owned — and `User=jarvis` cannot write it, the first time anyone starts
+/// the unit. `update.sh` guards the same thing explicitly on the upgrade path.
+#[test]
+fn ownership_is_set_even_when_systemd_is_skipped() {
+    let output = Command::new("bash")
+        .arg(repo_root().join("infra/install/install.sh"))
+        .arg("--dry-run")
+        .arg("--skip-preflight")
+        .arg("--skip-systemd")
+        .current_dir(repo_root())
+        .output()
+        .expect("install.sh runs");
+
+    let said = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        said.contains("chown -R jarvis:jarvis /var/lib/jarvis"),
+        "--skip-systemd skipped the ownership fix too, so the daemon cannot \
+         write its own artifact store.\nstdout:\n{said}"
+    );
+}
+
+/// The operator who typed `--signers` is the one who cared about authenticity.
+///
+/// The old parser was `[[ "${2:-}" == "--signers" ]] && SIGNERS="${3:-}"`: every
+/// malformed form — the file forgotten, `--signers=path`, a typo — silently left
+/// SIGNERS empty and exited 0 with "release verified", downgrading the check to
+/// integrity-only without saying so.
+#[test]
+fn verify_release_refuses_a_signers_argument_it_cannot_use() {
+    let script = repo_root().join("infra/install/verify-release.sh");
+    let sandbox = std::env::temp_dir().join(format!("jarvis-verify-args-{}", std::process::id()));
+    std::fs::create_dir_all(&sandbox).expect("sandbox");
+
+    for args in [
+        vec![sandbox.display().to_string(), "--signers".to_owned()],
+        vec![
+            sandbox.display().to_string(),
+            "--signer".to_owned(),
+            "/nope".to_owned(),
+        ],
+        vec![
+            sandbox.display().to_string(),
+            "--signers".to_owned(),
+            "--other".to_owned(),
+        ],
+        vec![sandbox.display().to_string(), "--signers=".to_owned()],
+    ] {
+        let output = Command::new("bash")
+            .arg(&script)
+            .args(&args)
+            .output()
+            .expect("verify-release.sh runs");
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "verify-release.sh {args:?} must refuse with a usage error, not \
+             continue with authenticity checking silently disabled.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    std::fs::remove_dir_all(&sandbox).ok();
 }

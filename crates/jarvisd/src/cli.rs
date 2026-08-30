@@ -14,9 +14,11 @@ pub enum Command {
     /// Exists so a host needs no `sqlx-cli`, and therefore no Rust toolchain:
     /// the migration stream is already compiled into `jarvis-infra`.
     Migrate,
+    /// Print usage and exit 0. Asking for help is not an error.
+    Help,
 }
 
-const USAGE: &str = "usage: jarvisd [migrate]";
+pub const USAGE: &str = "usage: jarvisd [migrate]";
 
 /// Parse a full argv, including argv[0].
 ///
@@ -34,6 +36,10 @@ pub fn parse(argv: impl IntoIterator<Item = String>) -> Result<Command, String> 
     let command = match args.next().as_deref() {
         None => Command::Serve,
         Some("migrate") => Command::Migrate,
+        // `-h`/`--help` is the one argument that is not a mistake, and it should
+        // not be reported like one: usage on stdout, exit 0. Every other script
+        // in this release (install.sh, verify-release.sh) already does that.
+        Some("-h") | Some("--help") => Command::Help,
         Some(other) => return Err(format!("unknown subcommand {other:?}\n{USAGE}")),
     };
     if let Some(extra) = args.next() {

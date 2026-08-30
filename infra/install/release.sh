@@ -140,7 +140,11 @@ cat "$DEST/SHA256SUMS" "$DEST/RELEASE" > "$DEST/SIGNED-PAYLOAD"
 echo "   ok: $(wc -l < "$DEST/SHA256SUMS") artifacts"
 
 echo "== 4/4 signature"
-ssh-keygen -Y sign -f "$JARVIS_RELEASE_KEY" -n "$NAMESPACE" "$DEST/SIGNED-PAYLOAD" >/dev/null 2>&1
+# stdout is silenced, stderr is NOT: `set -e` catches the failure either way, but
+# a passphrase-protected key with no agent, or a key file the caller cannot read,
+# says so on stderr — and discarding it left the operator with a bare non-zero
+# exit and nothing to act on.
+ssh-keygen -Y sign -f "$JARVIS_RELEASE_KEY" -n "$NAMESPACE" "$DEST/SIGNED-PAYLOAD" >/dev/null
 # The public half travels with the release so a verifier can check the signature
 # is internally consistent. That is NOT the same as trusting it — verification
 # against a known key is the operator's job, and verify-release.sh says so.
