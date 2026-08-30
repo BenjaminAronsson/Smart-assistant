@@ -16,16 +16,31 @@ pub enum Command {
     Migrate,
 }
 
+const USAGE: &str = "usage: jarvisd [migrate]";
+
 /// Parse a full argv, including argv[0].
 ///
 /// Returns usage text as the error so the caller decides how to report it.
+///
+/// Trailing arguments are REJECTED rather than ignored. `jarvisd` has no flags,
+/// so an operator who types `jarvisd migrate --dry-run` is asking for something
+/// this binary does not offer — and silently discarding the tail turns that
+/// request into its exact opposite: a real, irreversible schema change on a
+/// production database, run by someone who believed they had asked for a no-op.
+/// An unknown subcommand already refuses; an unknown flag must refuse the same
+/// way, for the same reason.
 pub fn parse(argv: impl IntoIterator<Item = String>) -> Result<Command, String> {
     let mut args = argv.into_iter().skip(1);
-    match args.next().as_deref() {
-        None => Ok(Command::Serve),
-        Some("migrate") => Ok(Command::Migrate),
-        Some(other) => Err(format!(
-            "unknown subcommand {other:?}\nusage: jarvisd [migrate]"
-        )),
+    let command = match args.next().as_deref() {
+        None => Command::Serve,
+        Some("migrate") => Command::Migrate,
+        Some(other) => return Err(format!("unknown subcommand {other:?}\n{USAGE}")),
+    };
+    if let Some(extra) = args.next() {
+        return Err(format!(
+            "unexpected argument {extra:?} — jarvisd takes no flags, and \
+             ignoring this one would run a real migration\n{USAGE}"
+        ));
     }
+    Ok(command)
 }

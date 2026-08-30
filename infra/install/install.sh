@@ -13,6 +13,9 @@
 #   /var/lib/jarvis/{artifacts,claude-work,web,migrations}
 #   /etc/systemd/system/jarvis-{deps,d}.service
 #
+# Exit status: 0 installed and the first-run checks passed; 1 the install
+# failed; 2 bad arguments; 3 installed, but the first-run checks did not pass.
+#
 # On a host that already has Jarvis, this DELEGATES to update.sh rather than
 # doing its own thing: update.sh already takes a verified backup, migrates, and
 # health-gates, and it is tested (crates/jarvis-infra/tests/backup_restore.rs).
@@ -25,6 +28,26 @@ SKIP_PREFLIGHT=0
 SKIP_SYSTEMD=0
 BACKUP_ROOT="${JARVIS_BACKUP_ROOT:-/var/backups/jarvis}"
 
+USAGE='usage: install.sh [--destdir DIR] [--dry-run] [--skip-preflight] [--skip-systemd]'
+
+# Defined here rather than beside step()/ok()/die() below, because the argument
+# loop must be able to abort. THIS SCRIPT'S DOCUMENTED INVOCATION IS
+# `sudo ./install.sh`, so a mis-parsed argument does not produce a wrong staging
+# directory — it produces a real root install:
+#
+#   * `--destdir` with no value (last argument, or `--destdir "$STAGE"` with
+#     STAGE unset) left DESTDIR empty, and an empty DESTDIR IS the host: the
+#     dry-run above it printed `would: useradd … jarvis` and
+#     `would: mkdir -p /var/lib/jarvis/artifacts`.
+#   * the old `*) shift ;;` arm swallowed anything unrecognised, so a typo'd
+#     `--skip-systmd` silently enabled and STARTED units on the host.
+#
+# Both are now refusals. Exit 2 (usage), distinct from 1 (install failed).
+usage_error() {
+    printf '\nPROBLEM: %s\n%s\n' "$1" "$USAGE" >&2
+    exit 2
+}
+
 # A `for arg in "$@"` loop pre-expands its list ONCE at loop entry; mixing it
 # with `shift` (needed to pull --destdir's separate-word value) desyncs the
 # loop's notion of "current argument" from the real positional parameters on
@@ -33,19 +56,27 @@ BACKUP_ROOT="${JARVIS_BACKUP_ROOT:-/var/backups/jarvis}"
 # about what argument comes next.
 while (( "$#" )); do
     case "$1" in
-        --destdir=*)      DESTDIR="${1#*=}"; shift ;;
+        --destdir=*)
+            DESTDIR="${1#*=}"
+            [[ -n "$DESTDIR" ]] || usage_error "--destdir= was given an empty directory; an empty DESTDIR installs onto this host"
+            shift
+            ;;
         --destdir)
-            DESTDIR="${2:-}"
-            # Guard against --destdir being the last argument: a plain
-            # `shift 2` there would ask bash to shift past the end of $@,
-            # which is an error under `set -e`.
-            shift; shift || true
+            # `${2:-}` yields the empty string when --destdir is the last
+            # argument — which is not "stage nowhere", it is "install for real".
+            # A value starting with '-' is the other shape of the same mistake:
+            # `--destdir --dry-run` consumed the flag as a path.
+            (( $# >= 2 )) || usage_error "--destdir needs a directory; it was the last argument, and an empty DESTDIR installs onto this host"
+            [[ -n "$2" ]] || usage_error "--destdir was given an empty directory; an empty DESTDIR installs onto this host"
+            [[ "$2" != -* ]] || usage_error "--destdir was given '$2', which looks like a flag rather than a directory"
+            DESTDIR="$2"
+            shift 2
             ;;
         --dry-run)        DRY_RUN=1; shift ;;
         --skip-preflight) SKIP_PREFLIGHT=1; shift ;;
         --skip-systemd)   SKIP_SYSTEMD=1; shift ;;
         -h|--help)        sed -n '2,20p' "$0"; exit 0 ;;
-        *)                shift ;;
+        *)                usage_error "unknown argument '$1'" ;;
     esac
 done
 
@@ -334,11 +365,34 @@ else
 fi
 
 # --- verify ------------------------------------------------------------------
+#
+# The installer's own verification used to end in `|| true`, so it could never
+# affect the exit status: install.sh printed every check as PROBLEM and then
+# `done.` and exited 0. An installer whose verification cannot change its
+# verdict is not verifying, it is decorating.
+#
+# The output is still printed in full — the individual PROBLEM lines are what an
+# owner acts on — and the two outcomes stay distinguishable, because they need
+# different actions:
+#
+#   exit 1  install FAILED     — die(); files may be half-written, re-run it
+#   exit 3  installed, UNHEALTHY — files are in place, something else is wrong
+#                                 (no database yet, nothing paired); fix that
+#                                 and re-run first-run.sh, not the installer
+VERIFY_STATUS=0
 if [[ -z "$DESTDIR" ]] && (( ! DRY_RUN )) && (( ! SKIP_SYSTEMD )); then
     step "verifying"
-    "$HERE/first-run.sh" --check-only || true
+    "$HERE/first-run.sh" --check-only || VERIFY_STATUS=$?
     printf '\nOpen http://127.0.0.1:8741/ and pair with the code from:\n'
     printf '  journalctl -u jarvisd | grep -i pairing\n'
+fi
+
+if (( VERIFY_STATUS != 0 )); then
+    printf '\ninstalled, but the first-run checks did NOT pass.\n'
+    printf 'The files are in place — this is "installed but unhealthy", not "install failed".\n'
+    printf 'Fix the PROBLEM lines above, then re-check with:\n'
+    printf '  sudo %s/first-run.sh --check-only\n' "$HERE"
+    exit 3
 fi
 
 printf '\ndone.\n'

@@ -4,7 +4,8 @@
 # Checks three separate things, and refuses on any of them:
 #
 #   1. the signature over the payload is valid;
-#   2. every binary's SHA-256 matches the manifest;
+#   2. the manifest is a CLOSED SET — every listed file matches its SHA-256,
+#      and no file is present in the release that the manifest does not list;
 #   3. the advisory scan behind this release is recent enough to mean anything.
 #
 # THE THIRD ONE IS THE POINT.
@@ -35,6 +36,14 @@
 #   infra/install/verify-release.sh dist/jarvis-0.1.0 --signers ~/.jarvis/allowed_signers
 
 set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The same definition of "what a release contains" that release.sh built the
+# manifest from. Sourced rather than repeated: two copies of that enumeration
+# drift, and they drift silently — the builder starts covering a path the
+# verifier does not look at, and the release still verifies.
+# shellcheck source=release-manifest.sh
+. "$HERE/release-manifest.sh"
 
 SRC="${1:-}"
 if [[ -z "$SRC" ]]; then
@@ -87,7 +96,40 @@ if ! (cd "$SRC" && sha256sum --quiet -c SHA256SUMS); then
 	echo "   PROBLEM: an artifact does not match its signed checksum." >&2
 	exit 1
 fi
-echo "   ok: $(wc -l < "$SRC/SHA256SUMS") artifacts match"
+
+# THE MANIFEST IS A CLOSED SET, NOT A WHITELIST.
+#
+# `sha256sum -c` verifies every file the manifest LISTS. It says nothing about a
+# file present in the release directory and absent from the manifest. When the
+# payload was two binaries an extra file was inert. It is not inert now: the
+# release carries compose/postgres-init/, install.sh copies it to
+# /etc/jarvis/compose/postgres-init, and prod.yml mounts it at
+# /docker-entrypoint-initdb.d — where Postgres executes every *.sql and *.sh AS
+# SUPERUSER on first initialisation. So dropping compose/postgres-init/00-evil.sql
+# into a downloaded release would pass a listed-files-only check cleanly and then
+# run as root on first boot: the same adversary and the same outcome as the
+# tampered install.sh this signature exists to close.
+#
+# Enumerated with release_payload_paths, which is the enumeration release.sh
+# built SHA256SUMS from — one definition, in release-manifest.sh, so the two
+# sides cannot disagree about what should have been covered.
+UNLISTED="$(LC_ALL=C comm -23 \
+	<(release_payload_paths "$SRC") \
+	<(manifest_paths "$SRC/SHA256SUMS" | LC_ALL=C sort))"
+if [[ -n "$UNLISTED" ]]; then
+	echo "   PROBLEM: these files are in the release but NOT covered by the signed manifest:" >&2
+	sed 's/^/     /' <<<"$UNLISTED" >&2
+	cat >&2 <<'EOF'
+   Every listed file matched its checksum — that is what makes this dangerous.
+   An unlisted file is outside the signature entirely, and some of them RUN:
+   anything under compose/postgres-init/ is executed by Postgres as superuser
+   the first time the database initialises.
+
+   Re-download the release. Do not install this directory.
+EOF
+	exit 1
+fi
+echo "   ok: $(wc -l < "$SRC/SHA256SUMS") artifacts match, and nothing else is present"
 
 echo "== 3/3 advisory freshness"
 SCAN_AT="$(grep '^advisory_scan_at=' "$SRC/RELEASE" | cut -d= -f2-)"

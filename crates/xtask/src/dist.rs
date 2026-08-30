@@ -49,6 +49,14 @@ pub fn staged_layout(_version: &str) -> Vec<(PathBuf, String)> {
             "infra/install/verify-release.sh",
             "install/verify-release.sh",
         ),
+        // verify-release.sh SOURCES this — it holds the one definition of what
+        // a release contains, shared with release.sh so the manifest's builder
+        // and its checker cannot drift. Without it staged, a delivered release
+        // cannot verify itself.
+        (
+            "infra/install/release-manifest.sh",
+            "install/release-manifest.sh",
+        ),
         ("infra/install/diagnostics.sh", "install/diagnostics.sh"),
         (
             "infra/install/generate-tls-cert.sh",

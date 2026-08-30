@@ -22,21 +22,86 @@ fn read(relative: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("reading {path:?}: {error}"))
 }
 
+/// The value of a systemd directive, ignoring commented-out ones.
+///
+/// A whole-file `contains("…")` cannot tell a live directive from a comment,
+/// and the compose files' own header comments quote the very strings these
+/// tests assert on — so `unit.contains("--wait")` stayed green with `--wait`
+/// deleted from `ExecStart=`, matching the sentence in the header that explains
+/// why `--wait` is there. Same shape for `EnvironmentFile=`: commenting the
+/// directive out left the substring in place and the test passing.
+fn directive<'a>(unit: &'a str, key: &str) -> Option<&'a str> {
+    unit.lines()
+        .map(str::trim)
+        .find(|line| !line.starts_with('#') && line.starts_with(key))
+}
+
 /// Pulls `(repository, tag)` out of every `image:` line in a compose file.
 ///
 /// This is a line-oriented scrape, not a YAML parser — deliberately, since
-/// this crate takes on no new dependency to read three small files. It
-/// splits on the *last* `:` so a registry-with-port reference (unused here,
-/// but valid compose syntax) still separates into the right repository and
-/// tag.
+/// this crate takes on no new dependency to read three small files.
+///
+/// Every valid reference form has to come out COMPARABLE, because the drift
+/// check below simply skips a repository it sees only once. `rsplit_once(':')`
+/// alone dropped both of the forms that are not `repo:tag`:
+///
+///   * untagged (`pgvector/pgvector`) — no `:` at all, so the whole entry
+///     vanished and the image looked unshared;
+///   * digest-pinned (`pgvector/pgvector@sha256:…`) — split at the digest's
+///     own colon, yielding a repository of `pgvector/pgvector@sha256`, which
+///     matches nothing.
+///
+/// Either one silences the drift check for that image: prod.yml pinned by
+/// digest against a dev.yml pinned by tag reads as "not shared" and nobody is
+/// told. So untagged normalises to docker's implicit `latest` and digests keep
+/// their `@…`, both of which compare UNEQUAL to a tag and therefore fail
+/// loudly rather than going quiet.
 fn extract_images(content: &str) -> Vec<(String, String)> {
     content
         .lines()
         .filter_map(|line| line.trim_start().strip_prefix("image:"))
         .map(|rest| rest.split('#').next().unwrap_or(rest).trim())
-        .filter_map(|image_ref| image_ref.rsplit_once(':'))
-        .map(|(repository, tag)| (repository.trim().to_string(), tag.trim().to_string()))
+        .filter(|image_ref| !image_ref.is_empty())
+        .map(|image_ref| match image_ref.split_once('@') {
+            // Digest pin. Kept whole so it can never compare equal to a tag.
+            Some((repository, digest)) => (repository.to_string(), format!("@{digest}")),
+            None => match image_ref.rsplit_once(':') {
+                // A ':' with a '/' after it is a registry port, not a tag
+                // (`localhost:5000/foo`), so that reference is untagged.
+                Some((repository, tag)) if !tag.contains('/') => {
+                    (repository.to_string(), tag.to_string())
+                }
+                _ => (image_ref.to_string(), "latest".to_string()),
+            },
+        })
         .collect()
+}
+
+/// `extract_images` is the drift check's only eyes, so its blind spots are the
+/// drift check's blind spots. This pins the three forms directly.
+#[test]
+fn extract_images_reads_untagged_and_digest_pinned_references() {
+    let parsed = extract_images(
+        "    image: pgvector/pgvector:pg16\n\
+             image: pgvector/pgvector\n\
+             image: pgvector/pgvector@sha256:abc123\n\
+             image: localhost:5000/pgvector/pgvector\n\
+             image: otel/collector:0.1 # trailing comment\n",
+    );
+
+    assert_eq!(
+        parsed,
+        vec![
+            ("pgvector/pgvector".into(), "pg16".into()),
+            ("pgvector/pgvector".into(), "latest".into()),
+            ("pgvector/pgvector".into(), "@sha256:abc123".into()),
+            ("localhost:5000/pgvector/pgvector".into(), "latest".into()),
+            ("otel/collector".into(), "0.1".into()),
+        ],
+        "every reference form must yield the SAME repository key — otherwise a \
+         file pinned by digest and a file pinned by tag look like two different \
+         images and the drift check goes quiet on the one pair that matters"
+    );
 }
 
 /// The blocker this feature was nearly shipped with.
@@ -104,8 +169,16 @@ fn jarvisd_orders_after_the_dependency_unit_not_a_host_postgres() {
 #[test]
 fn jarvisd_reads_the_secrets_file() {
     let unit = read("infra/systemd/jarvisd.service");
-    assert!(
-        unit.contains("EnvironmentFile=/etc/jarvis/secrets.env"),
+
+    // The directive, not the file: this unit's own comment block names
+    // /etc/jarvis/secrets.env twice while explaining why it is read, so a
+    // whole-file substring check passes against a COMMENTED-OUT
+    // `EnvironmentFile=` — and the daemon then has no JARVIS_DB_URL and
+    // fail-fasts on every boot with the test still green.
+    let environment_file =
+        directive(&unit, "EnvironmentFile=").expect("jarvisd.service declares EnvironmentFile=");
+    assert_eq!(
+        environment_file, "EnvironmentFile=/etc/jarvis/secrets.env",
         "jarvisd.service must read /etc/jarvis/secrets.env — that is where \
          JARVIS_DB_URL lives (F10.9)"
     );
@@ -118,19 +191,38 @@ fn jarvisd_reads_the_secrets_file() {
 fn the_dependency_unit_waits_for_healthchecks() {
     let unit = read("infra/systemd/jarvis-deps.service");
 
+    // Parse ExecStart=, exactly as the After= test above parses its directive.
+    // This unit's HEADER COMMENT says "`compose up -d --wait` blocks on the
+    // healthchecks in prod.yml" — so `unit.contains("--wait")` matched the
+    // explanation rather than the command, and stayed green with `--wait`
+    // deleted from ExecStart=. The check that guards a property must not be
+    // satisfiable by prose describing that property.
+    let exec_start =
+        directive(&unit, "ExecStart=").expect("jarvis-deps.service declares ExecStart=");
+
     assert!(
-        unit.contains("--wait"),
+        exec_start.contains("--wait"),
         "jarvis-deps.service must use `compose up -d --wait`, or ordering after \
-         it means only that compose was invoked"
+         it means only that compose was invoked. Got: {exec_start}"
     );
     assert!(
-        unit.contains("RemainAfterExit=yes"),
+        exec_start.contains("/etc/jarvis/compose/prod.yml"),
+        "jarvis-deps.service must point at the installed compose file. Got: {exec_start}"
+    );
+    // prod.yml interpolates ${JARVIS_PG_PASSWORD:?…}; without --env-file
+    // compose refuses before it starts anything.
+    assert!(
+        exec_start.contains("--env-file /etc/jarvis/secrets.env"),
+        "jarvis-deps.service must pass --env-file: prod.yml requires \
+         JARVIS_PG_PASSWORD and compose refuses the whole project without it. \
+         Got: {exec_start}"
+    );
+
+    assert_eq!(
+        directive(&unit, "RemainAfterExit="),
+        Some("RemainAfterExit=yes"),
         "a Type=oneshot unit that does not remain after exit is immediately \
          inactive, and units ordered after it lose the guarantee"
-    );
-    assert!(
-        unit.contains("/etc/jarvis/compose/prod.yml"),
-        "jarvis-deps.service must point at the installed compose file"
     );
 }
 
@@ -423,6 +515,103 @@ fn install_script_uses_the_last_destdir_flag() {
     );
 }
 
+/// A mis-parsed argument must not silently become a real root install.
+///
+/// `install.sh`'s documented invocation is `sudo ./install.sh`, so DESTDIR="" is
+/// not "stage nowhere" — it is the host. Two ways to reach it accidentally, both
+/// verified before this fix:
+///
+///   * `--destdir` as the LAST argument: `DESTDIR="${2:-}"` yielded the empty
+///     string, and `install.sh --skip-preflight --skip-systemd --dry-run
+///     --destdir` printed `would: useradd … jarvis` and
+///     `would: mkdir -p /var/lib/jarvis/artifacts`. The same happens when a
+///     caller writes `--destdir "$STAGE"` with STAGE unset.
+///   * an unknown flag: `*) shift ;;` swallowed it, so a typo'd
+///     `--skip-systmd` silently ENABLED and STARTED units on the host.
+///
+/// Every case here is checked for a non-zero exit AND for not having reached
+/// the point where it says what it would do, since the whole failure was that
+/// it happily proceeded. `--dry-run` throughout: if the parser were still
+/// broken, this test must not be able to touch the machine it runs on.
+#[test]
+fn install_refuses_an_argument_it_cannot_safely_interpret() {
+    let script = repo_root().join("infra/install/install.sh");
+    // A scratch cwd, not the repo: install.sh resolves its sources from
+    // BASH_SOURCE, so cwd is irrelevant to what it reads — but if the parser
+    // ever regressed, `--destdir --dry-run` would stage a tree named
+    // `--dry-run/` wherever this ran. It can do that in a temp directory.
+    let scratch = std::env::temp_dir().join(format!("jarvis-install-args-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).expect("scratch cwd");
+    let run = |args: &[&str]| {
+        Command::new("bash")
+            .arg(&script)
+            .args(args)
+            .current_dir(&scratch)
+            .output()
+            .expect("install.sh runs")
+    };
+
+    for (case, args) in [
+        (
+            "--destdir as the last argument",
+            vec![
+                "--skip-preflight",
+                "--skip-systemd",
+                "--dry-run",
+                "--destdir",
+            ],
+        ),
+        (
+            "--destdir with an empty value",
+            vec![
+                "--skip-preflight",
+                "--skip-systemd",
+                "--dry-run",
+                "--destdir",
+                "",
+            ],
+        ),
+        (
+            "--destdir= with an empty value",
+            vec![
+                "--skip-preflight",
+                "--skip-systemd",
+                "--dry-run",
+                "--destdir=",
+            ],
+        ),
+        (
+            "--destdir swallowing the next flag",
+            vec!["--skip-preflight", "--destdir", "--dry-run"],
+        ),
+        (
+            "a typo'd flag that would otherwise touch systemd",
+            vec!["--skip-preflight", "--skip-systmd", "--dry-run"],
+        ),
+    ] {
+        let output = run(&args);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{case}: must be a usage error (exit 2), not an install of the host.\n\
+             stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            !stdout.contains("would:"),
+            "{case}: install.sh got as far as saying what it would do, which \
+             means it accepted the argument.\nstdout:\n{stdout}"
+        );
+        assert!(
+            stderr.contains("usage"),
+            "{case}: the refusal must show usage.\nstderr:\n{stderr}"
+        );
+    }
+
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
 /// The layout is a pure function so it can be tested in milliseconds. Staging
 /// for real needs a release build plus an npm build — minutes, and wrong for a
 /// unit test. This asserts nothing was forgotten; CI (Task 8) stages the real
@@ -449,6 +638,9 @@ fn the_release_payload_carries_everything_a_host_needs() {
         "install/restore.sh",
         "install/update.sh",
         "install/verify-release.sh",
+        // verify-release.sh sources this; a release without it cannot verify
+        // itself, and release.sh's own plausibility check names it too.
+        "install/release-manifest.sh",
         "jarvisd.toml.example",
         "README.md",
     ] {
@@ -955,6 +1147,299 @@ fn update_refuses_a_payload_that_is_not_a_release() {
     assert!(
         !String::from_utf8_lossy(&output.stdout).contains("1/3 backup"),
         "a bad --payload must be caught before anything is touched"
+    );
+}
+
+/// first-run.sh reported two false failures on every installed host.
+///
+/// `prod.yml` declares `POSTGRES_PASSWORD: ${JARVIS_PG_PASSWORD:?…}`, and Docker
+/// Compose interpolates the whole project model for EVERY subcommand — `ps` and
+/// `exec` included. With the variable unset both abort with "required variable
+/// … is missing a value" before they look at a container, so the `database` and
+/// `migrations` checks printed `PROBLEM: postgres is not running` and
+/// `PROBLEM: could not read _sqlx_migrations` against a healthy host, with
+/// `2>/dev/null` hiding why. It was invisible during installation only because
+/// install.sh sources secrets.env into its own (non-subshell) environment and
+/// first-run.sh inherited it — the README's own standalone
+/// `sudo ./install/first-run.sh --check-only` got both.
+///
+/// This runs the real script with a stub `docker` that records its argv, and
+/// asserts every compose invocation carries `--env-file`.
+///
+/// NOT covered here, and it needs saying rather than faking: that compose
+/// genuinely refuses without the variable, and that `--env-file` genuinely
+/// satisfies `${…:?}`, are properties of Docker Compose against a live daemon.
+/// A stub cannot demonstrate them. What a stub CAN prove is the thing that was
+/// actually wrong — that the flag was never passed.
+#[test]
+fn first_run_hands_compose_the_env_file_prod_yml_requires() {
+    let sandbox = std::env::temp_dir().join(format!("jarvis-first-run-env-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&sandbox);
+    let bin = sandbox.join("bin");
+    std::fs::create_dir_all(&bin).expect("sandbox bin");
+
+    let log = sandbox.join("docker-argv");
+    // Answers `compose version` so first-run.sh selects it, and records every
+    // other invocation. The real calls fail with compose's own refusal text on
+    // stderr — the message that used to be swallowed by `2>/dev/null`, leaving
+    // "postgres is not running" as the only thing an owner saw.
+    write_executable(
+        &bin.join("docker"),
+        &format!(
+            "#!/usr/bin/env bash\n\
+             if [[ \"$1\" == compose && \"$2\" == version ]]; then echo 'Docker Compose v2'; exit 0; fi\n\
+             printf '%s\\n' \"$*\" >> {log}\n\
+             echo 'stub compose refuses' >&2\n\
+             exit 1\n",
+            log = log.display()
+        ),
+    );
+
+    let secrets = sandbox.join("secrets.env");
+    std::fs::write(&secrets, "JARVIS_PG_PASSWORD=stub-not-a-real-password\n")
+        .expect("stub secrets");
+
+    let output = Command::new("bash")
+        .arg(repo_root().join("infra/install/first-run.sh"))
+        .arg("--check-only")
+        .current_dir(repo_root())
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env("JARVIS_SECRETS_FILE", &secrets)
+        // Nothing answers here, so the daemon checks fail fast instead of
+        // reaching out to whatever is on this machine's port 8741.
+        .env("JARVIS_BASE_URL", "http://127.0.0.1:1")
+        .env("HOME", &sandbox)
+        .output()
+        .expect("first-run.sh runs");
+
+    let recorded = std::fs::read_to_string(&log).unwrap_or_else(|error| {
+        panic!(
+            "first-run.sh never invoked the compose stub ({error}).\nstdout:\n{}",
+            String::from_utf8_lossy(&output.stdout)
+        )
+    });
+
+    let compose_calls: Vec<&str> = recorded
+        .lines()
+        .filter(|line| line.starts_with("compose "))
+        .collect();
+    assert!(
+        compose_calls.iter().any(|line| line.contains(" ps ")),
+        "the database check must still run `compose ps`. Recorded:\n{recorded}"
+    );
+    assert!(
+        compose_calls.iter().any(|line| line.contains(" exec ")),
+        "the migrations check must still run `compose exec … psql`. Recorded:\n{recorded}"
+    );
+    for call in &compose_calls {
+        assert!(
+            call.contains("--env-file"),
+            "every compose call must pass --env-file, or prod.yml's \
+             ${{JARVIS_PG_PASSWORD:?…}} aborts it and first-run.sh reports a \
+             false failure on a healthy host. Got: {call}"
+        );
+    }
+
+    // And the reason must survive into the output: `2>/dev/null` on these calls
+    // is what turned a diagnosable refusal into "postgres is not running".
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("compose said:") || stdout.contains("it said:"),
+        "when compose fails, first-run.sh must print what it said rather than \
+         discarding it.\nstdout:\n{stdout}"
+    );
+
+    std::fs::remove_dir_all(&sandbox).ok();
+}
+
+/// Invariant 5: no secrets in prompts, logs, or CLI args.
+///
+/// backup.sh passed the whole `DATABASE_URL` — password included — as an
+/// argument to `pg_dump` and `psql`. `/proc/<pid>/cmdline` is world-readable, so
+/// the production credential was visible to every local account for the life of
+/// the dump. F10.9 is what makes it matter: install.sh's upgrade path now feeds
+/// backup.sh the real generated production password on every upgrade, and the
+/// README documents a nightly timer doing the same.
+///
+/// This runs the real script with stub `pg_dump`/`psql` that record their argv,
+/// and asserts the password appears in NONE of it. The stubs also assert the
+/// tools can still find the database — the fix must move the password to
+/// PGPASSWORD, not simply drop it.
+#[test]
+fn backup_never_puts_the_database_password_in_argv() {
+    let sandbox = std::env::temp_dir().join(format!("jarvis-backup-argv-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&sandbox);
+    let bin = sandbox.join("bin");
+    let backups = sandbox.join("backups");
+    std::fs::create_dir_all(&bin).expect("sandbox bin");
+    std::fs::create_dir_all(&backups).expect("sandbox backups");
+
+    let password = "correct-horse-battery-staple";
+    let argv_log = sandbox.join("argv");
+    let env_log = sandbox.join("env");
+
+    // Both stubs record argv and whether PGPASSWORD reached them, then answer
+    // plausibly enough for backup.sh to run to completion.
+    let recorder = format!(
+        "printf '%s\\n' \"$0 $*\" >> {argv}\n\
+         printf '%s=%s\\n' \"$(basename \"$0\")\" \"${{PGPASSWORD:-<unset>}}\" >> {env}\n",
+        argv = argv_log.display(),
+        env = env_log.display()
+    );
+    write_executable(
+        &bin.join("pg_dump"),
+        &format!(
+            "#!/usr/bin/env bash\n{recorder}\
+             if [[ \"$1\" == --version ]]; then echo 'pg_dump (PostgreSQL) 16.2'; exit 0; fi\n\
+             printf 'PGDMP-stub'\nexit 0\n"
+        ),
+    );
+    write_executable(
+        &bin.join("psql"),
+        &format!(
+            "#!/usr/bin/env bash\n{recorder}\
+             for arg in \"$@\"; do\n\
+             \x20 if [[ \"$arg\" == *server_version* ]]; then echo '16.2'; exit 0; fi\n\
+             done\n\
+             exit 0\n"
+        ),
+    );
+
+    let output = Command::new("bash")
+        .arg(repo_root().join("infra/install/backup.sh"))
+        .arg(&backups)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env(
+            "DATABASE_URL",
+            format!("postgres://jarvis:{password}@127.0.0.1:5432/jarvis"),
+        )
+        .env("JARVIS__STORAGE__ARTIFACTS_ROOT", sandbox.join("artifacts"))
+        .output()
+        .expect("backup.sh runs");
+    assert!(
+        output.status.success(),
+        "backup.sh failed against the stubs:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let argv = std::fs::read_to_string(&argv_log).expect("the stubs recorded argv");
+    assert!(
+        !argv.contains(password),
+        "the Postgres password reached a command line — /proc/<pid>/cmdline is \
+         world-readable (invariant 5). Recorded argv:\n{argv}"
+    );
+    // Not simply dropped: the tools must still be able to authenticate.
+    let env = std::fs::read_to_string(&env_log).expect("the stubs recorded PGPASSWORD");
+    assert!(
+        env.lines().all(|line| line.ends_with(password)),
+        "the password must reach the client tools through PGPASSWORD in the \
+         ENVIRONMENT — removing it from argv without that would break every \
+         backup. Recorded:\n{env}"
+    );
+    // The DSN itself must still name the database, or the tools connect nowhere.
+    assert!(
+        argv.contains("127.0.0.1:5432/jarvis"),
+        "the non-secret half of the DSN must survive. Recorded argv:\n{argv}"
+    );
+
+    std::fs::remove_dir_all(&sandbox).ok();
+}
+
+/// Both scripts, one property: the password never becomes an argument.
+///
+/// restore.sh had the same shape as backup.sh, and it is the script that runs on
+/// the worst day an operator has. Running it end to end needs a live server (it
+/// pg_restores), so this checks where the decision is made — no `$DATABASE_URL`
+/// is handed to a client tool.
+#[test]
+fn restore_passes_no_database_url_to_a_client_tool() {
+    for script in ["infra/install/backup.sh", "infra/install/restore.sh"] {
+        let source = read(script);
+        for line in source.lines() {
+            let code = line.trim_start();
+            if code.starts_with('#') || !code.contains("\"$DATABASE_URL\"") {
+                continue;
+            }
+            assert!(
+                // The only permitted uses are splitting it and testing it.
+                code.starts_with("DSN=")
+                    || code.starts_with("if [[ \"$DATABASE_URL\" =~")
+                    || code.starts_with(": \"${DATABASE_URL"),
+                "{script} passes $DATABASE_URL — which carries the password — to \
+                 a command line. Use $DSN (password stripped) plus PGPASSWORD in \
+                 the environment. Got: {code}"
+            );
+        }
+        assert!(
+            source.contains("export PGPASSWORD"),
+            "{script} must pass the password through the environment"
+        );
+    }
+}
+
+/// The installer's own verification could never change its verdict.
+///
+/// `"$HERE/first-run.sh" --check-only || true` meant install.sh printed every
+/// check as PROBLEM and then `done.`, exiting 0. An installer that reports
+/// success over its own failed checks is the false-assurance failure this
+/// feature exists to remove, one layer up.
+///
+/// The two outcomes must stay distinguishable, because they need different
+/// actions — so this asserts on the SHAPE of the code (the `|| true` is gone,
+/// the status is captured and consulted, and the failing path is its own exit
+/// code). Exercising it for real needs root, systemd and a live database, which
+/// a unit test may not have: with `--destdir` or `--skip-systemd` the verify
+/// block does not run at all, and that is exactly the branch a test can reach.
+#[test]
+fn the_installer_exit_status_reflects_its_own_verification() {
+    let installer = read("infra/install/install.sh");
+
+    let verify_at = installer
+        .find("\"$HERE/first-run.sh\" --check-only")
+        .expect("install.sh runs its own first-run check");
+    let verify_line = installer[verify_at..]
+        .lines()
+        .next()
+        .expect("the check is on a line");
+    assert!(
+        !verify_line.contains("|| true"),
+        "install.sh discards its own verification result with `|| true`, so it \
+         exits 0 having printed every check as PROBLEM. Got: {verify_line}"
+    );
+    assert!(
+        verify_line.contains("VERIFY_STATUS=$?"),
+        "install.sh must capture the check's exit status. Got: {verify_line}"
+    );
+    assert!(
+        installer.contains("(( VERIFY_STATUS != 0 ))"),
+        "install.sh must act on the captured status"
+    );
+    // "installed but unhealthy" (3) has to be tellable from "install failed"
+    // (1, from die()) — they need different responses from an owner.
+    assert!(
+        installer.contains("exit 3"),
+        "a failed verification over a completed install must have its own exit \
+         code, distinct from die()'s 1"
+    );
+    assert!(
+        installer.contains("installed but unhealthy") || installer.contains("installed, but"),
+        "the message must say the files ARE in place, or an owner reruns the \
+         installer instead of fixing the health problem"
     );
 }
 

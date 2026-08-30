@@ -80,6 +80,41 @@ for candidate in /etc/jarvis/compose/prod.yml infra/compose/dev.yml; do
     fi
 done
 
+# prod.yml declares `POSTGRES_PASSWORD: ${JARVIS_PG_PASSWORD:?...}`, and Docker
+# Compose interpolates the WHOLE project model for every subcommand — `ps` and
+# `exec` included, not just `up`. With the variable unset both abort with
+# "required variable JARVIS_PG_PASSWORD is missing a value" before they look at
+# a container, and the `2>/dev/null` that used to be on those calls hid the
+# reason. The result was `PROBLEM: postgres is not running` and `PROBLEM: could
+# not read _sqlx_migrations` against a perfectly healthy installed host — the
+# same false failure this script's header argues is as bad as a false pass.
+#
+# It stayed invisible during installation only by accident: install.sh's
+# `set -a; . /etc/jarvis/secrets.env; set +a` is not in a subshell, so the
+# variable was exported into the first-run.sh it calls. The README's own
+# "sudo ./install/first-run.sh --check-only", run standalone later, got both
+# false failures.
+#
+# So: read the secrets ourselves when they are readable, and hand compose the
+# same --env-file jarvis-deps.service passes. Missing is NOT an error — a source
+# tree legitimately has no /etc/jarvis/secrets.env, and dev.yml needs none.
+SECRETS_FILE="${JARVIS_SECRETS_FILE:-/etc/jarvis/secrets.env}"
+COMPOSE_ENV_ARGS=()
+if [[ -r "$SECRETS_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090  # runtime path, by design
+    . "$SECRETS_FILE"
+    set +a
+    COMPOSE_ENV_ARGS=(--env-file "$SECRETS_FILE")
+fi
+
+# One place that builds a compose invocation, so a call cannot be added later
+# that forgets --env-file. `${arr[@]+...}` so an empty array is not an unbound
+# variable under `set -u`.
+compose() { # compose <args...>
+    $COMPOSE -f "$COMPOSE_FILE" ${COMPOSE_ENV_ARGS[@]+"${COMPOSE_ENV_ARGS[@]}"} "$@"
+}
+
 # --- provisioning ------------------------------------------------------------
 #
 # jarvisd ships PRODUCTION defaults: /var/lib/jarvis/claude-work and
@@ -161,10 +196,22 @@ if [[ -z "$COMPOSE" ]]; then
     bad "no compose runtime found (docker compose / podman compose)"
 elif [[ -z "$COMPOSE_FILE" ]]; then
     bad "no compose file found — looked for /etc/jarvis/compose/prod.yml and infra/compose/dev.yml"
-elif $COMPOSE -f "$COMPOSE_FILE" ps postgres 2>/dev/null | grep -q 'Up\|running\|healthy'; then
-    ok "postgres is running ($COMPOSE_FILE)"
 else
-    bad "postgres is not running — '$COMPOSE -f $COMPOSE_FILE up -d postgres'"
+    # 2>&1, not 2>/dev/null: when compose refuses (an uninterpolable variable,
+    # a permission problem on the socket) the reason is the whole diagnosis,
+    # and discarding it produced a "postgres is not running" that sent people
+    # to look at Postgres.
+    ps_said="$(compose ps postgres 2>&1 || true)"
+    if grep -q 'Up\|running\|healthy' <<<"$ps_said"; then
+        ok "postgres is running ($COMPOSE_FILE)"
+    else
+        bad "postgres is not running — '$COMPOSE -f $COMPOSE_FILE up -d postgres'"
+        # Not `[[ -n … ]] && note …`: under `set -e` a false test as the last
+        # command of this branch would abort the whole script.
+        if [[ -n "$ps_said" ]]; then
+            note "compose said: $(head -3 <<<"$ps_said" | tr '\n' ' ')"
+        fi
+    fi
 fi
 
 step "migrations"
@@ -181,20 +228,26 @@ step "migrations"
 # `_sqlx_migrations`, reachable through compose Postgres on any installed host
 # without adding a psql dependency to the host itself. A local-socket
 # connection inside the container needs no password (Invariant 5).
-if [[ -n "$COMPOSE" && -n "$COMPOSE_FILE" ]] && \
-    applied="$($COMPOSE -f "$COMPOSE_FILE" exec -T postgres \
-        psql -U jarvis -d jarvis -tAc 'select count(*) from _sqlx_migrations' 2>/dev/null)" && \
-    [[ "$applied" =~ ^[0-9]+$ ]]; then
-    if (( applied > 0 )); then
+if [[ -n "$COMPOSE" && -n "$COMPOSE_FILE" ]]; then
+    # Again 2>&1 rather than 2>/dev/null. Every non-numeric answer lands in the
+    # same `bad` below, so the only thing discarding stderr achieved was
+    # removing the sentence that said which of them it was.
+    psql_said="$(compose exec -T postgres \
+        psql -U jarvis -d jarvis -tAc 'select count(*) from _sqlx_migrations' 2>&1 || true)"
+    applied="$(tr -d '[:space:]' <<<"$psql_said")"
+    if [[ "$applied" =~ ^[0-9]+$ ]] && (( applied > 0 )); then
         ok "$applied migration(s) applied (checked via _sqlx_migrations)"
-    else
+    elif [[ "$applied" =~ ^[0-9]+$ ]]; then
         # A real problem, not an unknown: the table exists and is empty, so
         # the schema was never migrated. Reporting this "ok" is the exact
         # defect this check replaces.
         bad "_sqlx_migrations has zero rows — no migrations have been applied"
+    else
+        bad "could not read _sqlx_migrations via '$COMPOSE -f $COMPOSE_FILE exec postgres psql' — postgres may be down (see 'database' check above), or the table does not exist because no migration has ever been applied"
+        if [[ -n "$psql_said" ]]; then
+            note "it said: $(head -3 <<<"$psql_said" | tr '\n' ' ')"
+        fi
     fi
-elif [[ -n "$COMPOSE" && -n "$COMPOSE_FILE" ]]; then
-    bad "could not read _sqlx_migrations via '$COMPOSE -f $COMPOSE_FILE exec postgres psql' — postgres may be down (see 'database' check above), or the table does not exist because no migration has ever been applied"
 elif [[ -n "${DATABASE_URL:-}" ]] && command -v sqlx >/dev/null 2>&1; then
     sqlx migrate info 2>/dev/null | tail -3 || bad "could not read migration state"
     ok "migration state readable (sqlx-cli)"

@@ -57,10 +57,34 @@ fi
 #                               refuses rather than producing a useless dump.
 PG_CONTAINER="${JARVIS_PG_CONTAINER:-}"
 
+# --- keeping the password out of argv (invariant 5) ------------------------
+#
+# Same reason as backup.sh: `$DATABASE_URL` carries the Postgres password, and
+# passing the whole DSN as a command-line argument publishes it in
+# /proc/<pid>/cmdline, which is world-readable. A restore runs on the worst day
+# an operator has; it should not also be the day the production credential is
+# readable by every local account.
+#
+# Percent-decoded because a password containing '@' or ':' MUST be
+# percent-encoded to be a valid URI, and libpq decodes it — PGPASSWORD does not.
+DSN="$DATABASE_URL"
+if [[ "$DATABASE_URL" =~ ^([a-zA-Z][a-zA-Z0-9+.-]*://)([^:@/]+):([^@]*)@(.*)$ ]]; then
+	PGPASSWORD="$(printf '%b' "${BASH_REMATCH[3]//%/\\x}")"
+	export PGPASSWORD
+	DSN="${BASH_REMATCH[1]}${BASH_REMATCH[2]}@${BASH_REMATCH[4]}"
+fi
+
 pg_run() { # pg_run <tool> [args...]
 	local tool="$1"; shift
 	if [[ -n "$PG_CONTAINER" ]]; then
-		docker exec -i "$PG_CONTAINER" "$tool" "$@"
+		# `-e PGPASSWORD` with NO value: docker/podman copy it from this
+		# process's environment. Writing `-e "PGPASSWORD=$PGPASSWORD"` would
+		# put the password straight back into argv — docker's this time.
+		if [[ -n "${PGPASSWORD:-}" ]]; then
+			docker exec -i -e PGPASSWORD "$PG_CONTAINER" "$tool" "$@"
+		else
+			docker exec -i "$PG_CONTAINER" "$tool" "$@"
+		fi
 	else
 		"$tool" "$@"
 	fi
@@ -71,7 +95,7 @@ pgsql() { pg_run "${PSQL:-psql}" "$@"; }
 check_versions() {
 	local client server
 	client="$(pg_run "${PGDUMP:-pg_dump}" --version | grep -oE '[0-9]+' | head -1)"
-	server="$(pgsql "$DATABASE_URL" -tAc 'SHOW server_version' | grep -oE '^[0-9]+')"
+	server="$(pgsql "$DSN" -tAc 'SHOW server_version' | grep -oE '^[0-9]+')"
 	if [[ -z "$client" || -z "$server" ]]; then
 		echo "   note: could not determine client/server versions; continuing" >&2
 		return 0
@@ -98,7 +122,7 @@ echo "== postgres client tools"
 check_versions
 
 echo "== target database"
-EXISTING="$(pgsql "$DATABASE_URL" -tA -c \
+EXISTING="$(pgsql "$DSN" -tA -c \
 	"SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')" \
 	2>/dev/null || echo 0)"
 if [[ "$EXISTING" != "0" ]] && ((FORCE == 0)); then
@@ -112,7 +136,7 @@ echo "   ok: $EXISTING existing tables"
 echo "== database"
 # --clean --if-exists so --force is genuinely idempotent rather than
 # half-overwriting; --no-owner so a restore works under a different role.
-RESTORE_FLAGS=(--dbname="$DATABASE_URL" --no-owner --no-privileges)
+RESTORE_FLAGS=(--dbname="$DSN" --no-owner --no-privileges)
 ((FORCE == 1)) && RESTORE_FLAGS+=(--clean --if-exists)
 pg_run "${PGRESTORE:-pg_restore}" "${RESTORE_FLAGS[@]}" <"$SRC/db.dump"
 echo "   ok: restored"
@@ -135,7 +159,7 @@ while read -r hex; do
 		echo "   PROBLEM: artifact blob $hex is missing" >&2
 		MISSING=$((MISSING + 1))
 	fi
-done < <(pgsql "$DATABASE_URL" -tA -c "SELECT DISTINCT sha256 FROM artifacts.manifests")
+done < <(pgsql "$DSN" -tA -c "SELECT DISTINCT sha256 FROM artifacts.manifests")
 
 if ((MISSING > 0)); then
 	echo >&2

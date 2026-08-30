@@ -66,10 +66,40 @@ fi
 #                               refuses rather than producing a useless dump.
 PG_CONTAINER="${JARVIS_PG_CONTAINER:-}"
 
+# --- keeping the password out of argv (invariant 5) ------------------------
+#
+# `$DATABASE_URL` carries the Postgres password, and every one of these tools
+# used to receive the whole DSN as a COMMAND-LINE ARGUMENT. /proc/<pid>/cmdline
+# is world-readable, so the credential was visible to any local account for the
+# life of the dump. That was survivable while this ran by hand against a dev
+# database; F10.9 made install.sh feed it the real generated production
+# credential on every upgrade, and the README documents a nightly timer doing
+# the same.
+#
+# So the password is split out and passed in the ENVIRONMENT via PGPASSWORD,
+# which libpq reads and which does not appear in argv. The rest of the DSN
+# (user, host, port, database) is not secret and stays where it was.
+#
+# Percent-decoded because a password containing '@' or ':' MUST be
+# percent-encoded to be a valid URI, and libpq decodes it — PGPASSWORD does not.
+DSN="$DATABASE_URL"
+if [[ "$DATABASE_URL" =~ ^([a-zA-Z][a-zA-Z0-9+.-]*://)([^:@/]+):([^@]*)@(.*)$ ]]; then
+	PGPASSWORD="$(printf '%b' "${BASH_REMATCH[3]//%/\\x}")"
+	export PGPASSWORD
+	DSN="${BASH_REMATCH[1]}${BASH_REMATCH[2]}@${BASH_REMATCH[4]}"
+fi
+
 pg_run() { # pg_run <tool> [args...]
 	local tool="$1"; shift
 	if [[ -n "$PG_CONTAINER" ]]; then
-		docker exec -i "$PG_CONTAINER" "$tool" "$@"
+		# `-e PGPASSWORD` with NO value: docker/podman copy it from this
+		# process's environment. Writing `-e "PGPASSWORD=$PGPASSWORD"` would
+		# put the password straight back into argv — docker's this time.
+		if [[ -n "${PGPASSWORD:-}" ]]; then
+			docker exec -i -e PGPASSWORD "$PG_CONTAINER" "$tool" "$@"
+		else
+			docker exec -i "$PG_CONTAINER" "$tool" "$@"
+		fi
 	else
 		"$tool" "$@"
 	fi
@@ -80,7 +110,7 @@ pgsql() { pg_run "${PSQL:-psql}" "$@"; }
 check_versions() {
 	local client server
 	client="$(pg_run "${PGDUMP:-pg_dump}" --version | grep -oE '[0-9]+' | head -1)"
-	server="$(pgsql "$DATABASE_URL" -tAc 'SHOW server_version' | grep -oE '^[0-9]+')"
+	server="$(pgsql "$DSN" -tAc 'SHOW server_version' | grep -oE '^[0-9]+')"
 	if [[ -z "$client" || -z "$server" ]]; then
 		echo "   note: could not determine client/server versions; continuing" >&2
 		return 0
@@ -117,7 +147,7 @@ echo "== database"
 # which is what makes "restore into a clean database and check" possible.
 # Streamed to stdout so the archive lands on the host even when the tools run
 # inside the server's container.
-pg_run "${PGDUMP:-pg_dump}" --format=custom --no-owner --no-privileges "$DATABASE_URL" >"$DEST/db.dump"
+pg_run "${PGDUMP:-pg_dump}" --format=custom --no-owner --no-privileges "$DSN" >"$DEST/db.dump"
 echo "   ok: $(du -h "$DEST/db.dump" | cut -f1)"
 
 echo "== artifact blobs"
@@ -142,7 +172,7 @@ while read -r hex; do
 		echo "   PROBLEM: manifest references blob $hex, which is not in the backup" >&2
 		MISSING=$((MISSING + 1))
 	fi
-done < <(pgsql "$DATABASE_URL" -tA -c "SELECT DISTINCT sha256 FROM artifacts.manifests" 2>/dev/null || true)
+done < <(pgsql "$DSN" -tA -c "SELECT DISTINCT sha256 FROM artifacts.manifests" 2>/dev/null || true)
 
 cat >"$DEST/MANIFEST" <<EOF
 jarvis-backup 1

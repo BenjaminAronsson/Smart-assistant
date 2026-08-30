@@ -40,3 +40,28 @@ fn migrate_argument_is_recognised() {
         Ok(jarvisd::cli::Command::Migrate)
     );
 }
+
+/// `jarvisd migrate --dry-run` must not perform a real migration.
+///
+/// The parser used to take the first word and discard the rest, so this exact
+/// command line — typed by an operator who believed they had asked for a no-op
+/// — returned `Command::Migrate` and applied an irreversible schema change to a
+/// production database. There is no `--dry-run`; the only safe answer to a flag
+/// this binary does not implement is to refuse, the same way an unknown
+/// subcommand already does.
+#[test]
+fn a_flag_jarvisd_does_not_implement_is_refused_not_ignored() {
+    for argv in [
+        vec!["jarvisd", "migrate", "--dry-run"],
+        vec!["jarvisd", "migrate", "--help"],
+        vec!["jarvisd", "migrate", "extra"],
+        vec!["jarvisd", "--dry-run"],
+    ] {
+        let parsed = jarvisd::cli::parse(argv.iter().copied().map(String::from));
+        assert!(
+            matches!(parsed, Err(ref message) if message.contains("usage")),
+            "{argv:?} must produce a usage error rather than silently running \
+             the subcommand, got {parsed:?}"
+        );
+    }
+}

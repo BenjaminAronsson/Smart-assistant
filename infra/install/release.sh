@@ -29,11 +29,24 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
+# The single definition of what a release contains. Sourced rather than
+# repeated, because verify-release.sh must enumerate the release EXACTLY the
+# way this script did.
+# shellcheck source=release-manifest.sh
+. "$HERE/release-manifest.sh"
 OUT_ROOT="${1:-}"
 if [[ -z "$OUT_ROOT" ]]; then
 	echo "usage: JARVIS_RELEASE_KEY=<ssh-private-key> $0 <output-directory>" >&2
 	exit 2
 fi
+# ABSOLUTE, before anything uses it. `mkdir -p "$DEST"` runs in the caller's
+# cwd, but `(cd "$REPO" && cargo xtask dist --stage "$DEST")` resolves the same
+# relative path against $REPO — and the README documents the relative form
+# (`infra/install/release.sh dist/`). Run from anywhere but the repo root, the
+# payload landed in $REPO/dist/... while the manifest step's `cd "$DEST"` found
+# the empty directory this script had just created, and signed it. `realpath -m`
+# resolves a path that does not exist yet, which is the normal case here.
+OUT_ROOT="$(realpath -m "$OUT_ROOT")"
 : "${JARVIS_RELEASE_KEY:?JARVIS_RELEASE_KEY must point at an SSH private key}"
 [[ -f "$JARVIS_RELEASE_KEY" ]] || { echo "ABORT: no such key: $JARVIS_RELEASE_KEY" >&2; exit 2; }
 
@@ -97,20 +110,22 @@ echo "== 3/4 manifest"
 # while signing the binaries is worse than signing nothing, because the
 # signature makes the whole directory look checked.
 #
-# Relative paths, LC_ALL=C sort: the manifest must be byte-identical for
-# identical inputs, or the signature is over an accident of directory order.
+# The enumeration itself lives in release-manifest.sh, sourced above, because
+# verify-release.sh has to repeat it EXACTLY to treat the manifest as a closed
+# set. See that file for why the exclusions are anchored and why symlinks count.
 #
-# The five exclusions are ANCHORED to the top level (`-path './NAME'`, not
-# `-name NAME`): `-name` matches a basename at ANY depth, so a future payload
-# file that happens to share a name with one of these — e.g.
-# `migrations/RELEASE` — would be silently dropped from SHA256SUMS while still
-# shipping inside the release: present in the tarball, absent from what the
-# signature covers. These five are release metadata that only ever exist at
-# the top of $DEST, so anchoring changes nothing about today's layout.
-(cd "$DEST" && find . -type f \
-    ! -path './SHA256SUMS' ! -path './RELEASE' ! -path './SIGNED-PAYLOAD' \
-    ! -path './SIGNED-PAYLOAD.sig' ! -path './signing-key.pub' \
-    -printf '%P\n' | LC_ALL=C sort | xargs sha256sum > SHA256SUMS)
+# `xargs -r`: with empty input, plain `xargs sha256sum` still runs sha256sum
+# once, which reads STDIN and writes a single line for `-`. That is how an empty
+# staging directory produced a signed, cleanly-verifying, entirely empty release
+# that reported "1 artifacts match". `-d '\n'` because a payload path may
+# contain spaces and xargs' default quote handling would split it.
+release_payload_paths "$DEST" \
+	| (cd "$DEST" && xargs -r -d '\n' sha256sum > SHA256SUMS)
+
+# Before signing, not after: a signature over a manifest that cannot describe a
+# release is the failure mode this whole script exists to prevent.
+assert_manifest_plausible "$DEST" || exit 1
+
 cat > "$DEST/RELEASE" <<EOF
 jarvis-release 1
 version=$VERSION
