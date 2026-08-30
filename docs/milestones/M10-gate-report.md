@@ -177,9 +177,17 @@ never had Jarvis" as demonstrated when it has only been demonstrated in a contai
 sound card. Three items, each with the exact command already written down in
 `docs/milestones/M10-acceptance.md` §2, so the remaining work is a checklist:
 
-1. **Clean-machine install, the hardware half.** Reimage a laptop or use a fresh VM; follow
-   `docs/TRY-IT.md` literally, nothing skipped. What matters is not whether it works but where
-   it stops (`M10-acceptance.md` §2.1).
+1. **Clean-machine install — two machines, and only one of them needs hardware.**
+   `M10-acceptance.md` §2.1 was split after this report was first written, because it had
+   bundled the daemon host with a room node and made the whole item wait on satellite
+   hardware. It does not: `cpal` is in `jarvis-agent` alone and `jarvisd` has no audio
+   dependency at all.
+   - **§2.1a, the host** — fresh Debian/Ubuntu, Docker, systemd. No microphone, no
+     compositor. A VM is a legitimate host, including one on the development machine. What
+     is left is only what a container cannot show: real systemd ordering, surviving a reboot
+     unattended, and pairing a real browser.
+   - **§2.1b, a room node** — microphone, speakers, Hyprland. The only part that genuinely
+     needs hardware, and where the wake word has to fire in a real room.
 
 2. **NFR-04 on the reference 8 GB ultrabook**, with the voice compose stack running:
 

@@ -1643,3 +1643,30 @@ fn verify_release_refuses_a_signers_argument_it_cannot_use() {
 
     std::fs::remove_dir_all(&sandbox).ok();
 }
+
+/// The three things a fresh person needs and the tarball cannot give them.
+///
+/// Each of these was missing from the README while the code that requires it
+/// shipped: the wake-word models are provisioned at install time by ADR-032 and
+/// are deliberately not in the payload, so a node without them pairs and answers
+/// to nothing; the reasoning provider spawns `claude` **as the service user**, so
+/// a login in the operator's own shell leaves the daemon healthy and unable to
+/// answer; and `first-run.sh` checks for both, at the end, which is after the
+/// point where knowing would have helped.
+#[test]
+fn the_readme_names_what_the_tarball_cannot_provide() {
+    let readme = read("README.md");
+
+    assert!(
+        readme.contains("fetch-wake-assets.sh"),
+        "the README must tell a node operator to provision the wake-word models. \
+         They are not in the tarball by design (ADR-032), so a node that skips \
+         this pairs successfully and then answers to nothing."
+    );
+    assert!(
+        readme.contains("sudo -u jarvis claude login"),
+        "the README must say the Claude CLI is authenticated AS THE SERVICE USER. \
+         jarvisd spawns it as `jarvis`; a login in the operator's own shell leaves \
+         a daemon that starts, reports healthy, and cannot answer anything."
+    );
+}
