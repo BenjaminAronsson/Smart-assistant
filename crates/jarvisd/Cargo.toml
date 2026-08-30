@@ -22,43 +22,43 @@ anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-async-trait = "0.1"
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
-axum = { version = "0.8", features = ["ws"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync"] }
-tokio-util = { version = "0.7", features = ["rt"] }
-tower = "0.5"
-tower-http = { version = "0.6", features = ["trace", "fs"] }
-figment = { version = "0.10", features = ["toml", "env"] }
-sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls"] }
-rand = "0.9"
+async-trait.workspace = true
+futures-util = { workspace = true, features = ["std"] }
+axum = { workspace = true, features = ["ws"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync"] }
+tokio-util = { workspace = true, features = ["rt"] }
+tower.workspace = true
+tower-http = { workspace = true, features = ["trace", "fs"] }
+figment = { workspace = true, features = ["toml", "env"] }
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "tls-rustls"] }
+rand.workspace = true
 # Node identity (F7.2, ADR-031): Ed25519 verification only — jarvisd never
 # holds a node's private key. `from_bytes` rejects non-canonical and
 # small-order points, and `verify_strict` rejects the malleable forms, which is
 # why this is a real dependency rather than a hand-rolled check. BSD-3-Clause.
-ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
+ed25519-dalek = { workspace = true, features = ["std", "zeroize"] }
 # base64 for the wire encoding of keys, challenges and signatures (ADR-031).
-base64 = "0.22"
+base64.workspace = true
 # TLS for LAN/remote nodes (F7.3, docs/06 §7). rustls only — no OpenSSL, no
 # system trust store: the certificate is self-signed and pinned by fingerprint
 # at pairing (ADR-031), so there is no chain to validate.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { workspace = true, features = ["ring", "std", "tls12"] }
 # PEM parsing lives in pki-types now; `rustls-pemfile` is unmaintained
 # (RUSTSEC-2025-0134) and there is no reason to adopt a fresh advisory.
-rustls-pki-types = { version = "1", features = ["std"] }
+rustls-pki-types = { workspace = true, features = ["std"] }
 # `axum::serve` has no TLS variant, so the accept loop is ours (see
 # `tls::serve`). `axum-server` would do it in fewer lines but pulls the
 # unmaintained `rustls-pemfile` (RUSTSEC-2025-0134); hyper + hyper-util are
 # already in the tree via axum.
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
-hyper = { version = "1", features = ["server", "http1"] }
-hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+tokio-rustls = { workspace = true, features = ["ring", "tls12"] }
+hyper = { workspace = true, features = ["server", "http1"] }
+hyper-util = { workspace = true, features = ["server-auto", "tokio"] }
 # PMTiles directories and metadata are gzip-encoded inside the archive (F3b.5,
 # ADR-013). Pure-Rust inflate (miniz_oxide) — no C toolchain, no TLS stack, and
 # only the *directory* pages are ever decoded: tile bodies are forwarded to the
 # browser exactly as stored.
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-sha2 = "0.10"
+flate2 = { workspace = true, features = ["rust_backend"] }
+sha2.workspace = true
 # Secret references must resolve through a real OS store. keyring 3 enables no
 # backend by default and otherwise silently uses its process-local mock, which
 # loses every secret at restart. Match jarvis-agent's pure-Rust Secret Service
@@ -66,16 +66,16 @@ sha2 = "0.10"
 # backend keeps libdbus + pkg-config out of the daemon build. The blocking
 # keyring facade is called only through `resolve_secret_ref_async`, which moves
 # it off Tokio's runtime threads as required by keyring's async backend.
-keyring = { version = "3", features = ["async-secret-service", "crypto-rust", "tokio"] }
-hex = "0.4"
-ulid = "1"
-time = { version = "0.3", features = ["formatting"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-opentelemetry = "0.31"
-opentelemetry = "0.30"
-opentelemetry_sdk = { version = "0.30", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.30", features = ["grpc-tonic"] }
+keyring = { workspace = true, features = ["async-secret-service", "crypto-rust", "tokio"] }
+hex.workspace = true
+ulid.workspace = true
+time = { workspace = true, features = ["formatting"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing-opentelemetry.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
+opentelemetry-otlp = { workspace = true, features = ["grpc-tonic"] }
 
 [dev-dependencies]
 # Test-only, and kept out of `[dependencies]` deliberately (M7 gate S-3): none
@@ -83,29 +83,29 @@ opentelemetry-otlp = { version = "0.30", features = ["grpc-tonic"] }
 # an X.509 generator in the daemon's tree is advisory surface for no runtime
 # purpose. Golden 11 needs reqwest to talk TLS the way a node does; rcgen mints
 # a certificate per run so no key is ever committed.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-manual-roots"] }
-rcgen = "0.14"
-tempfile = "3"
+reqwest = { workspace = true, features = ["json", "rustls-tls-manual-roots"] }
+rcgen.workspace = true
+tempfile.workspace = true
 # Node keypairs for the pairing tests. `ed25519-dalek` 2 generates against
 # rand_core 0.6 while the workspace runs rand 0.9, so the test build pulls the
 # older core explicitly rather than downgrading the daemon's RNG.
-ed25519-dalek = { version = "2", default-features = false, features = ["std", "rand_core"] }
-rand_core6 = { package = "rand_core", version = "0.6", features = ["getrandom"] }
-base64 = "0.22"
-http-body-util = "0.1"
+ed25519-dalek = { workspace = true, features = ["std", "rand_core"] }
+rand_core6 = { workspace = true, features = ["getrandom"] }
+base64.workspace = true
+http-body-util.workspace = true
 # The map tests build a synthetic PMTiles archive byte-for-byte (no network, no
 # committed binary fixture), which means gzipping its directories.
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+flate2 = { workspace = true, features = ["rust_backend"] }
 # FakeModel + fake ports for the gateway integration tests (never in the binary).
 jarvis-application = { workspace = true, features = ["fixtures"] }
 # `#[sqlx::test]` throwaway DBs for the end-to-end streaming/resync test; the
 # extra features unify into the test build only (the binary stays lean).
-sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "macros", "migrate", "time"] }
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "tls-rustls", "macros", "migrate", "time"] }
 # WebSocket client for the real-socket streaming test (matches the version axum
 # already pulls in for its `ws` feature, so no duplicate build).
 # `rustls-tls-webpki-roots` is what exposes `Connector::Rustls`, so golden 11
 # can hand the client a config that trusts exactly the daemon's certificate.
-tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }
 # Golden 7 spawns the real `tools/coding-worker` child process; the `process`
 # feature unifies into the test build only (the binary spawns no children).
-tokio = { version = "1", features = ["process", "io-util"] }
+tokio = { workspace = true, features = ["process", "io-util"] }

@@ -34,3 +34,81 @@ serde_json = "1"
 schemars = "1"
 thiserror = "2"
 anyhow = "1"
+
+# F9.3: promoted from 41 per-crate literal declarations (some crates in 2, 3, up
+# to 11 manifests) so a version bump is a one-line edit instead of an N-file one.
+# Every entry below keeps `features = [...]` at the MEMBER site, per-crate, as
+# before — only the version (and, where any member needed it, `default-features`)
+# moved here. Preserved exactly: `rand_core6`'s package alias, the client/server
+# `rmcp` role split, and every dependency whose version differs from a sibling
+# crate's use of the "same-named" feature set (none do; only feature LISTS vary).
+#
+# `default-features = false` appears here only where at least one member already
+# disabled it. Edition 2024 forbids the other direction (a member cannot disable
+# default-features on a dependency the workspace leaves enabled — rust-lang/cargo
+# rejects it as a hard error, not a warning), so wherever one crate wanted
+# defaults off and a sibling wanted them on, the workspace entry is `false` and
+# the sibling re-enables with an explicit `default-features = true` at its own
+# site (the one direction edition 2024 still allows). Two of those are NOT
+# cosmetic: `futures-util`'s defaults include `async-await`/`async-await-macro`,
+# and `rmcp`'s include `base64`/`macros`/`server` — both genuinely used by the
+# crate that keeps them on (`jarvis-adapters`, `mcp-echo-fixture`). `tokio` and
+# `tokio-util` both ship `default = []` upstream, so `default-features = false`
+# here changes nothing for any of their eleven and five call sites respectively —
+# checked before setting it, not assumed.
+async-trait = "0.1"
+axum = "0.8"
+base64 = "0.22"
+cpal = "0.16"
+ed25519-dalek = { version = "2", default-features = false }
+fastembed = { version = "=5.17.4", default-features = false }
+figment = "0.10"
+flate2 = { version = "1", default-features = false }
+futures-core = "0.3"
+futures-util = { version = "0.3", default-features = false }
+getrandom = "0.3"
+hex = "0.4"
+http-body-util = "0.1"
+hyper = "1"
+hyper-util = "0.1"
+keyring = "3"
+lettre = { version = "0.11", default-features = false }
+opentelemetry = "0.30"
+opentelemetry-otlp = "0.30"
+opentelemetry_sdk = "0.30"
+ort = { version = "=2.0.0-rc.13", default-features = false }
+rand = "0.9"
+# ed25519-dalek 2 generates against rand_core 0.6 while the workspace runs rand
+# 0.9; pinned under an alias rather than downgrading anyone's RNG (jarvis-agent
+# and jarvisd's dev-dependencies both need this for the same reason).
+rand_core6 = { package = "rand_core", version = "0.6" }
+rcgen = "0.14"
+reqwest = { version = "0.12", default-features = false }
+# Client and server are opposite roles in this workspace (docs/06 §MCP): Jarvis
+# is an MCP host (client) everywhere except tools/mcp-echo-fixture, which *is* a
+# test-fixture MCP server. `default-features = false` here matches the client
+# side; the fixture explicitly restores full defaults (`server` is already one
+# of them) at its own site.
+rmcp = { version = "2.2.0", default-features = false }
+rustls = { version = "0.23", default-features = false }
+rustls-pki-types = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false }
+tempfile = "3"
+time = "0.3"
+tl = "0.7.8"
+# Ships `default = []` upstream (checked, not assumed) — `default-features =
+# false` is a no-op for every one of tokio's eleven call sites; it is set for
+# consistency with the deps above where it is NOT a no-op.
+tokio = { version = "1", default-features = false }
+tokio-rustls = { version = "0.26", default-features = false }
+tokio-tungstenite = "0.29"
+# Also `default = []` upstream — see the tokio note.
+tokio-util = { version = "0.7", default-features = false }
+tower = "0.5"
+tower-http = "0.6"
+tracing = "0.1"
+tracing-opentelemetry = "0.31"
+tracing-subscriber = "0.3"
+ulid = "1"
+zbus = { version = "5", default-features = false }
