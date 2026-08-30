@@ -11,22 +11,37 @@ authenticated identity, policy rules, and exact expiring execution grants.
 
 ## Install
 
-One x86_64 Debian or Ubuntu machine. It needs **Docker Engine specifically** (a
-running `docker.service` unit — podman's `docker`-compatible shim registers no
-such unit and `jarvis-deps.service` will not start), ALSA, and systemd. **No
-Rust, no Node, no source tree.**
+One x86_64 Debian or Ubuntu machine with Docker Engine, ALSA, systemd, and the
+Claude CLI authenticated as the service user. No Rust, no Node, no source tree.
 
-It also needs the **Claude CLI on `PATH`**, authenticated *as the service user* —
-the reasoning provider spawns it, and a daemon without it starts, looks healthy
-and cannot answer anything. `first-run.sh` checks for both, at the end.
+> **No release is published yet** — `v0.1.0` below doesn't exist on the releases
+> page. Cut the tarball yourself first (see **Building it yourself**), then run
+> the steps below starting at `tar`, using that local file instead of `curl`.
 
-> **No release is published yet.** The download below is the shape of the flow,
-> and `v0.1.0` does not exist on the releases page: CI deliberately does not
-> publish (it signs with a throwaway key), so a release has to be cut locally
-> with the real key first — see **Building it yourself**. Until then, cut the
-> tarball on a build machine, copy it to the host, and start from `tar` below.
-> This is the first thing a fresh install stops on, so it is written here rather
-> than discovered.
+### Quick start
+
+```bash
+sudo apt install docker.io docker-compose-plugin libasound2t64   # libasound2 on older releases
+
+VERSION=0.1.0
+BASE=https://github.com/BenjaminAronsson/Smart-assistant/releases/download/v$VERSION
+curl -LO $BASE/jarvis-$VERSION-x86_64-linux-gnu.tar.zst
+tar --zstd --no-same-owner --no-same-permissions -xf jarvis-$VERSION-x86_64-linux-gnu.tar.zst
+cd jarvis-$VERSION
+
+./install/verify-release.sh .
+sudo ./install/install.sh
+
+sudo -u jarvis claude login          # authenticate the reasoning provider AS the service user
+
+journalctl -u jarvisd | grep -i pairing   # one-time pairing code
+```
+
+Then open **<http://127.0.0.1:8741/>** and pair with that code. That's a working,
+LAN-isolated instance. For a satellite node or opening the daemon to the LAN, see
+the sections below. For what each step does and why, keep reading.
+
+### Step by step, with rationale
 
 ```bash
 sudo apt install docker.io docker-compose-plugin libasound2t64   # libasound2 on older releases
