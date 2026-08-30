@@ -14,33 +14,33 @@ unsafe_code = "deny"
 [dependencies]
 jarvis-contracts.workspace = true
 anyhow.workspace = true
-serde = { version = "1", features = ["derive"] }
+serde.workspace = true
 serde_json.workspace = true
 # `process` is for the media window launch only (F3a.7, ADR-012 cast-a-link):
 # a fixed allowlisted browser, argv-spawned, never a shell.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "time", "sync", "process"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "time", "sync", "process"] }
 # `rustls-tls-webpki-roots` is what exposes `Connector::Rustls` (the same
 # feature golden 11 uses for the same reason). The bundled roots are never
 # consulted: the node hands the connector a config whose only verifier is the
 # fingerprint it pinned at pairing (ADR-031 §4 — the certificate is self-signed,
 # so there is no chain to validate and nothing a CA could tell us).
-tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
+tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }
+futures-util = { workspace = true, features = ["std"] }
 # Node identity (ADR-031 §1): the agent *generates* and *signs*, which is why it
 # needs `rand_core` where jarvisd — which only verifies — does not.
-ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize", "rand_core"] }
+ed25519-dalek = { workspace = true, features = ["std", "zeroize", "rand_core"] }
 # `ed25519-dalek` 2 generates against rand_core 0.6 while the workspace runs
 # rand 0.9; pull the older core explicitly rather than downgrade anyone's RNG
 # (same reasoning as jarvisd's dev-dependency).
-rand_core6 = { package = "rand_core", version = "0.6", features = ["getrandom"] }
-base64 = "0.22"
-sha2 = "0.10"
-hex = "0.4"
+rand_core6 = { workspace = true, features = ["getrandom"] }
+base64.workspace = true
+sha2.workspace = true
+hex.workspace = true
 # Pinned TLS, client side. No `webpki-roots`, no system trust store: pinning is
 # the entire trust decision.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-rustls-pki-types = { version = "1", features = ["std"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls = { workspace = true, features = ["ring", "std", "tls12"] }
+rustls-pki-types = { workspace = true, features = ["std"] }
+tokio-rustls = { workspace = true, features = ["ring", "tls12"] }
 # The device token and private key live in the OS keyring, never in the
 # environment (invariant 5). ADR-031 §1 permits "keyring where available, else a
 # 0600 file", and `store.rs` implements exactly that pair.
@@ -57,13 +57,13 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 # install story. The async one speaks D-Bus through `zbus`, which this
 # workspace already builds for MPRIS — so this costs no new transitive tree at
 # all. `crypto-rust` keeps the transport encryption pure Rust (no OpenSSL).
-keyring = { version = "3", features = ["async-secret-service", "crypto-rust", "tokio"] }
+keyring = { workspace = true, features = ["async-secret-service", "crypto-rust", "tokio"] }
 # Node audio (F8.2). cpal is the ecosystem-standard cross-platform audio I/O
 # crate and is a thin wrapper over the host API — ALSA on Linux, which needs
 # `libasound2-dev` at build time (added to CI). No resampling or DSP crate: the
 # nearest-neighbour conversion in `audio.rs` is all a 16 kHz speech path needs,
 # and a satellite is the wrong place for a DSP dependency (low-power rule 5).
-cpal = "0.16"
+cpal.workspace = true
 # The wake-word engine (F8.3, ADR-032). Optional on purpose: ADR-032's last
 # consequence makes ONNX Runtime a per-satellite-image cost, not a build-time
 # one. CI builds and tests the pipeline without it, and a node with the feature
@@ -76,14 +76,14 @@ cpal = "0.16"
 # and a C toolchain onto every satellite — the exact dependency this crate
 # already refuses for the keyring backend two entries up. `tls-rustls` fetches
 # the runtime over the rustls this crate has linked anyway.
-ort = { version = "=2.0.0-rc.13", default-features = false, features = [
+ort = { workspace = true, features = [
     "std",
     "download-binaries",
     "tls-rustls",
     "copy-dylibs",
 ], optional = true }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
 default = []
@@ -91,10 +91,10 @@ default = []
 wake-word-onnx = ["dep:ort"]
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "io-util"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "io-util"] }
 # A *real* rustls listener with a real certificate for the pairing tests — the
 # feature's evidence is "pairs against a real TLS listener", so a mocked
 # transport would not be evidence at all. rcgen mints one per run; no key is
 # ever committed.
-rcgen = "0.14"
-tempfile = "3"
+rcgen.workspace = true
+tempfile.workspace = true

@@ -15,49 +15,52 @@ jarvis-application.workspace = true
 thiserror.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-tokio = { version = "1", features = ["process", "sync", "time", "io-util", "fs", "net"] }
-tokio-util = { version = "0.7", default-features = false, features = ["codec"] }
-tracing = "0.1"
-futures-util = "0.3"
-async-trait = "0.1"
-sha2 = "0.10"
+tokio = { workspace = true, features = ["process", "sync", "time", "io-util", "fs", "net"] }
+tokio-util = { workspace = true, features = ["codec"] }
+tracing.workspace = true
+# `futures-util`'s workspace entry disables default-features (a sibling crate
+# needs that); this crate genuinely uses the defaults (`async-await`,
+# `async-await-macro`), so they are restored here explicitly (F9.3).
+futures-util = { workspace = true, default-features = true }
+async-trait.workspace = true
+sha2.workspace = true
 # MCP host (client) role only (F2.7, docs/03 §MCP, docs/06 §5): Jarvis launches
 # and drives out-of-process tool servers; it never runs a server. `default-features
 # = false` keeps rmcp's default `server` role out of the host — a smaller compile
 # and attack surface at the Z3 boundary. `transport-child-process` transitively
 # pulls the async-rw transport used to speak to the child over stdio.
-rmcp = { version = "2.2.0", default-features = false, features = ["client", "transport-child-process"] }
+rmcp = { workspace = true, features = ["client", "transport-child-process"] }
 # HTML extraction for `web.fetch` (F2.8): parse title / og:image / primary <img>
 # / main text from an UNTRUSTED (Z4) fetched page. `tl` is pure-Rust, MIT, with
 # zero transitive deps (avoids scraper's MPL-2.0 `selectors`/`cssparser`, which
 # are outside the deny.toml allowlist). Parsing is synchronous and the non-`Send`
 # `tl::VDom` is confined to a sync helper, never held across an await (keeps the
 # executor future `Send`).
-tl = "0.7.8"
+tl.workspace = true
 # Live web.search/web.fetch backends (F2.8 Slice 3). Pinned to 0.12 to reuse the
 # workspace's existing rustls+ring TLS stack (already in the lock via otel/tonic)
 # — no aws-lc-rs/OpenSSL-licensed crate enters the tree, keeping cargo-deny green.
 # `stream` is for ElevenLabs (F8.11): spoken audio is consumed as it
 # arrives so barge-in can cut it off mid-sentence, rather than buffering a
 # whole utterance before a word is heard.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2", "stream"] }
-time = { version = "0.3", features = ["formatting", "parsing"] }
+reqwest = { workspace = true, features = ["json", "rustls-tls", "http2", "stream"] }
+time = { workspace = true, features = ["formatting", "parsing"] }
 # MPRIS media control over the D-Bus **session** bus (F3a.7, ADR-012, docs/02
 # §11a). `default-features = false` + `tokio` drops zbus's default async-io
 # executor stack (async-io/async-lock/blocking thread pool) and reuses the
 # runtime jarvisd already has — a smaller resident footprint on the 8 GB target
 # (docs/09 §5) and one executor instead of two. `blocking-api` stays off: this
 # adapter is async-only.
-zbus = { version = "5", default-features = false, features = ["tokio"] }
+zbus = { workspace = true, features = ["tokio"] }
 # CPU-only memory embeddings (M4, docs/03 §3). Keep the model/download surface
 # explicit: no image models or native-TLS default feature set in the daemon.
-fastembed = { version = "=5.17.4", default-features = false, features = [
+fastembed = { workspace = true, features = [
     "hf-hub-rustls-tls",
     "ort-download-binaries-rustls-tls",
 ] }
 # SMTP outbound mail (M4, FR-36, ADR-026). Keep the transport async and use the
 # existing rustls stack; the password is injected by the host after resolution.
-lettre = { version = "0.11", default-features = false, features = [
+lettre = { workspace = true, features = [
     "builder",
     "smtp-transport",
     "tokio1",
@@ -69,4 +72,4 @@ lettre = { version = "0.11", default-features = false, features = [
 # runtime is enough — production code needs no `rt`/`macros`. `test-util` gives
 # the paused-clock (`start_paused`) the TimeoutExecutor tests use to assert a
 # deadline fires without sleeping in real time.
-tokio = { version = "1", features = ["rt", "macros", "test-util", "net"] }
+tokio = { workspace = true, features = ["rt", "macros", "test-util", "net"] }

@@ -21,16 +21,19 @@ name = "mcp-echo-fixture"
 path = "src/main.rs"
 
 [dependencies]
-# Server role only: this fixture *is* an MCP tool server. The default features
-# carry the async-rw transport the stdio tuple uses.
-rmcp = { version = "2.2.0", features = ["server"] }
-tokio = { version = "1", features = ["rt", "macros", "io-std", "io-util"] }
+# Server role only: this fixture *is* an MCP tool server. The workspace entry
+# disables rmcp's default-features for the client side (jarvis-adapters); this
+# fixture needs them back — `server`, `macros` and `base64` all come from rmcp's
+# own default set, and this crate genuinely uses `server` plus the macros it
+# implies (F9.3).
+rmcp = { workspace = true, default-features = true, features = ["server"] }
+tokio = { workspace = true, features = ["rt", "macros", "io-std", "io-util"] }
 serde_json.workspace = true
-anyhow = "1"
+anyhow.workspace = true
 
 [dev-dependencies]
 jarvis-adapters.workspace = true
 jarvis-application.workspace = true
 jarvis-domain.workspace = true
-tokio = { version = "1", features = ["rt", "macros", "process", "time"] }
-tokio-util = { version = "0.7", default-features = false }
+tokio = { workspace = true, features = ["rt", "macros", "process", "time"] }
+tokio-util.workspace = true
