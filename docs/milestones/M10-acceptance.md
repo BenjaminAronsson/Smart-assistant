@@ -71,14 +71,37 @@ The list was also **narrowed** by testing, not guessed: `jarvisd` needs only
 `build-essential`; `pkg-config`, `libssl-dev` and `cmake` are not required, because TLS is
 rustls throughout and nothing links OpenSSL.
 
-**Still outstanding, and genuinely owner-only.** A container has no sound card, no
-microphone, no compositor and no session bus. What remains unverified on a clean machine is
-everything past the build: pairing a real browser, a real audio device opening, the wake
-word firing in a room, and `room-node` under Hyprland. That needs a reimaged laptop, and
-`docs/TRY-IT.md` followed literally on it.
+**Still outstanding — and it is TWO machines, not one.** This section used to say "that needs
+a reimaged laptop" over a list that mixes the daemon host with a room node, which made the
+whole thing wait on satellite hardware. It does not. `cpal` appears in exactly one crate,
+`jarvis-agent`; `jarvisd` has no audio dependency at all, and wake word, AEC and capture
+(`wake_onnx.rs`, `aec.rs`, `node_voice.rs`) are all node-side. So:
 
-*Method for the rest:* fresh VM or reimaged laptop, TRY-IT.md followed literally, nothing
-skipped. What matters is not whether it works but **where it stops**.
+#### 2.1a The daemon host — **no microphone, no compositor, and a VM will do**
+
+`jarvisd` needs a fresh Debian/Ubuntu machine, Docker Engine and systemd. Nothing more. CI
+already installs the signed release into a pristine `ubuntu:24.04`, so what remains is only
+what a container cannot show:
+
+* real systemd — `jarvis-deps.service` ordering, `--wait` actually waiting;
+* **surviving a reboot** with nobody logged in (the check `docs/09` names as the one CI
+  cannot fake);
+* pairing a real browser against the daemon over the network.
+
+*Method:* a fresh VM is a legitimate host for this — including one on the development
+machine. `docs/TRY-IT.md` followed literally, or the tarball flow in the README, then
+`reboot` and confirm the daemon comes back unattended.
+
+#### 2.1b A room node — **the only part that needs real hardware**
+
+Microphone, speakers, a Hyprland session and a session bus. This is where "a real audio
+device opening" and "the wake word firing in a room" live, and no VM or container substitutes
+for it: a false accept is a property of a room and a microphone.
+
+*Method:* a real machine in a real room, paired to the host from 2.1a, `room-node` under
+Hyprland.
+
+In both cases what matters is not whether it works but **where it stops**.
 
 ### 2.2 NFR-04 on the reference hardware
 
@@ -151,8 +174,10 @@ controlled run reproduces anything near this for `hey jarvis`, the threshold in
 `WakeSensitivity` is the first thing to look at — ADR-032's budget was chosen as the point
 at which people stop leaving a satellite switched on, and 7 an hour is well past it.
 
-*What remains is recording, not building.* Capture hours of ordinary household audio at
-16 kHz mono — television, conversation, kitchen noise — into a directory, then:
+*What remains is recording, not building* — and only the recording needs the room. The test
+itself is compute: once the corpus exists it can be run anywhere, including on the
+development machine. Capture hours of ordinary household audio at 16 kHz mono — television,
+conversation, kitchen noise — into a directory, then:
 
 ```bash
 JARVIS_WAKE_NOISE_CORPUS=/path/to/corpus JARVIS_AGENT_WAKE_WORD=hey_jarvis \

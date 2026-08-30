@@ -16,6 +16,18 @@ running `docker.service` unit — podman's `docker`-compatible shim registers no
 such unit and `jarvis-deps.service` will not start), ALSA, and systemd. **No
 Rust, no Node, no source tree.**
 
+It also needs the **Claude CLI on `PATH`**, authenticated *as the service user* —
+the reasoning provider spawns it, and a daemon without it starts, looks healthy
+and cannot answer anything. `first-run.sh` checks for both, at the end.
+
+> **No release is published yet.** The download below is the shape of the flow,
+> and `v0.1.0` does not exist on the releases page: CI deliberately does not
+> publish (it signs with a throwaway key), so a release has to be cut locally
+> with the real key first — see **Building it yourself**. Until then, cut the
+> tarball on a build machine, copy it to the host, and start from `tar` below.
+> This is the first thing a fresh install stops on, so it is written here rather
+> than discovered.
+
 ```bash
 sudo apt install docker.io docker-compose-plugin libasound2t64   # libasound2 on older releases
 
@@ -65,6 +77,13 @@ It finishes by checking its own work and telling you what is wrong. Run it
 again on a host that already has Jarvis and it upgrades instead — see
 "Back up, update, roll back" below.
 
+Then authenticate the reasoning provider **as the service user** — the daemon
+spawns `claude` as `jarvis`, so a login in your own shell does not count:
+
+```bash
+sudo -u jarvis claude login       # once; see docs/09-operations.md §5 for re-auth
+```
+
 Then open **<http://127.0.0.1:8741/>** and pair:
 
 ```bash
@@ -102,10 +121,21 @@ needs the LAN listener above.
 
 ```bash
 sudo install -m0755 bin/jarvis-agent /usr/local/bin/
+
+# The wake-word models are NOT in the tarball — ADR-032 provisions them at
+# install time against a pinned checksum rather than committing a 20 MB blob
+# nobody can review. Without this the node pairs, streams nothing, and answers
+# to nothing. Downloads into ~/.local/share/jarvis-agent/wake.
+./install/fetch-wake-assets.sh
+
 jarvis-agent pair --server https://jarvis.lan:8741 --name kitchen
 mkdir -p ~/.config/systemd/user && cp systemd/jarvis-agent.service ~/.config/systemd/user/
 systemctl --user enable --now jarvis-agent
 ```
+
+Run `fetch-wake-assets.sh` **as the user the node will run as**, not with `sudo`:
+it installs into that user's `~/.local/share`, and `jarvis-agent` is a user
+service.
 
 ### Check it
 
