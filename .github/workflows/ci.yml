@@ -22,6 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain # installs the pinned toolchain + components
+      - uses: Swatinem/rust-cache@v2
       - name: audio build dependencies (cpal → ALSA, F8.2)
         uses: ./.github/actions/audio-deps
       - uses: actions/setup-node@v4
@@ -55,6 +56,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
       - name: audio build dependencies (cpal → ALSA, F8.2)
         uses: ./.github/actions/audio-deps
       - run: cargo clippy -p jarvis-agent --features wake-word-onnx --all-targets -- -D warnings
@@ -67,6 +69,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+      # sqlx-cli ships no prebuilt Linux binary (upstream issue #1201, still open
+      # after the transact-rs migration), so `taiki-e/install-action` cannot help
+      # here the way it does for cargo-deny below. This still ends the double
+      # cold-compile: the FIRST run on a given lockfile builds it once, every run
+      # after restores the binary from actions/cache instead of recompiling.
+      - uses: taiki-e/cache-cargo-install-action@v3
+        with:
+          tool: sqlx-cli
+          features: postgres,rustls
+          no-default-features: true
       - name: audio build dependencies (cpal → ALSA, F8.2)
         uses: ./.github/actions/audio-deps
       - uses: actions/setup-node@v4
@@ -96,7 +109,6 @@ jobs:
         env:
           SQLX_OFFLINE: 'false'
         run: |
-          cargo install sqlx-cli --no-default-features --features postgres,rustls --locked
           sqlx migrate run
           cargo sqlx prepare --check --workspace
       - name: web tests (headless)
@@ -114,6 +126,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
       - name: audio build dependencies (cpal → ALSA, F8.2)
         uses: ./.github/actions/audio-deps
       - uses: actions/setup-node@v4
@@ -132,12 +145,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
       - name: audio build dependencies (cpal → ALSA, F8.2)
         uses: ./.github/actions/audio-deps
+      # cargo-deny publishes prebuilt GitHub Release binaries, so this is a real
+      # download rather than a cached rebuild — the same distinction as sqlx-cli
+      # above, decided by what upstream actually ships.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
       - name: cargo deny (licenses, advisories, bans, sources)
-        run: |
-          cargo install cargo-deny --locked
-          cargo deny check
+        run: cargo deny check
       - name: secret scan (gitleaks)
         run: |
           VERSION=8.30.0
@@ -148,10 +166,20 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    needs: [test, build]
+    # `build` is NOT a dependency: it exists to prove `cargo build --workspace
+    # --release` and `npm run build` succeed, and this job does its own `cargo
+    # build -p jarvisd` + `npm run build` regardless of what `build` did. Waiting
+    # on it serialized two independent checks for no reason.
+    needs: [test]
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/cache-cargo-install-action@v3
+        with:
+          tool: sqlx-cli
+          features: postgres,rustls
+          no-default-features: true
       - name: audio build dependencies (cpal → ALSA, F8.2)
         uses: ./.github/actions/audio-deps
       - uses: actions/setup-node@v4
@@ -169,7 +197,6 @@ jobs:
             docker exec jarvis-dev-postgres-1 pg_isready -U jarvis -d jarvis && break
             sleep 1
           done
-          cargo install sqlx-cli --no-default-features --features postgres,rustls --locked
           sqlx migrate run
       - run: cargo build -p jarvisd
       - name: build web assets
@@ -192,12 +219,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.94.1"
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
       - name: audio build dependencies (cpal → ALSA, F8.2)
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      - run: cargo install cargo-deny --locked
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
       - name: cut a release
         run: |
           set -euo pipefail
