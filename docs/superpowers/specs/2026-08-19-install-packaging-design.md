@@ -122,15 +122,52 @@ the otel-collector, and the voice services folded in — on a dedicated host, vo
 optional extra it is on a development laptop, so the `dev.yml`/`voice.yml` split stops
 earning its keep.
 
-### The one secret on disk
+### Secrets on the host — corrected after a blocker was found
 
-Compose needs the Postgres password at container-create time, so `install.sh` generates one
-and writes it to `/etc/jarvis/compose/.env`, mode 0600, owned by root.
+The original sketch said "compose needs a password, so one `.env` lands on disk; `jarvisd`
+keeps using the keyring". **The second half is false, and it would have failed on the first
+boot.**
 
-`jarvisd` still resolves its database URL from the keyring per invariant 5. But this file is
-a real secret at rest and the design says so rather than implying the keyring covers
-everything. It is root-only and the database is loopback-only. **This trade needs explicit
-owner acceptance — see the human-only decisions below.**
+`jarvisd` resolves `keyring:jarvis/database-url` through `keyring` v3 with the
+`async-secret-service` backend (`crates/jarvisd/Cargo.toml:69`) — that is **Secret Service
+over D-Bus**. `jarvisd.service` is a *system* unit running `User=jarvis` with
+`ProtectHome=true`: no login session, no session bus, no unlocked collection. The lookup
+cannot succeed, and `config.rs` treats an unresolvable secret reference as a fatal config
+error by design. The daemon would fail fast on every start, on a host where every other
+check looked healthy.
+
+**The fix, which the config layer already supports as a first-class scheme:** one root-owned
+file, `/etc/jarvis/secrets.env`, mode 0600, holding both values:
+
+```
+JARVIS_PG_PASSWORD=…      # docker compose --env-file
+JARVIS_DB_URL=postgres://jarvis:…@127.0.0.1:5432/jarvis
+```
+
+`jarvisd.toml` then sets `url_secret = "env:JARVIS_DB_URL"`, and `jarvisd.service` gains
+`EnvironmentFile=/etc/jarvis/secrets.env`. systemd reads that file **as root, before dropping
+to `User=jarvis`**, so the file need never be readable by the service account. The value
+never appears in a command line, so invariant 5's "no secrets in CLI args" holds; it is
+readable via `/proc/<pid>/environ`, which on this host means root only.
+
+The keyring stays correct for `jarvis-agent` (a *user* unit, inside a graphical session,
+where Secret Service genuinely works) and for interactively-provisioned secrets like the
+Home Assistant token.
+
+So: **one secret file on disk, not two, and it also carries the database URL.** It is
+root-only and the database is loopback-only. **This trade needs explicit owner acceptance —
+see the human-only decisions below.**
+
+### Migrations without `sqlx-cli` on the host
+
+`jarvis-infra` already embeds the migration stream (`sqlx::migrate!`, `lib.rs:29`) but
+`docs/09` has operators run `sqlx migrate run`, which means installing `sqlx-cli` — a Rust
+toolchain dependency on a machine that is supposed to need neither Rust nor a source tree.
+
+Add a `jarvisd migrate` subcommand that runs the embedded `MIGRATOR`. `jarvisd` currently
+parses no arguments at all (`main.rs:26`), so this is a small, contained change. `update.sh`
+and `install.sh` then call `jarvisd migrate`, and the host's requirements drop to: a container
+runtime, `libasound2`, and systemd.
 
 ### Install and update
 
@@ -142,11 +179,13 @@ owner acceptance — see the human-only decisions below.**
 2. Create the `jarvis` system user, `/var/lib/jarvis`, `/etc/jarvis`.
 3. Place `bin/*` → `/usr/local/bin`; `web/` → `/var/lib/jarvis/web`; `migrations/` →
    `/var/lib/jarvis/migrations`.
-4. Place `compose/` → `/etc/jarvis/compose/`; generate `.env`.
+4. Place `compose/` → `/etc/jarvis/compose/`; generate `/etc/jarvis/secrets.env` (0600,
+   root) with a random Postgres password and the matching database URL.
 5. `jarvisd.toml.example` → `/etc/jarvis/jarvisd.toml`, only if absent — never overwrite a
    configured host.
-6. Install the three units; `systemctl enable --now jarvis-deps jarvisd`.
-7. Run `first-run.sh --check-only` and report.
+6. Run `jarvisd migrate` against the freshly started database.
+7. Install the three units; `systemctl enable --now jarvis-deps jarvisd`.
+8. Run `first-run.sh --check-only` and report.
 
 **Update and rollback already exist and are tested.** `update.sh` takes a verified backup,
 applies forward migrations, health-gates the daemon, and prints the exact restore command on
@@ -194,6 +233,9 @@ instruction anywhere else.
   back; this feature supplies the install leg.
 - **Regression for the ordering bug**: a test asserting `jarvisd.service` does not reference
   `postgresql.service` and does order after `jarvis-deps.service`.
+- **Regression for the keyring blocker**: a test asserting the shipped `jarvisd.toml.example`
+  resolves its database URL through an `env:` reference, not a `keyring:` one — the failure
+  mode it guards is a daemon that cannot start on any host with no login session.
 
 ## Out of scope
 
@@ -211,4 +253,34 @@ instruction anywhere else.
 
 1. **Approve F10.9 and its position in M10** (before F10.7). Adding to an approved feature
    list is human-only.
-2. **Accept the `/etc/jarvis/compose/.env` secret-at-rest trade** described above.
+2. **Accept the `/etc/jarvis/secrets.env` secret-at-rest trade** described above — one
+   root-only file holding the Postgres password and the database URL, replacing a keyring
+   lookup that cannot work in a system service.
+
+---
+
+## Amended 2026-08-30, after the F10.9 review — who publishes, and who verifies
+
+Two things in this spec were changed by the review of PR #82, and the design is written down
+here rather than only in the diff, because both are security decisions.
+
+**CI does not publish a release.** This document assumed a GitHub Actions job on a `v*` tag
+would run `release.sh` with an ephemeral key and upload the result, and argued the ephemeral
+key was fine because it proves the pipeline rather than the provenance. That is true of the
+signature and false of the *upload*: publishing it to the URL the README tells an owner to
+`curl` means the documented `verify-release.sh` step prints `release verified` over an
+artifact signed by a key that no longer exists, and for which no `--signers` file can ever
+be produced. A green check that proves nothing about who built the bytes is worse than no
+check. CI still cuts a release and installs it on a clean host every run — that is the part
+CI can prove. Publishing is a local step with the real key (`docs/06` §9).
+
+**`install.sh` verifies the release itself.** The flow above put `verify-release.sh` before
+`install.sh` in the README and left it there. The README's line order is not a security
+control: the script that runs as root is the one that has to check, and it now refuses a
+release that fails, with `--skip-verify` for the out-of-band case, which announces itself.
+
+**And the `EnvironmentFile` has a cost this spec did not name.** Moving the database URL out
+of the keyring and into the daemon's environment (the correction above, which was right) means
+every child process the daemon spawns inherits the credential, `claude` included. Resolved at
+the same boundary the secret is resolved at: `jarvis_adapters::host_env::scrub_secrets` on
+every `Command`, with a test that fails the build when a new spawn site forgets.
