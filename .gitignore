@@ -1,3 +1,11 @@
 /target
 node_modules/
 web/dist/
+
+# Agent worktrees (F9.1). Eighteen of these were tracked as bare `160000` gitlinks
+# with no .gitmodules, so a fresh clone got eighteen empty directories it could not
+# populate, and every repo-wide `rg` returned ~5x duplicate hits from stale M3b-era
+# copies of crates/, web/ and docs/. They are scratch space for parallel agent runs,
+# not source. Ignoring them is also what restores one hit per match: ripgrep honours
+# this file.
+.claude/worktrees/
