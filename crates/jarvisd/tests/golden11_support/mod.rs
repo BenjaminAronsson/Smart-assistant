@@ -6,10 +6,18 @@
 
 use std::sync::Mutex;
 
-use jarvis_application::ports::{ArtifactStore, AuditLog, RepositoryError};
+use jarvis_application::ports::{ArtifactStore, RepositoryError};
 use jarvis_domain::artifact::{ArtifactManifest, ArtifactVersion};
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::ids::ArtifactId;
+
+// FakeAuditLog: F9.4, re-exported from jarvis-test-support — verified
+// identical against this file's original before moving. FakeArtifactStore
+// below stays local: unlike the shared FakeAuditLog, it has real `get`/
+// `latest`/`list_versions` behaviour this scenario specifically needs, which
+// the other two `FakeArtifactStore`s in this tree do not implement the same
+// way — investigated as part of F9.4 and found NOT to be a true duplicate.
+pub use jarvis_test_support::FakeAuditLog;
 
 #[derive(Default)]
 pub struct FakeArtifactStore {
@@ -74,21 +82,5 @@ impl ArtifactStore for FakeArtifactStore {
             .filter(|m| m.id() == id)
             .cloned()
             .collect())
-    }
-}
-
-#[derive(Default)]
-pub struct FakeAuditLog {
-    pub events: Mutex<Vec<AuditEvent>>,
-}
-
-#[async_trait::async_trait]
-impl AuditLog for FakeAuditLog {
-    async fn record(&self, audit: &AuditEvent) -> Result<(), RepositoryError> {
-        self.events
-            .lock()
-            .expect("not poisoned")
-            .push(audit.clone());
-        Ok(())
     }
 }

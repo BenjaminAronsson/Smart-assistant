@@ -68,6 +68,9 @@ lettre = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+# F9.4: the FakeBlobs/FakeArtifacts/FakeAuditLog doubles, verified identical
+# across every call site here before being consolidated there.
+jarvis-test-support.workspace = true
 # Async unit tests (`#[tokio::test]`) for the tool executors; the current-thread
 # runtime is enough — production code needs no `rt`/`macros`. `test-util` gives
 # the paused-clock (`start_paused`) the TimeoutExecutor tests use to assert a

@@ -78,6 +78,9 @@ opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 opentelemetry-otlp = { workspace = true, features = ["grpc-tonic"] }
 
 [dev-dependencies]
+# F9.4: the FakeBlobs/FakeArtifacts/FakeAuditLog doubles, consolidated from
+# per-test-file copies verified identical beforehand.
+jarvis-test-support.workspace = true
 # Test-only, and kept out of `[dependencies]` deliberately (M7 gate S-3): none
 # of these three is referenced anywhere in `src/`, and a full HTTP client plus
 # an X.509 generator in the daemon's tree is advisory surface for no runtime

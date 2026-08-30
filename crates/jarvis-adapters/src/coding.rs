@@ -431,10 +431,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jarvis_application::ports::{BlobRead, BlobStoreError};
-    use jarvis_domain::grants::Sha256;
-    use std::collections::BTreeMap;
-    use std::sync::Mutex as StdMutex;
+    use jarvis_test_support::{FakeArtifacts, FakeBlobs};
 
     fn a_run() -> RunId {
         "01ARZ3NDEKTSV4RRFFQ69G5FAV".parse().unwrap()
@@ -457,89 +454,8 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
-    struct FakeBlobs {
-        stored: StdMutex<BTreeMap<[u8; 32], Vec<u8>>>,
-    }
-    #[async_trait]
-    impl BlobStore for FakeBlobs {
-        async fn put(&self, bytes: &[u8]) -> Result<Sha256, BlobStoreError> {
-            // Deterministic content address for the test (not a real hash).
-            let mut key = [0u8; 32];
-            for (i, b) in bytes.iter().take(32).enumerate() {
-                key[i] = *b;
-            }
-            key[31] = bytes.len() as u8;
-            self.stored.lock().unwrap().insert(key, bytes.to_vec());
-            Ok(Sha256::from_bytes(key))
-        }
-        async fn get(&self, hash: &Sha256) -> Result<Option<Vec<u8>>, BlobStoreError> {
-            Ok(self.stored.lock().unwrap().get(hash.as_bytes()).cloned())
-        }
-        async fn contains(&self, hash: &Sha256) -> Result<bool, BlobStoreError> {
-            Ok(self.stored.lock().unwrap().contains_key(hash.as_bytes()))
-        }
-        async fn open(
-            &self,
-            hash: &Sha256,
-            max_bytes: u64,
-        ) -> Result<Option<BlobRead>, BlobStoreError> {
-            match self.get(hash).await? {
-                Some(bytes) if bytes.len() as u64 > max_bytes => Err(BlobStoreError::TooLarge {
-                    len: bytes.len() as u64,
-                    max: max_bytes,
-                }),
-                Some(bytes) => Ok(Some(BlobRead::from_bytes(bytes))),
-                None => Ok(None),
-            }
-        }
-    }
-
-    #[derive(Default)]
-    struct FakeArtifacts {
-        manifests: StdMutex<Vec<ArtifactManifest>>,
-        audits: StdMutex<Vec<AuditEvent>>,
-        fail: bool,
-    }
-    #[async_trait]
-    impl ArtifactStore for FakeArtifacts {
-        async fn create_version(
-            &self,
-            manifest: &ArtifactManifest,
-            audit: &AuditEvent,
-        ) -> Result<(), RepositoryError> {
-            if self.fail {
-                return Err(RepositoryError::Storage("store down".to_owned()));
-            }
-            // Mirror the real store: the payload is parsed as JSON before it is
-            // hashed/stored (jarvis-infra audit::append). A malformed payload must
-            // fail here too, so tests exercise the real constraint (not just clone).
-            serde_json::from_str::<serde_json::Value>(&audit.payload_json)
-                .map_err(|e| RepositoryError::Storage(format!("bad audit payload: {e}")))?;
-            self.manifests.lock().unwrap().push(manifest.clone());
-            self.audits.lock().unwrap().push(audit.clone());
-            Ok(())
-        }
-        async fn get(
-            &self,
-            _id: &ArtifactId,
-            _version: jarvis_domain::artifact::ArtifactVersion,
-        ) -> Result<Option<ArtifactManifest>, RepositoryError> {
-            Ok(None)
-        }
-        async fn latest(
-            &self,
-            _id: &ArtifactId,
-        ) -> Result<Option<ArtifactManifest>, RepositoryError> {
-            Ok(None)
-        }
-        async fn list_versions(
-            &self,
-            _id: &ArtifactId,
-        ) -> Result<Vec<ArtifactManifest>, RepositoryError> {
-            Ok(self.manifests.lock().unwrap().clone())
-        }
-    }
+    // FakeBlobs / FakeArtifacts: F9.4, jarvis-test-support — verified
+    // byte-for-byte identical against this file's originals before moving.
 
     fn host(
         response: CodingResponse,
@@ -765,9 +681,8 @@ mod tests {
     #[tokio::test]
     async fn a_store_failure_surfaces_and_no_partial_artifact_is_reported() {
         let artifacts = Arc::new(FakeArtifacts {
-            manifests: StdMutex::new(Vec::new()),
-            audits: StdMutex::new(Vec::new()),
             fail: true,
+            ..Default::default()
         });
         let host = host(
             ok_response("--- a\n+++ b\n"),

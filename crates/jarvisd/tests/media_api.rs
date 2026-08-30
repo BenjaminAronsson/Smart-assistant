@@ -16,36 +16,17 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
-use jarvis_application::ports::{AuditLog, MediaController, MediaError, RepositoryError};
-use jarvis_domain::audit::AuditEvent;
+use jarvis_application::ports::{MediaController, MediaError};
 use jarvis_domain::media::{
     MPRIS_NAME_PREFIX, MediaSnapshot, PlaybackStatus, PlayerId, PlayerState, TrackMetadata,
     TransportCommand, VolumePct,
 };
+use jarvis_test_support::FakeAuditLog;
 use jarvisd::api::{AppState, Wiring, router_with};
 use jarvisd::auth::AuthState;
 use jarvisd::media::MediaApi;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
-
-// --- fakes --------------------------------------------------------------
-
-#[derive(Default)]
-struct FakeAuditLog {
-    events: Mutex<Vec<AuditEvent>>,
-    fail: bool,
-}
-
-#[async_trait::async_trait]
-impl AuditLog for FakeAuditLog {
-    async fn record(&self, audit: &AuditEvent) -> Result<(), RepositoryError> {
-        if self.fail {
-            return Err(RepositoryError::Storage("audit forced failure".into()));
-        }
-        self.events.lock().unwrap().push(audit.clone());
-        Ok(())
-    }
-}
 
 #[derive(Debug, PartialEq, Eq)]
 enum Applied {

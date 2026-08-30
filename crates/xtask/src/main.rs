@@ -581,7 +581,14 @@ mod codegen {
 /// edges and external crates. Normal deps only — dev/build deps may be looser.
 #[derive(Debug, Default, PartialEq)]
 struct CrateDeps {
+    // Workspace-internal edges from [dependencies] — a production edge.
     workspace: BTreeSet<String>,
+    // Workspace-internal edges from [dev-dependencies]/[build-dependencies]
+    // ONLY (never also a production edge — see parse_graph). Tracked
+    // separately since F9.4: `jarvis-test-support` may be reached this way
+    // and NOT the other, and a rule that could not tell the two apart could
+    // not enforce that distinction.
+    workspace_dev: BTreeSet<String>,
     external: BTreeSet<String>,
 }
 
@@ -589,13 +596,19 @@ type DepGraph = BTreeMap<String, CrateDeps>;
 
 /// The dependency-direction rules from docs/02 §3 (NFR-08):
 /// domain ← application ← {contracts, infra, adapters} ← jarvisd.
-/// `workspace_allowed` = full allowed set of workspace-internal deps.
+/// `workspace_allowed` = allowed set of workspace-internal deps reachable as a
+/// PRODUCTION edge ([dependencies]).
+/// `dev_workspace_allowed` = additional workspace-internal deps reachable
+/// ONLY as a dev/build edge — a crate listed here failing to also appear in
+/// `workspace_allowed` is exactly the point: `jarvis-test-support` (F9.4)
+/// must never ship in a production build of anything.
 /// `external_allowed` = Some(allowlist) for purity-constrained crates
 /// (CLAUDE.md invariant 3), None = externals unconstrained here (cargo deny
 /// still gates licenses/advisories for everything).
 struct Rule {
     krate: &'static str,
     workspace_allowed: &'static [&'static str],
+    dev_workspace_allowed: &'static [&'static str],
     external_allowed: Option<&'static [&'static str]>,
 }
 
@@ -603,11 +616,13 @@ const RULES: &[Rule] = &[
     Rule {
         krate: "jarvis-domain",
         workspace_allowed: &[],
+        dev_workspace_allowed: &[],
         external_allowed: Some(&["serde", "thiserror"]),
     },
     Rule {
         krate: "jarvis-application",
         workspace_allowed: &["jarvis-domain"],
+        dev_workspace_allowed: &[],
         // async traits and cancellation primitives only — never sqlx, axum,
         // reqwest, rmcp, tokio proper, or provider SDKs.
         external_allowed: Some(&[
@@ -621,17 +636,34 @@ const RULES: &[Rule] = &[
     Rule {
         krate: "jarvis-contracts",
         workspace_allowed: &["jarvis-domain"],
+        dev_workspace_allowed: &[],
         external_allowed: None,
     },
     Rule {
         krate: "jarvis-infra",
         workspace_allowed: &["jarvis-domain", "jarvis-application"],
+        dev_workspace_allowed: &[],
         external_allowed: None,
     },
     Rule {
         krate: "jarvis-adapters",
         workspace_allowed: &["jarvis-domain", "jarvis-application"],
+        // F9.4: the crate's own tests reach the shared doubles this way.
+        dev_workspace_allowed: &["jarvis-test-support"],
         external_allowed: None,
+    },
+    Rule {
+        krate: "jarvis-test-support",
+        // F9.4: implements fakes AGAINST jarvis-application's port traits, so
+        // it needs them as a normal (not dev) dependency — a test-support
+        // crate is itself allowed to sit one layer above domain/application,
+        // same as jarvis-infra/jarvis-adapters do. What makes it different
+        // from those is who may depend on IT: every consumer's edge into this
+        // crate must be a dev-dependency (enforced per-consumer, below), so it
+        // can never ship inside a production binary.
+        workspace_allowed: &["jarvis-domain", "jarvis-application"],
+        dev_workspace_allowed: &[],
+        external_allowed: Some(&["async-trait", "serde_json"]),
     },
     Rule {
         krate: "jarvisd",
@@ -642,17 +674,22 @@ const RULES: &[Rule] = &[
             "jarvis-infra",
             "jarvis-adapters",
         ],
+        // F9.4: the daemon's own integration tests reach the shared doubles
+        // this way; nothing in src/ may.
+        dev_workspace_allowed: &["jarvis-test-support"],
         external_allowed: None,
     },
     Rule {
         krate: "jarvis-agent",
         workspace_allowed: &["jarvis-contracts"],
+        dev_workspace_allowed: &[],
         external_allowed: None,
     },
     Rule {
         krate: "xtask",
         // Dev-only crate (docs/02 §3); consumes contracts for schema codegen.
         workspace_allowed: &["jarvis-contracts"],
+        dev_workspace_allowed: &[],
         external_allowed: None,
     },
     Rule {
@@ -664,6 +701,7 @@ const RULES: &[Rule] = &[
         // edge. Not purity-constrained (it is not a domain layer), so external
         // deps (rmcp server, tokio) are unrestricted.
         workspace_allowed: &["jarvis-domain", "jarvis-application", "jarvis-adapters"],
+        dev_workspace_allowed: &[],
         external_allowed: None,
     },
 ];
@@ -709,13 +747,24 @@ fn parse_graph(metadata: &serde_json::Value) -> anyhow::Result<DepGraph> {
             let dep_name = dep["name"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("dependency without name"))?;
-            // Workspace-internal edges count for every kind — a dev/build dep on a
-            // higher layer is still an inverted architecture edge. External deps are
-            // checked for normal kind only (test/build tooling may be looser); note
-            // transitive purity is deliberately out of scope here — direct deps are
-            // the structural gate, cargo deny gates the full graph's supply chain.
+            // External deps are checked for normal kind only (test/build
+            // tooling may be looser); note transitive purity is deliberately
+            // out of scope here — direct deps are the structural gate, cargo
+            // deny gates the full graph's supply chain.
+            //
+            // Workspace-internal edges count for every kind, but the KIND is
+            // now recorded (F9.4) rather than collapsed: a dev/build dep on a
+            // higher layer is still an inverted architecture edge (so
+            // `workspace_dev` is checked against `workspace_allowed` too, see
+            // `check`), but a crate may ALSO be reachable in a way that is
+            // *dev-only* — `jarvis-test-support` must be exactly that, never
+            // a `[dependencies]` edge from anything.
             if workspace_names.contains(dep_name) {
-                deps.workspace.insert(dep_name.into());
+                if dep["kind"].is_null() {
+                    deps.workspace.insert(dep_name.into());
+                } else {
+                    deps.workspace_dev.insert(dep_name.into());
+                }
             } else if dep["kind"].is_null() {
                 deps.external.insert(dep_name.into());
             }
@@ -736,6 +785,22 @@ fn check(graph: &DepGraph) -> Vec<String> {
             if !rule.workspace_allowed.contains(&dep.as_str()) {
                 violations.push(format!(
                     "`{}` must not depend on workspace crate `{dep}` (docs/02 §3)",
+                    rule.krate
+                ));
+            }
+        }
+        // A dev-only edge is checked against BOTH lists: `workspace_allowed`
+        // (a crate that is fine as a production dependency is obviously fine
+        // as a dev one too) or `dev_workspace_allowed` (F9.4 — reachable only
+        // this way). Failing here is the enforcement that makes
+        // `jarvis-test-support` dev-dependency-only rather than merely
+        // documented as such.
+        for dep in &deps.workspace_dev {
+            if !rule.workspace_allowed.contains(&dep.as_str())
+                && !rule.dev_workspace_allowed.contains(&dep.as_str())
+            {
+                violations.push(format!(
+                    "`{}` must not dev-depend on workspace crate `{dep}` (docs/02 §3)",
                     rule.krate
                 ));
             }
@@ -774,6 +839,7 @@ mod tests {
                     name.to_string(),
                     CrateDeps {
                         workspace: ws.iter().map(|s| s.to_string()).collect(),
+                        workspace_dev: BTreeSet::new(),
                         external: ext.iter().map(|s| s.to_string()).collect(),
                     },
                 )
@@ -799,6 +865,11 @@ mod tests {
                 "jarvis-adapters",
                 &["jarvis-domain", "jarvis-application"],
                 &["reqwest"],
+            ),
+            (
+                "jarvis-test-support",
+                &["jarvis-domain", "jarvis-application"],
+                &["async-trait", "serde_json"],
             ),
             (
                 "jarvisd",
@@ -888,8 +959,11 @@ mod tests {
         });
         let graph = parse_graph(&metadata).unwrap();
         let domain = &graph["jarvis-domain"];
-        // The inverted dev edge must be visible to check(); external dev deps are not.
-        assert!(domain.workspace.contains("jarvis-infra"));
+        // The inverted dev edge must be visible to check() — as a DEV edge
+        // specifically (F9.4 split it out of `workspace`, which is now
+        // production-only); external dev deps are not visible at all.
+        assert!(domain.workspace_dev.contains("jarvis-infra"));
+        assert!(!domain.workspace.contains("jarvis-infra"));
         assert!(domain.external.contains("serde"));
         assert!(!domain.external.contains("criterion"));
         assert!(
@@ -897,6 +971,35 @@ mod tests {
                 .iter()
                 .any(|v| v.contains("jarvis-domain") && v.contains("jarvis-infra"))
         );
+    }
+
+    #[test]
+    fn test_support_is_reachable_only_as_a_dev_dependency() {
+        // A normal-dependency edge into jarvis-test-support must be rejected
+        // the same way an inverted layering edge is (F9.4) — it exists so
+        // fakes never ship inside a production binary.
+        let mut g = full_clean_graph();
+        g.get_mut("jarvis-adapters")
+            .unwrap()
+            .workspace
+            .insert("jarvis-test-support".into());
+        let violations = check(&g);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.contains("jarvis-adapters") && v.contains("jarvis-test-support")),
+            "a normal dependency on jarvis-test-support must be rejected: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn test_support_is_fine_as_a_dev_dependency() {
+        let mut g = full_clean_graph();
+        g.get_mut("jarvis-adapters")
+            .unwrap()
+            .workspace_dev
+            .insert("jarvis-test-support".into());
+        assert_eq!(check(&g), Vec::<String>::new());
     }
 
     #[test]

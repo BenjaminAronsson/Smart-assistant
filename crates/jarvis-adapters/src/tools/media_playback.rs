@@ -661,6 +661,7 @@ impl ToolExecutor for MediaOpenUrlTool {
 mod tests {
     use super::*;
     use jarvis_domain::media::{MPRIS_NAME_PREFIX, PlaybackStatus, PlayerState, TrackMetadata};
+    use jarvis_test_support::FakeAuditLog;
     use std::sync::Mutex;
 
     #[derive(Debug, PartialEq, Eq)]
@@ -1236,27 +1237,8 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
-    struct FakeAuditLog {
-        events: Mutex<Vec<jarvis_domain::audit::AuditEvent>>,
-        fail: bool,
-    }
-
-    #[async_trait]
-    impl jarvis_application::ports::AuditLog for FakeAuditLog {
-        async fn record(
-            &self,
-            audit: &jarvis_domain::audit::AuditEvent,
-        ) -> Result<(), jarvis_application::ports::RepositoryError> {
-            if self.fail {
-                return Err(jarvis_application::ports::RepositoryError::Storage(
-                    "audit forced failure".into(),
-                ));
-            }
-            self.events.lock().unwrap().push(audit.clone());
-            Ok(())
-        }
-    }
+    // FakeAuditLog: F9.4, jarvis-test-support — verified identical against
+    // this file's original before moving.
 
     fn media_profile() -> Arc<jarvis_domain::display::DisplayProfile> {
         Arc::new(jarvis_domain::display::DisplayProfile::new([(

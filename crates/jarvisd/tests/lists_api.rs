@@ -7,10 +7,12 @@
 //! ids, and auth required on every route.
 
 mod identity_fixture;
+mod support;
 use identity_fixture::InMemoryIdentityStore;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
+use support::RecordingCanvas;
 
 use axum::Router;
 use axum::body::Body;
@@ -268,19 +270,10 @@ impl ArtifactStore for FakeArtifacts {
 
 // --- harness ------------------------------------------------------------
 
-/// Records the canvas instructions the list surface publishes (F3b.6's
-/// `hud.canvas`), so a test can assert the list card actually reaches the wire
-/// rather than only that it can be built.
-#[derive(Default)]
-struct RecordingCanvas {
-    published: Mutex<Vec<jarvis_contracts::deepdive::HudCanvasDto>>,
-}
-
-impl jarvisd::cards::CanvasSink for RecordingCanvas {
-    fn publish(&self, canvas: jarvis_contracts::deepdive::HudCanvasDto) {
-        self.published.lock().unwrap().push(canvas);
-    }
-}
+// RecordingCanvas: F9.4, `mod support` above — verified identical against
+// this file's original before moving. It records the canvas instructions the
+// list surface publishes (F3b.6's `hud.canvas`), so a test can assert the
+// list card actually reaches the wire rather than only that it can be built.
 
 struct Harness {
     app: Router,
