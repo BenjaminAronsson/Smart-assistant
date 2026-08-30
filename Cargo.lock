@@ -1879,6 +1879,7 @@ dependencies = [
  "futures-util",
  "jarvis-application",
  "jarvis-domain",
+ "jarvis-test-support",
  "lettre",
  "reqwest",
  "rmcp",
@@ -1977,6 +1978,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "jarvis-test-support"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "jarvis-application",
+ "jarvis-domain",
+ "serde_json",
+]
+
+[[package]]
 name = "jarvisd"
 version = "0.1.0"
 dependencies = [
@@ -1997,6 +2008,7 @@ dependencies = [
  "jarvis-contracts",
  "jarvis-domain",
  "jarvis-infra",
+ "jarvis-test-support",
  "keyring",
  "opentelemetry",
  "opentelemetry-otlp",

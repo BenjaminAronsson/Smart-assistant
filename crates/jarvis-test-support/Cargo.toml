@@ -1,0 +1,22 @@
+[package]
+name = "jarvis-test-support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Dev-dependency-only crate (F9.4, docs/02 §3): reachable ONLY from another
+# crate's [dev-dependencies], never [dependencies] — enforced by
+# `cargo xtask arch-test`, which rejects a normal-dependency edge into this
+# crate the same way it rejects an inverted layering edge. That is the whole
+# point: a test double must never become a back door around
+# jarvis-domain's purity allowlist by shipping in a production build.
+[dependencies]
+jarvis-domain.workspace = true
+jarvis-application.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true

@@ -23,7 +23,9 @@
 //! labels itself "MODEL TIME EXCLUDED"), and
 //! `docs/milestones/M5-acceptance.md` §3.
 
+mod support;
 mod voice_fixture;
+use support::RecordingCanvas;
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
@@ -622,24 +624,8 @@ fn spotify_player(title: &str, artist: &str, album: &str) -> PlayerState {
     )
 }
 
-/// The HUD canvas, recorded. `NowPlayingHud` publishes through this seam, so a
-/// scenario can assert the card really reached it.
-#[derive(Default)]
-struct RecordingCanvas {
-    published: Mutex<Vec<jarvis_contracts::deepdive::HudCanvasDto>>,
-}
-
-impl RecordingCanvas {
-    fn published(&self) -> Vec<jarvis_contracts::deepdive::HudCanvasDto> {
-        self.published.lock().unwrap().clone()
-    }
-}
-
-impl jarvisd::cards::CanvasSink for RecordingCanvas {
-    fn publish(&self, canvas: jarvis_contracts::deepdive::HudCanvasDto) {
-        self.published.lock().unwrap().push(canvas);
-    }
-}
+// RecordingCanvas: F9.4, `mod support` above — verified identical against
+// this file's original before moving.
 
 // ===========================================================================
 // Evidence #1 — the full voice round trip

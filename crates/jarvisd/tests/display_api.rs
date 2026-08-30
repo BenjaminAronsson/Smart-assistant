@@ -14,7 +14,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
-use jarvis_application::ports::{ArtifactStore, AuditLog, DisplayDirectiveSink, RepositoryError};
+use jarvis_application::ports::{ArtifactStore, DisplayDirectiveSink, RepositoryError};
 use jarvis_domain::artifact::{
     ArtifactContent, ArtifactKind, ArtifactManifest, ArtifactSource, ArtifactVersion,
     BuildProvenance, MediaType,
@@ -23,6 +23,7 @@ use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::display::{DisplayProfile, MonitorId, Surface, SurfacePlacement};
 use jarvis_domain::ids::{ArtifactId, RunId};
 use jarvis_domain::location::Sensitivity;
+use jarvis_test_support::FakeAuditLog;
 use jarvisd::api::{AppState, Wiring, router_with};
 use jarvisd::auth::AuthState;
 use jarvisd::display::DisplayApi;
@@ -86,24 +87,8 @@ impl ArtifactStore for FakeArtifactStore {
     }
 }
 
-/// Captures recorded audit events; can be told to fail to exercise the
-/// fail-closed audit-before-dispatch path.
-#[derive(Default)]
-struct FakeAuditLog {
-    events: Mutex<Vec<AuditEvent>>,
-    fail: bool,
-}
-
-#[async_trait::async_trait]
-impl AuditLog for FakeAuditLog {
-    async fn record(&self, audit: &AuditEvent) -> Result<(), RepositoryError> {
-        if self.fail {
-            return Err(RepositoryError::Storage("audit forced failure".into()));
-        }
-        self.events.lock().unwrap().push(audit.clone());
-        Ok(())
-    }
-}
+// FakeAuditLog: F9.4, jarvis-test-support — verified identical against this
+// file's original before moving.
 
 /// Captures dispatched placements; `connected` controls the returned bool.
 struct FakeSink {
@@ -318,8 +303,8 @@ async fn open_unknown_artifact_is_404() {
 #[tokio::test]
 async fn open_does_not_dispatch_when_audit_fails() {
     let audit = FakeAuditLog {
-        events: Mutex::new(Vec::new()),
         fail: true,
+        ..Default::default()
     };
     let h = harness(profile_with_canvas("DP-1"), audit, true).await;
     seed(&h.store);
