@@ -9,6 +9,16 @@ Layered via figment: `/etc/jarvis/jarvisd.toml` → `~/.config/jarvis/jarvisd.to
 environment (`JARVIS__…`) → keyring references. Validated at startup; invalid config is
 fail-fast with a precise error. Secrets are **references**, never values.
 
+**Known limitation: `JARVIS_CONFIG` is a no-op (F10.9).** `Config::load()`
+(`crates/jarvisd/src/config.rs:989-998`) hardcodes exactly the layering above — it reads
+`/etc/jarvis/jarvisd.toml`, then `$HOME/.config/jarvis/jarvisd.toml`, then
+`JARVIS__`-prefixed environment variables. It never reads a `JARVIS_CONFIG` variable.
+`infra/systemd/jarvisd.service` nonetheless sets `Environment=JARVIS_CONFIG=/etc/jarvis/jarvisd.toml`
+(pre-existing before this feature) and `install.sh` prefixes its `jarvisd migrate` step
+with the same variable. Both are harmless today only because the hardcoded path already
+is the install path — but the variable advertises a configurability that does not exist.
+Left as-is here; fixing it is a separate decision, out of scope for this feature.
+
 ```toml
 # jarvisd.toml — annotated example (defaults shown where they exist)
 
@@ -163,17 +173,45 @@ Chromium binary + app-id map, application launch allowlist, display profile
 
 | Unit | File | Notes |
 |---|---|---|
-| `jarvisd.service` | system unit, `User=jarvis` | `DynamicUser=no`, dedicated user; `ProtectSystem=strict`, `ReadWritePaths=/var/lib/jarvis`; `Restart=on-failure`; `MemoryMax=512M` guard. |
-| `jarvis-agent.service` | **user** unit | Graphical session; `After=graphical-session.target`; access to Hyprland sockets + audio. |
-| `postgres` | compose (`infra/compose/dev.yml`, `prod.yml`) | pgvector image, local volume, no published ports beyond loopback. |
-| `otel-collector` | compose | Loopback OTLP in, local export. |
-| voice services | compose (M5) | Wyoming ports on a private compose network + loopback. |
-| tool workers | compose, per-trust profiles (M2/M3) | Read-only mounts, `network_mode` restricted, CPU/mem/pids limits. |
+| `jarvis-deps.service` | system unit | `Type=oneshot`, `RemainAfterExit=yes`; `docker compose -f /etc/jarvis/compose/prod.yml up -d --wait`. The `--wait` is what makes ordering after it mean "Postgres answers `pg_isready`" rather than "compose was invoked". |
+| `jarvisd.service` | system unit, `User=jarvis` | `After=jarvis-deps.service` — **not** `postgresql.service`, which does not exist on a host whose Postgres is a container; systemd ignores an ordering dependency on an absent unit silently. `EnvironmentFile=/etc/jarvis/secrets.env` supplies `JARVIS_DB_URL`. `ProtectSystem=strict`, `ReadWritePaths=/var/lib/jarvis`, `Restart=on-failure`. |
+| `jarvis-agent.service` | **user** unit | Graphical session; `After=graphical-session.target`; Hyprland sockets + audio. |
+| `postgres`, `otel-collector`, voice | compose (`infra/compose/prod.yml`) | pgvector image, local volumes, loopback-published ports only. `dev.yml` + `voice.yml` remain the development split. |
+| tool workers | compose, per-trust profiles | Read-only mounts, restricted `network_mode`, CPU/mem/pids limits. |
 
 Claude CLI runs as the `jarvis` service user; authenticate once interactively
 (`sudo -u jarvis claude login` or equivalent) so the daemon's spawned processes inherit
 valid credentials. Document the re-auth runbook (§5) — expired CLI auth is the most
 likely "mystery outage".
+
+**Secrets on an installed host.** `install.sh` writes `/etc/jarvis/secrets.env`
+(mode 0600, root:root) holding `JARVIS_PG_PASSWORD` and `JARVIS_DB_URL`, and
+`jarvisd.toml` refers to the latter as `env:JARVIS_DB_URL`. This is deliberate and
+the keyring is *not* an alternative here: `jarvisd` is a system service with no
+login session, so keyring's Secret Service backend has no session bus to talk to
+and the lookup fails — and an unresolvable secret reference is a fatal config
+error, so the daemon would not start at all. systemd reads `EnvironmentFile` as
+root before dropping to `User=jarvis`, so the service account never needs access
+to the file. The keyring remains correct for `jarvis-agent` (a user unit) and for
+interactively-provisioned secrets.
+
+That `EnvironmentFile` has a cost, and it is paid explicitly. A child process inherits its
+parent's environment, so the plaintext DSN was being handed to everything the daemon
+spawns — including `claude`, the process most exposed to model output and fetched web
+pages, and the app-builder worker, which runs with the network enabled when no worker image
+is configured. Every spawn site in `jarvisd` and `jarvis-adapters` therefore calls
+`jarvis_adapters::host_env::scrub_secrets`, which removes `JARVIS_DB_URL` and
+`JARVIS_PG_PASSWORD` before `spawn()`. A test walks both crates' sources and fails the build
+if a `Command::new` appears without it, because the way this leak comes back is by someone
+adding a spawn site, and nothing about a new `Command::new` looks wrong.
+
+`env_remove`, not `env_clear`: the Claude CLI needs `HOME`, `PATH` and its own credential
+paths, and a child spawned with an empty environment fails in ways that look like anything
+but a security control.
+
+**The Postgres password is never rotated by a re-install.** It is baked into the
+data volume at `initdb` time and never re-read; rotating it in `secrets.env`
+would leave a database nobody can authenticate to and nothing to say why.
 
 ## 3. Backup and restore (NFR-05, FR-30 — implemented in F10.2)
 
@@ -219,7 +257,7 @@ PGDUMP=/usr/lib/postgresql/16/bin/pg_dump  infra/install/backup.sh ...  # or exp
   still armed, and artifacts still resolve to their bytes. Verified by mutation — with
   `pg_restore` stubbed out, those tests fail.
 - Nightly via systemd timer; a quarterly restore drill remains the operator's job.
-- Upgrade procedure: backup → `sqlx migrate run` → health gate → on failure, roll back
+- Upgrade procedure: backup → `jarvisd migrate` → health gate → on failure, roll back
   the binary and `restore.sh` (a repeatable procedure is F10.3).
 
 ## 3a. Update and rollback (F10.3)
@@ -234,6 +272,13 @@ DATABASE_URL=... JARVIS__STORAGE__ARTIFACTS_ROOT=... \
 The script does the three things in the order that matters and refuses to continue when
 any fails: **take and verify a backup**, apply forward migrations, then wait for the daemon
 to report healthy — printing the exact restore command if it does not.
+
+**Migrations without `sqlx-cli` (F10.9).** Forward migrations are applied by the daemon
+binary itself — `jarvisd migrate` runs the stream embedded in `jarvis-infra`
+(`sqlx::migrate!`). An installed host therefore needs neither `sqlx-cli` nor a Rust
+toolchain. `update.sh` calls it; `sqlx migrate run` remains the equivalent in a source
+tree, and is what `docs/TRY-IT.md` still uses because a source checkout is exactly the
+case that mechanism was always meant to cover.
 
 ### Rollback is restore from backup. There is no `down` migration.
 

@@ -152,6 +152,29 @@ because a forger who replaced the binaries would replace the bundled key too.
 `verify-release.sh` says so in its output rather than letting a green tick imply more than
 it earned. Real authenticity requires `--signers` with a key you already trust.
 
+### CI never publishes a release, and the installer checks for itself (F10.9)
+
+Two consequences of the paragraph above, decided when F10.9 made the release something an
+owner downloads and runs as root.
+
+**CI builds and installs a release on every run; it does not publish one.** The workflow
+signs with an ephemeral key generated on the runner, which is right for proving the
+pipeline works and useless as provenance — the key ceases to exist when the runner does, so
+no `--signers` file for such a release can ever exist. Uploading it to the URL the README
+points at would have produced a download that verifies cleanly and proves nothing about who
+built it, which is worse than an unverified download that says so. Publishing is a local
+step with the real key.
+
+**`install.sh` verifies before it copies anything, and refuses if verification fails**
+(`--skip-verify` for the case where it already happened out of band, and it says so out
+loud). The ordering of two lines in a README is not a security control: the script that
+runs as root is the one that has to check.
+
+**The manifest is a closed set.** `sha256sum -c` verifies what a manifest *lists* and
+ignores what is merely present — and `compose/postgres-init/` is executed by Postgres **as
+superuser** the first time the database initialises. So verification also refuses any file
+on disk that the signature does not cover.
+
 ### The signed payload is regenerated, not trusted
 
 Verification rebuilds the payload from `SHA256SUMS` + `RELEASE` and compares before

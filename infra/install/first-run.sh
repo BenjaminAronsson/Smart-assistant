@@ -65,6 +65,56 @@ for candidate in podman docker; do
     command -v "$candidate" >/dev/null 2>&1 && { RUNTIME="$candidate"; break; }
 done
 
+# Which compose file describes this host's dependencies.
+#
+# The script ships in two places and both are real: a source tree, where the
+# dev stack is what is running, and inside the release tarball on an installed
+# host, where `infra/` does not exist at all. Hardcoding the dev path made the
+# database check report a false FAILURE on every installed host — the exact
+# mistake this script's header warns about, in the other direction.
+COMPOSE_FILE=""
+for candidate in /etc/jarvis/compose/prod.yml infra/compose/dev.yml; do
+    if [[ -f "$candidate" ]]; then
+        COMPOSE_FILE="$candidate"
+        break
+    fi
+done
+
+# prod.yml declares `POSTGRES_PASSWORD: ${JARVIS_PG_PASSWORD:?...}`, and Docker
+# Compose interpolates the WHOLE project model for every subcommand — `ps` and
+# `exec` included, not just `up`. With the variable unset both abort with
+# "required variable JARVIS_PG_PASSWORD is missing a value" before they look at
+# a container, and the `2>/dev/null` that used to be on those calls hid the
+# reason. The result was `PROBLEM: postgres is not running` and `PROBLEM: could
+# not read _sqlx_migrations` against a perfectly healthy installed host — the
+# same false failure this script's header argues is as bad as a false pass.
+#
+# It stayed invisible during installation only by accident: install.sh's
+# `set -a; . /etc/jarvis/secrets.env; set +a` is not in a subshell, so the
+# variable was exported into the first-run.sh it calls. The README's own
+# "sudo ./install/first-run.sh --check-only", run standalone later, got both
+# false failures.
+#
+# So: read the secrets ourselves when they are readable, and hand compose the
+# same --env-file jarvis-deps.service passes. Missing is NOT an error — a source
+# tree legitimately has no /etc/jarvis/secrets.env, and dev.yml needs none.
+SECRETS_FILE="${JARVIS_SECRETS_FILE:-/etc/jarvis/secrets.env}"
+COMPOSE_ENV_ARGS=()
+if [[ -r "$SECRETS_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090  # runtime path, by design
+    . "$SECRETS_FILE"
+    set +a
+    COMPOSE_ENV_ARGS=(--env-file "$SECRETS_FILE")
+fi
+
+# One place that builds a compose invocation, so a call cannot be added later
+# that forgets --env-file. `${arr[@]+...}` so an empty array is not an unbound
+# variable under `set -u`.
+compose() { # compose <args...>
+    $COMPOSE -f "$COMPOSE_FILE" ${COMPOSE_ENV_ARGS[@]+"${COMPOSE_ENV_ARGS[@]}"} "$@"
+}
+
 # --- provisioning ------------------------------------------------------------
 #
 # jarvisd ships PRODUCTION defaults: /var/lib/jarvis/claude-work and
@@ -126,8 +176,29 @@ fi
 
 # Whatever the config says, prove the workdir is actually usable.
 step "provider workdir"
-workdir="$(sed -n '/^\[providers\.claude-cli\]/,/^\[/p' "$CONFIG" 2>/dev/null \
-    | sed -n 's/^ *workdir *= *"\(.*\)"/\1/p' | head -1)"
+# `set -o pipefail` + `set -e` + a $CONFIG that does not exist = THE SCRIPT DIES
+# HERE, silently, having printed the step header and nothing under it. `sed` on a
+# missing file exits 2; `2>/dev/null` hid the message but not the status, the
+# pipeline failed, the command substitution failed, and `set -e` took the whole
+# run down. `head -1` closing the pipe early can do the same to the second sed.
+#
+# The host this happened on is not exotic: `--check-only` explicitly does NOT
+# create the config, so EVERY fresh machine reached this line without one — which
+# means the one invocation the README gives an owner to check a new install was
+# the one that could not finish. It surfaced in CI, on a runner with no
+# ~/.config/jarvis/jarvisd.toml, and not on any developer's box, because a
+# developer has a config.
+#
+# A missing config is a NOTE, not a failure: the packaged default is what jarvisd
+# will use, and checking whether that default is writable is the actual point of
+# this step.
+workdir=""
+if [[ -r "$CONFIG" ]]; then
+    workdir="$(sed -n '/^\[providers\.claude-cli\]/,/^\[/p' "$CONFIG" \
+        | sed -n 's/^ *workdir *= *"\(.*\)"/\1/p' | head -1 || true)"
+else
+    note "no config at $CONFIG yet — checking the packaged default instead"
+fi
 workdir="${workdir:-/var/lib/jarvis/claude-work}"
 if mkdir -p "$workdir" 2>/dev/null && [[ -w "$workdir" ]]; then
     ok "$workdir is writable"
@@ -144,18 +215,68 @@ fi
 step "database"
 if [[ -z "$COMPOSE" ]]; then
     bad "no compose runtime found (docker compose / podman compose)"
-elif $COMPOSE -f infra/compose/dev.yml ps postgres 2>/dev/null | grep -q 'Up\|running\|healthy'; then
-    ok "postgres is running"
+elif [[ -z "$COMPOSE_FILE" ]]; then
+    bad "no compose file found — looked for /etc/jarvis/compose/prod.yml and infra/compose/dev.yml"
 else
-    bad "postgres is not running — '$COMPOSE -f infra/compose/dev.yml up -d postgres'"
+    # 2>&1, not 2>/dev/null: when compose refuses (an uninterpolable variable,
+    # a permission problem on the socket) the reason is the whole diagnosis,
+    # and discarding it produced a "postgres is not running" that sent people
+    # to look at Postgres.
+    ps_said="$(compose ps postgres 2>&1 || true)"
+    if grep -q 'Up\|running\|healthy' <<<"$ps_said"; then
+        ok "postgres is running ($COMPOSE_FILE)"
+    else
+        bad "postgres is not running — '$COMPOSE -f $COMPOSE_FILE up -d postgres'"
+        # Not `[[ -n … ]] && note …`: under `set -e` a false test as the last
+        # command of this branch would abort the whole script.
+        if [[ -n "$ps_said" ]]; then
+            note "compose said: $(head -3 <<<"$ps_said" | tr '\n' ' ')"
+        fi
+    fi
 fi
 
 step "migrations"
-if [[ -n "${DATABASE_URL:-}" ]] && command -v sqlx >/dev/null 2>&1; then
+# `jarvisd migrate` runs the stream embedded in the binary (F10.9), so an
+# installed host needs neither sqlx-cli nor a Rust toolchain. But `jarvisd` on
+# PATH only proves the BINARY exists, and on an installed host it exists BY
+# CONSTRUCTION — jarvisd IS the installation. A check that stops at
+# `command -v jarvisd` can therefore never fail: it reports a green "migrations
+# ok" while verifying nothing about migration state, which is exactly the
+# false-assurance failure mode this script's header warns about, and strictly
+# weaker than the `sqlx migrate info` call it replaced.
+#
+# So read the real state: sqlx records every applied migration in
+# `_sqlx_migrations`, reachable through compose Postgres on any installed host
+# without adding a psql dependency to the host itself. A local-socket
+# connection inside the container needs no password (Invariant 5).
+if [[ -n "$COMPOSE" && -n "$COMPOSE_FILE" ]]; then
+    # Again 2>&1 rather than 2>/dev/null. Every non-numeric answer lands in the
+    # same `bad` below, so the only thing discarding stderr achieved was
+    # removing the sentence that said which of them it was.
+    psql_said="$(compose exec -T postgres \
+        psql -U jarvis -d jarvis -tAc 'select count(*) from _sqlx_migrations' 2>&1 || true)"
+    applied="$(tr -d '[:space:]' <<<"$psql_said")"
+    if [[ "$applied" =~ ^[0-9]+$ ]] && (( applied > 0 )); then
+        ok "$applied migration(s) applied (checked via _sqlx_migrations)"
+    elif [[ "$applied" =~ ^[0-9]+$ ]]; then
+        # A real problem, not an unknown: the table exists and is empty, so
+        # the schema was never migrated. Reporting this "ok" is the exact
+        # defect this check replaces.
+        bad "_sqlx_migrations has zero rows — no migrations have been applied"
+    else
+        bad "could not read _sqlx_migrations via '$COMPOSE -f $COMPOSE_FILE exec postgres psql' — postgres may be down (see 'database' check above), or the table does not exist because no migration has ever been applied"
+        if [[ -n "$psql_said" ]]; then
+            note "it said: $(head -3 <<<"$psql_said" | tr '\n' ' ')"
+        fi
+    fi
+elif [[ -n "${DATABASE_URL:-}" ]] && command -v sqlx >/dev/null 2>&1; then
     sqlx migrate info 2>/dev/null | tail -3 || bad "could not read migration state"
-    ok "migration state readable"
+    ok "migration state readable (sqlx-cli)"
 else
-    note "skipped: set DATABASE_URL and install sqlx-cli to check"
+    note "could not check migration state: no compose runtime/file, and no DATABASE_URL + sqlx-cli"
+fi
+if command -v jarvisd >/dev/null 2>&1; then
+    note "apply with: sudo systemctl stop jarvisd && sudo -E jarvisd migrate"
 fi
 
 step "daemon health"

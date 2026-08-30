@@ -1,0 +1,85 @@
+# Production dependencies for an installed Jarvis host (F10.9, docs/09 §2).
+#
+# Everything jarvisd DEPENDS on, and nothing that jarvisd IS. The daemon and the
+# node agent run natively under systemd: jarvisd spawns the Claude CLI with
+# interactive credentials, launches tool workers as containers itself, and
+# jarvis-agent needs Hyprland sockets and audio devices. Containerising them
+# buys a second deployment model on the machine with the least RAM.
+#
+# Started and stopped by jarvis-deps.service, not by hand:
+#
+#   systemctl start jarvis-deps        # compose up -d --wait
+#   systemctl stop  jarvis-deps        # compose down
+#
+# This is NOT dev.yml. dev.yml hardcodes a dev password and splits the voice
+# services into voice.yml, because a laptop running the test suite should not
+# also hold a speech model resident. A dedicated host has no such conflict, so
+# voice lives here.
+
+name: jarvis
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: jarvis
+      # From /etc/jarvis/secrets.env via compose --env-file. Never a literal:
+      # `:?` makes compose refuse to start rather than silently invent an empty
+      # password, which would produce a database nobody can authenticate to and
+      # a jarvisd that reports the database merely "down".
+      POSTGRES_PASSWORD: ${JARVIS_PG_PASSWORD:?JARVIS_PG_PASSWORD is unset — is --env-file /etc/jarvis/secrets.env passed?}
+      POSTGRES_DB: jarvis
+    ports:
+      # Loopback only. jarvisd is on the host, so the port must be published,
+      # but nothing off-box may reach it (docs/06 §7).
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    restart: unless-stopped
+    healthcheck:
+      # jarvis-deps.service runs `up -d --wait`, which blocks on THIS. Without a
+      # healthcheck, `--wait` returns as soon as the container is running and
+      # jarvisd starts against a database still replaying WAL.
+      test: ["CMD-SHELL", "pg_isready -U jarvis -d jarvis"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.116.1
+    command: ["--config=/etc/otelcol/config.yml"]
+    volumes:
+      - ./otel-collector.yml:/etc/otelcol/config.yml:ro
+    ports:
+      - "127.0.0.1:4317:4317"
+    restart: unless-stopped
+
+  # --- voice ----------------------------------------------------------------
+  #
+  # Identical to voice.yml; see that file for why faster-whisper `base-int8`
+  # rather than `small` (decided at F8.9 against the 8 GB profile).
+  wyoming-whisper:
+    image: rhasspy/wyoming-whisper:2.5.0
+    command: ["--model", "base-int8", "--language", "en", "--beam-size", "1"]
+    volumes:
+      - whisper-models:/data
+    ports:
+      - "127.0.0.1:10300:10300"
+    restart: unless-stopped
+    mem_limit: 1g
+
+  wyoming-piper:
+    image: rhasspy/wyoming-piper:1.6.2
+    command: ["--voice", "en_US-lessac-medium"]
+    volumes:
+      - piper-voices:/data
+    ports:
+      - "127.0.0.1:10200:10200"
+    restart: unless-stopped
+    mem_limit: 512m
+
+volumes:
+  pgdata:
+  whisper-models:
+  piper-voices:

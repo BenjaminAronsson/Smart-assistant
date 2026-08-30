@@ -29,20 +29,51 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
+# The single definition of what a release contains. Sourced rather than
+# repeated, because verify-release.sh must enumerate the release EXACTLY the
+# way this script did.
+# shellcheck source=release-manifest.sh
+. "$HERE/release-manifest.sh"
 OUT_ROOT="${1:-}"
 if [[ -z "$OUT_ROOT" ]]; then
 	echo "usage: JARVIS_RELEASE_KEY=<ssh-private-key> $0 <output-directory>" >&2
 	exit 2
 fi
+# ABSOLUTE, before anything uses it. `mkdir -p "$DEST"` runs in the caller's
+# cwd, but `(cd "$REPO" && cargo xtask dist --stage "$DEST")` resolves the same
+# relative path against $REPO — and the README documents the relative form
+# (`infra/install/release.sh dist/`). Run from anywhere but the repo root, the
+# payload landed in $REPO/dist/... while the manifest step's `cd "$DEST"` found
+# the empty directory this script had just created, and signed it. `realpath -m`
+# resolves a path that does not exist yet, which is the normal case here.
+OUT_ROOT="$(realpath -m "$OUT_ROOT")"
 : "${JARVIS_RELEASE_KEY:?JARVIS_RELEASE_KEY must point at an SSH private key}"
 [[ -f "$JARVIS_RELEASE_KEY" ]] || { echo "ABORT: no such key: $JARVIS_RELEASE_KEY" >&2; exit 2; }
 
 # The namespace scopes the signature: a signature made for `jarvis-release`
 # cannot be replayed as a git commit signature, or vice versa.
 NAMESPACE="jarvis-release"
-BINARIES=(jarvisd jarvis-agent)
+# What ships is defined in ONE place — crates/xtask/src/dist.rs — and staged by
+# `cargo xtask dist --stage`. A second list here is how a release ends up
+# shipping an installer without the compose file it needs (F10.9).
 
-VERSION="$(grep -m1 '^version' "$REPO/crates/jarvisd/Cargo.toml" | cut -d'"' -f2)"
+# jarvisd does not carry its own version — crates/jarvisd/Cargo.toml says
+# `version.workspace = true`. A grep of *that* file for `^version` matches the
+# inheritance line, finds no quotes on it, and `cut` hands back the whole line
+# unchanged: VERSION becomes the literal string "version.workspace = true",
+# which then gets baked into the release directory name and signed inside
+# RELEASE. It is internally consistent — verify-release.sh passes — and
+# entirely wrong. The real version lives at the workspace root, under
+# [workspace.package]; read it from there, matching workspace_version() in
+# crates/xtask/src/dist.rs so the two extractions cannot disagree about what
+# is being released.
+VERSION="$(grep -m1 '^version = "' "$REPO/Cargo.toml" | cut -d'"' -f2 || true)"
+if [[ -z "$VERSION" ]] || [[ "$VERSION" == *[[:space:]]* ]] || [[ "$VERSION" == *"="* ]]; then
+	echo "ABORT: could not determine the workspace version from $REPO/Cargo.toml (got: '$VERSION')" >&2
+	echo "  Expected a top-level 'version = \"X.Y.Z\"' under [workspace.package]." >&2
+	echo "  Proceeding would sign a release named after a TOML fragment, not a version." >&2
+	exit 2
+fi
 DEST="$OUT_ROOT/jarvis-$VERSION"
 mkdir -p "$DEST"
 
@@ -66,17 +97,35 @@ else
 fi
 echo "   ok: advisories clean at $SCAN_AT"
 
-echo "== 2/4 build"
-(cd "$REPO" && cargo build --release --locked -p jarvisd -p jarvis-agent)
-for bin in "${BINARIES[@]}"; do
-	cp "$REPO/target/release/$bin" "$DEST/$bin"
-done
-echo "   ok: ${BINARIES[*]}"
+echo "== 2/4 build and stage"
+# Builds the binaries AND the web assets, then stages the full installable
+# payload: bin/, web/, migrations/, compose/, systemd/, install/, the config
+# example and the README. See crates/xtask/src/dist.rs for the layout.
+(cd "$REPO" && cargo xtask dist --stage "$DEST")
+echo "   ok: payload staged"
 
 echo "== 3/4 manifest"
-# Sorted, relative paths: the manifest must be byte-identical for identical
-# inputs, or the signature is over an accident of directory order.
-(cd "$DEST" && sha256sum "${BINARIES[@]}" | LC_ALL=C sort > SHA256SUMS)
+# Every staged file, not a fixed list. install.sh runs as root and prod.yml
+# decides what the daemon connects to; leaving either outside the signature
+# while signing the binaries is worse than signing nothing, because the
+# signature makes the whole directory look checked.
+#
+# The enumeration itself lives in release-manifest.sh, sourced above, because
+# verify-release.sh has to repeat it EXACTLY to treat the manifest as a closed
+# set. See that file for why the exclusions are anchored and why symlinks count.
+#
+# `xargs -r`: with empty input, plain `xargs sha256sum` still runs sha256sum
+# once, which reads STDIN and writes a single line for `-`. That is how an empty
+# staging directory produced a signed, cleanly-verifying, entirely empty release
+# that reported "1 artifacts match". `-d '\n'` because a payload path may
+# contain spaces and xargs' default quote handling would split it.
+release_payload_paths "$DEST" \
+	| (cd "$DEST" && xargs -r -d '\n' sha256sum > SHA256SUMS)
+
+# Before signing, not after: a signature over a manifest that cannot describe a
+# release is the failure mode this whole script exists to prevent.
+assert_manifest_plausible "$DEST" || exit 1
+
 cat > "$DEST/RELEASE" <<EOF
 jarvis-release 1
 version=$VERSION
@@ -91,7 +140,11 @@ cat "$DEST/SHA256SUMS" "$DEST/RELEASE" > "$DEST/SIGNED-PAYLOAD"
 echo "   ok: $(wc -l < "$DEST/SHA256SUMS") artifacts"
 
 echo "== 4/4 signature"
-ssh-keygen -Y sign -f "$JARVIS_RELEASE_KEY" -n "$NAMESPACE" "$DEST/SIGNED-PAYLOAD" >/dev/null 2>&1
+# stdout is silenced, stderr is NOT: `set -e` catches the failure either way, but
+# a passphrase-protected key with no agent, or a key file the caller cannot read,
+# says so on stderr — and discarding it left the operator with a bare non-zero
+# exit and nothing to act on.
+ssh-keygen -Y sign -f "$JARVIS_RELEASE_KEY" -n "$NAMESPACE" "$DEST/SIGNED-PAYLOAD" >/dev/null
 # The public half travels with the release so a verifier can check the signature
 # is internally consistent. That is NOT the same as trusting it — verification
 # against a known key is the operator's job, and verify-release.sh says so.

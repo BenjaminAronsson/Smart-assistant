@@ -178,7 +178,11 @@ impl AlertPlayer for CommandAlertPlayer {
         if cancel.is_cancelled() {
             return Err(AlertError::Cancelled);
         }
-        let mut child = Command::new(&self.program)
+        let mut player = Command::new(&self.program);
+        // The audio player is a host binary, but it is still a child that would
+        // otherwise inherit the daemon's database credential (invariant 5).
+        crate::host_env::scrub_secrets(&mut player);
+        let mut child = player
             .args(&self.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())

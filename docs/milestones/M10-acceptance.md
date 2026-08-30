@@ -14,7 +14,7 @@ machine, and this document names those rather than implying a script covered the
 Run all of it with:
 
 ```bash
-cargo test --workspace          # 1563 tests
+cargo test --workspace          # 1610 tests
 cargo xtask golden              # golden 1–7, 9–12 + M3a/M3b/M5/M6 acceptance
 cargo xtask arch-test
 cargo xtask codegen --check
@@ -36,6 +36,10 @@ cargo xtask codegen --check
 | 11 | A stale advisory scan is refused | `a_valid_signature_over_a_stale_advisory_scan_is_refused` |
 | 12 | The surface is accessible | `a11y.spec.ts`, `contrast.spec.ts` |
 | 13 | An owner who loses their token can get back in | `pairing_api.rs` (F10.9) |
+| 14 | There is something to install, and it installs on a host that has never had Jarvis | CI job `install-artifact` — cuts a signed release, verifies it, installs it into a pristine `ubuntu:24.04` with no Rust, no Node and no source tree |
+| 15 | The signature covers everything an owner runs, as a closed set | `release_signing.rs` — a file smuggled into `compose/postgres-init/` is refused even though everything listed matches |
+| 16 | The installer will not install a release that failed its own check | `install.rs::install_refuses_a_release_that_does_not_verify` |
+| 17 | The database password never reaches argv, a child process, or a log | `install.rs::backup_never_puts_the_database_password_in_argv`, `host_env.rs` — every spawn site in the daemon scrubs it |
 
 Where a claim is load-bearing, the test was **mutation-checked** — deliberately broken to
 confirm it fails. Recorded per feature in the PRs; the pattern was adopted after F10.2's

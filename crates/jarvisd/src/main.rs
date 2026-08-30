@@ -24,11 +24,85 @@ use tokio_util::sync::CancellationToken;
 use tower_http::trace::TraceLayer;
 
 fn main() -> anyhow::Result<()> {
+    // `args_os`, not `args`: `std::env::args()` PANICS mid-iteration on argv that
+    // is not valid Unicode. Everything else about this parser refuses operator
+    // input rather than misinterpreting it, and a backtrace is a worse answer
+    // than the usage message a typo already gets.
+    let command =
+        match jarvisd::cli::parse(std::env::args_os().map(|a| a.to_string_lossy().into_owned())) {
+            Ok(command) => command,
+            Err(usage) => {
+                eprintln!("{usage}");
+                std::process::exit(2);
+            }
+        };
+
+    // Before `Config::load()`: asking a binary how to use it must work on a host
+    // that has no config yet, which is exactly the host someone is asking on.
+    if command == jarvisd::cli::Command::Help {
+        println!("{}", jarvisd::cli::USAGE);
+        return Ok(());
+    }
+
     let config = jarvisd::config::Config::load()?;
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build()?
-        .block_on(run(config))
+        .build()?;
+
+    match command {
+        jarvisd::cli::Command::Serve => runtime.block_on(run(config)),
+        jarvisd::cli::Command::Migrate => runtime.block_on(migrate(config)),
+        // Handled above, before the config is loaded.
+        jarvisd::cli::Command::Help => Ok(()),
+    }
+}
+
+/// Apply the embedded forward migrations and exit (F10.9).
+///
+/// Separate from `run` on purpose: it takes an eager connection rather than the
+/// lazy pool the daemon uses. A daemon may start with the database unreachable
+/// and report it degraded (docs/02 §12); a migration that cannot reach the
+/// database has failed and must say so with a non-zero exit, because
+/// `install.sh` and `update.sh` gate on that exit code.
+async fn migrate(config: jarvisd::config::Config) -> anyhow::Result<()> {
+    let db_url = jarvisd::config::resolve_secret_ref_async(&config.database.url_secret).await?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(db_url.expose())
+        .await?;
+
+    // Bounded and interruptible (invariant 4). sqlx's Postgres migrator takes
+    // `pg_advisory_lock` with no lock timeout, so a database that ACCEPTS
+    // CONNECTIONS but is wedged — a stale session from a killed migrate, another
+    // host migrating the same database — leaves this blocked forever. Both
+    // callers gate on it (`install.sh` at "release signature" → migrations,
+    // `update.sh` between the backup and the health gate), so "forever" is an
+    // installer that hangs with no output and no way to tell slow from never.
+    //
+    // The connect above is already bounded by the pool's acquire timeout; only
+    // the lock wait needs this.
+    let apply = jarvis_infra::MIGRATOR.run(&pool);
+    tokio::select! {
+        result = tokio::time::timeout(std::time::Duration::from_secs(600), apply) => {
+            result.map_err(|_| anyhow::anyhow!(
+                "migrations did not finish within 600s — another `jarvisd migrate`, or a \
+                 stale session, may hold the sqlx advisory lock (pg_advisory_lock). \
+                 Nothing partial is committed: each migration is its own transaction."
+            ))??;
+        }
+        _ = tokio::signal::ctrl_c() => {
+            anyhow::bail!(
+                "interrupted — the migration in flight was rolled back, but earlier \
+                 migrations in this run are applied. Re-run `jarvisd migrate`."
+            );
+        }
+    }
+
+    // `println!`, deliberately, against the "use tracing, never println!"
+    // convention: telemetry is never initialised on this path, and install.sh
+    // and update.sh read this on stdout as the signal that migrations landed.
+    println!("migrations applied");
+    Ok(())
 }
 
 async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
@@ -1055,7 +1129,12 @@ async fn spawn_app_builder(
         .await
         .map_err(|e| anyhow::anyhow!("reading {}: {e}", config.apps.lockfile.display()))?;
 
-    let mut child = tokio::process::Command::new(&config.apps.worker_command)
+    let mut worker = tokio::process::Command::new(&config.apps.worker_command);
+    // The app builder runs with BuildNetwork::Enabled whenever no worker image
+    // is configured, and builds code the model proposed. It must not also
+    // inherit the daemon's database credential (invariant 5, F10.9).
+    jarvis_adapters::host_env::scrub_secrets(&mut worker);
+    let mut child = worker
         .args(&config.apps.worker_args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
