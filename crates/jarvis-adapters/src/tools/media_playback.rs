@@ -33,15 +33,14 @@ use std::time::Duration;
 use async_trait::async_trait;
 use jarvis_application::policy::{ToolDescriptor, ToolExecutor};
 use jarvis_application::ports::{MediaController, MediaError};
+use jarvis_domain::declare_tool_id;
 use jarvis_domain::grants::ExecutionGrant;
 use jarvis_domain::media::{
     MediaSnapshot, PlayerId, TargetSelection, TransportCommand, TransportCommandError, VolumePct,
 };
 use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
 use jarvis_domain::synthesis::clarifying_question;
-use jarvis_domain::tools::{
-    CanonicalValue, ToolError, ToolId, ToolInvocation, ToolResult, ToolVersion,
-};
+use jarvis_domain::tools::{CanonicalValue, ToolError, ToolInvocation, ToolResult, ToolVersion};
 use tokio_util::sync::CancellationToken;
 
 /// The scope both media tools require. Absent from a run's granted scopes,
@@ -62,9 +61,7 @@ impl MediaPlaybackTool {
         }
     }
 
-    pub fn id() -> ToolId {
-        "media.playback".parse().expect("static tool id is valid")
-    }
+    declare_tool_id!("media.playback");
 
     /// Host-owned policy: **R1**, reversible, local egress. Reversible is
     /// honest here — every verb has an immediate opposite and nothing leaves
@@ -190,11 +187,7 @@ impl MediaVolumeBoostTool {
         }
     }
 
-    pub fn id() -> ToolId {
-        "media.volume_boost"
-            .parse()
-            .expect("static tool id is valid")
-    }
+    declare_tool_id!("media.volume_boost");
 
     /// Host-owned policy: **R2**, **not** reversible (that is the whole point —
     /// you cannot un-hear a sudden 100%), local egress, user presence required.
@@ -519,9 +512,7 @@ impl MediaOpenUrlTool {
         }
     }
 
-    pub fn id() -> ToolId {
-        "media.open_url".parse().expect("static tool id is valid")
-    }
+    declare_tool_id!("media.open_url");
 
     pub fn policy() -> ToolPolicy {
         ToolPolicy {
@@ -661,6 +652,7 @@ impl ToolExecutor for MediaOpenUrlTool {
 mod tests {
     use super::*;
     use jarvis_domain::media::{MPRIS_NAME_PREFIX, PlaybackStatus, PlayerState, TrackMetadata};
+    use jarvis_domain::tools::ToolId;
     use jarvis_test_support::FakeAuditLog;
     use std::sync::Mutex;
 
