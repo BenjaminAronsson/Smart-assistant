@@ -24,6 +24,7 @@ pub mod maps;
 pub mod media;
 pub mod memories;
 pub mod observability;
+pub mod orchestrator_ports;
 pub mod pairing;
 pub mod pmtiles;
 pub mod policy_view;
