@@ -24,10 +24,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use jarvis_application::policy::{ToolDescriptor, ToolExecutor};
+use jarvis_domain::declare_tool_id;
 use jarvis_domain::grants::ExecutionGrant;
 use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
 use jarvis_domain::tools::{
-    MAX_RESULT_PROMPT_BYTES, ToolError, ToolId, ToolInvocation, ToolResult, ToolVersion,
+    MAX_RESULT_PROMPT_BYTES, ToolError, ToolInvocation, ToolResult, ToolVersion,
     sanitize_result_content,
 };
 use tl::{Parser, ParserOptions, VDom};
@@ -91,9 +92,7 @@ impl<P: SearchProvider + 'static> WebSearchTool<P> {
         Self { provider }
     }
 
-    pub fn id() -> ToolId {
-        "web.search".parse().expect("static tool id is valid")
-    }
+    declare_tool_id!("web.search");
 
     /// Host-owned policy: R0 read-only, **external** egress (the query reaches
     /// the provider), gated behind the `web:search` scope. R0 auto-authorises,
@@ -227,9 +226,7 @@ impl<F: PageFetcher + 'static> WebFetchTool<F> {
         Self { fetcher }
     }
 
-    pub fn id() -> ToolId {
-        "web.fetch".parse().expect("static tool id is valid")
-    }
+    declare_tool_id!("web.fetch");
 
     pub fn policy() -> ToolPolicy {
         ToolPolicy {

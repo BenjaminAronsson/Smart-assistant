@@ -6,6 +6,7 @@
 //! this R2 external mutation; the executor only validates the final arguments
 //! and performs the bounded transport operation.
 
+use jarvis_domain::declare_tool_id;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,7 +16,7 @@ use jarvis_application::policy::{ToolDescriptor, ToolExecutor};
 use jarvis_domain::grants::ExecutionGrant;
 use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
 use jarvis_domain::tools::{
-    CanonicalValue, ToolError, ToolId, ToolInvocation, ToolResult, ToolVersion, canonical_form,
+    CanonicalValue, ToolError, ToolInvocation, ToolResult, ToolVersion, canonical_form,
 };
 use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials;
@@ -191,9 +192,7 @@ impl SmtpTool {
         }
     }
 
-    pub fn id() -> ToolId {
-        "message.send".parse().expect("static tool id is valid")
-    }
+    declare_tool_id!("message.send");
 
     /// Host-owned policy: sending mail is an irreversible external mutation.
     pub fn policy() -> ToolPolicy {

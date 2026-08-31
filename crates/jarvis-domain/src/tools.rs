@@ -194,6 +194,49 @@ impl fmt::Display for ToolId {
     }
 }
 
+/// Generates a tool's `pub fn id() -> ToolId` (F9.6, M9). The one truly
+/// mechanical line of the `new()`/`id()`/`policy()`/`descriptor()` quartet
+/// that repeats at every `impl ToolExecutor` site — 18 identical three-line
+/// functions differing only in the string literal, one of them (`descriptor()`
+/// in `spotify.rs`) byte-identical six times over in the same file.
+///
+/// **Deliberately does not touch `policy()` or `descriptor()`.** F9.6's own
+/// constraint governs the design: `policy()` — `risk`, `egress`,
+/// `required_scopes` — must stay individually written and greppable at its
+/// declaration site, because invariant 1 depends on that classification being
+/// explicit and auditable; a macro that let a tool *inherit* a risk tier by
+/// default would be a policy regression, not a cleanup, and "less code" is the
+/// wrong objective on this one surface. `descriptor()` is left hand-written
+/// too, for a more mundane reason: its constructor call is not uniform across
+/// tools (`ExampleLightTool::new()` takes nothing, `SpotifySearchTool::new()`
+/// takes an `Arc<SpotifyClient>`, `MediaVolumeBoostTool::new()` takes two
+/// arguments) — collapsing it would need the constructor expression threaded
+/// through the macro invocation, which trades a few lines of genuine
+/// boilerplate for a bigger surface where a miswired argument could compile
+/// and register the wrong executor.
+///
+/// ```
+/// # use jarvis_domain::declare_tool_id;
+/// # use jarvis_domain::tools::ToolId;
+/// struct ExampleLightTool;
+/// impl ExampleLightTool {
+///     declare_tool_id!("example.light");
+/// }
+/// assert_eq!(ExampleLightTool::id().as_str(), "example.light");
+/// ```
+#[macro_export]
+macro_rules! declare_tool_id {
+    ($name:literal) => {
+        /// Static, host-authored — never derived from model or tool text
+        /// (invariant #1).
+        pub fn id() -> $crate::tools::ToolId {
+            $name
+                .parse()
+                .expect("declare_tool_id! literal must be a valid ToolId")
+        }
+    };
+}
+
 /// A tool's semantic version (docs/05 §4). A pure `{major, minor, patch}` triple
 /// rather than `semver::Version`: the domain external allowlist forbids the
 /// `semver` crate, and grant binding needs only equality + display. Richer

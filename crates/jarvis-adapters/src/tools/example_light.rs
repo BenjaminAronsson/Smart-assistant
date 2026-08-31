@@ -13,10 +13,11 @@ use async_trait::async_trait;
 use jarvis_application::policy::{ToolDescriptor, ToolExecutor};
 use jarvis_domain::grants::ExecutionGrant;
 use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
-use jarvis_domain::tools::{ToolError, ToolId, ToolInvocation, ToolResult, ToolVersion};
+use jarvis_domain::tools::{ToolError, ToolInvocation, ToolResult, ToolVersion};
 use tokio_util::sync::CancellationToken;
 
 use crate::tools::required_str;
+use jarvis_domain::declare_tool_id;
 
 /// A reversible example tool holding an in-memory light state so the undo it
 /// registers is real (the compensation restores the *previous* value).
@@ -37,9 +38,7 @@ impl ExampleLightTool {
         Self::default()
     }
 
-    pub fn id() -> ToolId {
-        "example.light".parse().expect("static tool id is valid")
-    }
+    declare_tool_id!("example.light");
 
     /// Host-owned policy: R1 (auto-authorized), **reversible**, local-only, gated
     /// behind the `demo:light` scope. Being reversible is what lets the R1 auto

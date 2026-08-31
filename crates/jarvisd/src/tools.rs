@@ -704,3 +704,301 @@ mod scope_coverage_tests {
         }
     }
 }
+
+/// F9.6: `declare_tool_id!` generates only `id()` — it must not be able to
+/// drift a tool's `policy()`. This snapshot pins the `(id, risk, egress,
+/// required_scopes)` of every tool that adopted the macro (plus the two
+/// `HomeBroadTool` ids, which did not, for full registry coverage) to the
+/// values in place immediately before F9.6, captured by reading the still-
+/// unmodified `policy()` bodies. A future change that lets the macro imply a
+/// tier — the exact regression the milestone doc warns against — fails here
+/// before it fails an auditor.
+#[cfg(test)]
+mod f9_6_policy_snapshot_tests {
+    use jarvis_adapters::home_assistant::{
+        HomeBroadTool, HomeGetStateTool, HomeSetAreaLightsTool, HomeSetLightTool,
+    };
+    use jarvis_adapters::smtp::SmtpTool;
+    use jarvis_adapters::spotify::{
+        SpotifyPlayPlaylistTool, SpotifyPlayTool, SpotifyQueueAddTool, SpotifySearchTool,
+        SpotifyVolumeBoostTool, SpotifyVolumeTool,
+    };
+    use jarvis_adapters::tools::example_light::ExampleLightTool;
+    use jarvis_adapters::tools::example_message::ExampleMessageTool;
+    use jarvis_adapters::tools::fs_read::FsReadTool;
+    use jarvis_adapters::tools::media_playback::{
+        MediaOpenUrlTool, MediaPlaybackTool, MediaVolumeBoostTool,
+    };
+    use jarvis_adapters::web::{BraveSearchProvider, HttpPageFetcher, WebFetchTool, WebSearchTool};
+    use jarvis_domain::policy::{DataEgress, RiskLevel, ToolPolicy};
+    use jarvis_domain::tools::ToolId;
+
+    fn scopes_of(policy: &ToolPolicy) -> Vec<&str> {
+        policy.required_scopes.iter().map(|s| s.as_str()).collect()
+    }
+
+    struct Case {
+        id: ToolId,
+        policy: ToolPolicy,
+        expected_id: &'static str,
+        expected_risk: RiskLevel,
+        expected_egress: DataEgress,
+        expected_scopes: &'static [&'static str],
+        // is_reversible and requires_user_presence, not just risk/egress/scope:
+        // both feed the same auto-authorize/approval decision invariant 1
+        // protects (docs/06 §3), so a macro-migration typo flipping either is
+        // exactly the "policy regression, not a cleanup" F9.6 warns against.
+        expected_is_reversible: bool,
+        expected_requires_user_presence: bool,
+    }
+
+    #[test]
+    fn every_declare_tool_id_site_keeps_its_pre_f9_6_id_and_policy() {
+        let cases: Vec<Case> = vec![
+            Case {
+                id: HomeGetStateTool::id(),
+                policy: HomeGetStateTool::policy(),
+                expected_id: "home.get_state",
+                expected_is_reversible: true,
+                expected_requires_user_presence: false,
+                expected_risk: RiskLevel::R0,
+                expected_egress: DataEgress::Local,
+                expected_scopes: &["home:read"],
+            },
+            Case {
+                id: HomeSetLightTool::id(),
+                policy: HomeSetLightTool::policy(),
+                expected_id: "home.set_light",
+                expected_is_reversible: true,
+                expected_requires_user_presence: false,
+                expected_risk: RiskLevel::R1,
+                expected_egress: DataEgress::Local,
+                expected_scopes: &["home:control"],
+            },
+            Case {
+                id: HomeSetAreaLightsTool::id(),
+                policy: HomeSetAreaLightsTool::policy(),
+                expected_id: "home.set_area_lights",
+                expected_is_reversible: true,
+                expected_requires_user_presence: false,
+                expected_risk: RiskLevel::R1,
+                expected_egress: DataEgress::Local,
+                expected_scopes: &["home:control"],
+            },
+            Case {
+                id: HomeBroadTool::scene_id(),
+                policy: HomeBroadTool::policy(),
+                expected_id: "home.execute_scene",
+                expected_is_reversible: false,
+                expected_requires_user_presence: true,
+                expected_risk: RiskLevel::R2,
+                expected_egress: DataEgress::Local,
+                expected_scopes: &["home:control"],
+            },
+            Case {
+                id: HomeBroadTool::script_id(),
+                policy: HomeBroadTool::policy(),
+                expected_id: "home.run_script",
+                expected_is_reversible: false,
+                expected_requires_user_presence: true,
+                expected_risk: RiskLevel::R2,
+                expected_egress: DataEgress::Local,
+                expected_scopes: &["home:control"],
+            },
+            Case {
+                id: SmtpTool::id(),
+                policy: SmtpTool::policy(),
+                expected_id: "message.send",
+                expected_is_reversible: false,
+                expected_requires_user_presence: true,
+                expected_risk: RiskLevel::R2,
+                expected_egress: DataEgress::External,
+                expected_scopes: &["message:send"],
+            },
+            Case {
+                id: SpotifyPlayTool::id(),
+                policy: SpotifyPlayTool::policy(),
+                expected_id: "spotify.play",
+                expected_is_reversible: true,
+                expected_requires_user_presence: false,
+                expected_risk: RiskLevel::R1,
+                expected_egress: DataEgress::External,
+                expected_scopes: &["media:control"],
+            },
+            Case {
+                id: SpotifyPlayPlaylistTool::id(),
+                policy: SpotifyPlayPlaylistTool::policy(),
+                expected_id: "spotify.play_playlist",
+                expected_is_reversible: true,
+                expected_requires_user_presence: false,
+                expected_risk: RiskLevel::R1,
+                expected_egress: DataEgress::External,
+                expected_scopes: &["media:control"],
+            },
+            Case {
+                id: SpotifyQueueAddTool::id(),
+                policy: SpotifyQueueAddTool::policy(),
+                expected_id: "spotify.queue_add",
+                expected_is_reversible: true,
+                expected_requires_user_presence: false,
+                expected_risk: RiskLevel::R1,
+                expected_egress: DataEgress::External,
+                expected_scopes: &["media:control"],
+            },
+            Case {
+                id: SpotifySearchTool::id(),
+                policy: SpotifySearchTool::policy(),
+                expected_id: "spotify.search",
+                expected_is_reversible: true,
+                expected_requires_user_presence: false,
+                expected_risk: RiskLevel::R0,
+                expected_egress: DataEgress::External,
+                expected_scopes: &["media:search"],
+            },
+            Case {
+                id: SpotifyVolumeTool::id(),
+                policy: SpotifyVolumeTool::policy(),
+                expected_id: "spotify.volume",
+                expected_is_reversible: true,
+                expected_requires_user_presence: false,
+                expected_risk: RiskLevel::R1,
+                expected_egress: DataEgress::External,
+                expected_scopes: &["media:control"],
+            },
+            Case {
+                id: SpotifyVolumeBoostTool::id(),
+                policy: SpotifyVolumeBoostTool::policy(),
+                expected_id: "spotify.volume_boost",
+                expected_is_reversible: false,
+                expected_requires_user_presence: true,
+                expected_risk: RiskLevel::R2,
+                expected_egress: DataEgress::External,
+                expected_scopes: &["media:control"],
+            },
+            Case {
+                id: ExampleLightTool::id(),
+                policy: ExampleLightTool::policy(),
+                expected_id: "example.light",
+                expected_is_reversible: true,
+                expected_requires_user_presence: false,
+                expected_risk: RiskLevel::R1,
+                expected_egress: DataEgress::Local,
+                expected_scopes: &["demo:light"],
+            },
+            Case {
+                id: ExampleMessageTool::id(),
+                policy: ExampleMessageTool::policy(),
+                expected_id: "message.send",
+                expected_is_reversible: false,
+                expected_requires_user_presence: true,
+                expected_risk: RiskLevel::R2,
+                expected_egress: DataEgress::External,
+                expected_scopes: &["message:send"],
+            },
+            Case {
+                id: FsReadTool::id(),
+                policy: FsReadTool::policy(),
+                expected_id: "fs.read",
+                expected_is_reversible: true,
+                expected_requires_user_presence: false,
+                expected_risk: RiskLevel::R0,
+                expected_egress: DataEgress::None,
+                expected_scopes: &["files:read"],
+            },
+            Case {
+                id: MediaPlaybackTool::id(),
+                policy: MediaPlaybackTool::policy(),
+                expected_id: "media.playback",
+                expected_is_reversible: true,
+                expected_requires_user_presence: false,
+                expected_risk: RiskLevel::R1,
+                expected_egress: DataEgress::Local,
+                expected_scopes: &["media:control"],
+            },
+            Case {
+                id: MediaVolumeBoostTool::id(),
+                policy: MediaVolumeBoostTool::policy(),
+                expected_id: "media.volume_boost",
+                expected_is_reversible: false,
+                expected_requires_user_presence: true,
+                expected_risk: RiskLevel::R2,
+                expected_egress: DataEgress::Local,
+                expected_scopes: &["media:control"],
+            },
+            Case {
+                id: MediaOpenUrlTool::id(),
+                policy: MediaOpenUrlTool::policy(),
+                expected_id: "media.open_url",
+                expected_is_reversible: true,
+                expected_requires_user_presence: false,
+                expected_risk: RiskLevel::R1,
+                expected_egress: DataEgress::External,
+                expected_scopes: &["media:control"],
+            },
+            Case {
+                id: WebSearchTool::<BraveSearchProvider>::id(),
+                policy: WebSearchTool::<BraveSearchProvider>::policy(),
+                expected_id: "web.search",
+                expected_is_reversible: false,
+                expected_requires_user_presence: false,
+                expected_risk: RiskLevel::R0,
+                expected_egress: DataEgress::External,
+                expected_scopes: &["web:search"],
+            },
+            Case {
+                id: WebFetchTool::<HttpPageFetcher>::id(),
+                policy: WebFetchTool::<HttpPageFetcher>::policy(),
+                expected_id: "web.fetch",
+                expected_is_reversible: false,
+                expected_requires_user_presence: false,
+                expected_risk: RiskLevel::R0,
+                expected_egress: DataEgress::External,
+                expected_scopes: &["web:fetch"],
+            },
+            Case {
+                id: crate::apptool::AppGenerateTool::id(),
+                policy: crate::apptool::AppGenerateTool::policy(),
+                expected_id: "app.generate",
+                expected_is_reversible: false,
+                expected_requires_user_presence: false,
+                expected_risk: RiskLevel::R1,
+                expected_egress: DataEgress::Local,
+                expected_scopes: &["app:build"],
+            },
+        ];
+
+        for case in cases {
+            assert_eq!(
+                case.id.as_str(),
+                case.expected_id,
+                "tool id string must be unchanged"
+            );
+            assert_eq!(
+                case.policy.risk, case.expected_risk,
+                "{}: risk tier drifted",
+                case.expected_id
+            );
+            assert_eq!(
+                case.policy.egress, case.expected_egress,
+                "{}: egress drifted",
+                case.expected_id
+            );
+            assert_eq!(
+                scopes_of(&case.policy),
+                case.expected_scopes,
+                "{}: required_scopes drifted",
+                case.expected_id
+            );
+            assert_eq!(
+                case.policy.is_reversible, case.expected_is_reversible,
+                "{}: is_reversible drifted",
+                case.expected_id
+            );
+            assert_eq!(
+                case.policy.requires_user_presence, case.expected_requires_user_presence,
+                "{}: requires_user_presence drifted",
+                case.expected_id
+            );
+        }
+    }
+}

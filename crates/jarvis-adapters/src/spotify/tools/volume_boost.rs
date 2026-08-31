@@ -3,12 +3,11 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use jarvis_application::policy::{ToolDescriptor, ToolExecutor};
+use jarvis_domain::declare_tool_id;
 use jarvis_domain::grants::ExecutionGrant;
 use jarvis_domain::media::VolumePct;
 use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
-use jarvis_domain::tools::{
-    CanonicalValue, ToolError, ToolId, ToolInvocation, ToolResult, ToolVersion,
-};
+use jarvis_domain::tools::{CanonicalValue, ToolError, ToolInvocation, ToolResult, ToolVersion};
 use tokio_util::sync::CancellationToken;
 
 use super::super::*;
@@ -32,11 +31,7 @@ impl SpotifyVolumeBoostTool {
         Self { client }
     }
 
-    pub fn id() -> ToolId {
-        "spotify.volume_boost"
-            .parse()
-            .expect("static tool id is valid")
-    }
+    declare_tool_id!("spotify.volume_boost");
 
     pub fn policy() -> ToolPolicy {
         ToolPolicy {

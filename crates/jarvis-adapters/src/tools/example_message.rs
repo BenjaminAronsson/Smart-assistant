@@ -10,11 +10,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use jarvis_application::policy::{ToolDescriptor, ToolExecutor};
+use jarvis_domain::declare_tool_id;
 use jarvis_domain::grants::ExecutionGrant;
 use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
-use jarvis_domain::tools::{
-    CanonicalValue, ToolError, ToolId, ToolInvocation, ToolResult, ToolVersion,
-};
+use jarvis_domain::tools::{CanonicalValue, ToolError, ToolInvocation, ToolResult, ToolVersion};
 use tokio_util::sync::CancellationToken;
 
 use crate::tools::{require_str_arg, required_str};
@@ -29,9 +28,7 @@ impl ExampleMessageTool {
         Self
     }
 
-    pub fn id() -> ToolId {
-        "message.send".parse().expect("static tool id is valid")
-    }
+    declare_tool_id!("message.send");
 
     /// Host-owned policy: R2 (requires human approval + a grant), **not
     /// reversible**, **external** egress, gated behind the `message:send` scope.

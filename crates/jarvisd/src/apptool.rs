@@ -18,11 +18,11 @@ use async_trait::async_trait;
 use jarvis_adapters::app_builder::{AppBuildError, AppBuilderHost, app_build_policy};
 use jarvis_application::policy::{ToolDescriptor, ToolExecutor};
 use jarvis_contracts::appspec::parse_and_validate;
+use jarvis_domain::declare_tool_id;
 use jarvis_domain::ids::{ArtifactId, RunId};
 use jarvis_domain::policy::ToolPolicy;
 use jarvis_domain::tools::{
-    CanonicalValue, ToolError, ToolId, ToolInvocation, ToolResult, ToolVersion,
-    sanitize_result_content,
+    CanonicalValue, ToolError, ToolInvocation, ToolResult, ToolVersion, sanitize_result_content,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -38,9 +38,7 @@ pub struct AppGenerateTool {
 }
 
 impl AppGenerateTool {
-    pub fn id() -> ToolId {
-        "app.generate".parse().expect("static tool id is valid")
-    }
+    declare_tool_id!("app.generate");
 
     /// The host-owned policy — [`app_build_policy`] unchanged. Registered here
     /// rather than restated, so the tier the registry enforces and the tier the

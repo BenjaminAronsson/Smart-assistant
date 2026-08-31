@@ -12,11 +12,12 @@ use async_trait::async_trait;
 use jarvis_application::policy::{ToolDescriptor, ToolExecutor};
 use jarvis_domain::grants::ExecutionGrant;
 use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
-use jarvis_domain::tools::{ToolError, ToolId, ToolInvocation, ToolResult, ToolVersion};
+use jarvis_domain::tools::{ToolError, ToolInvocation, ToolResult, ToolVersion};
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::tools::required_str;
+use jarvis_domain::declare_tool_id;
 
 /// Cap on bytes read from a single file. Bounds the memory a single call can
 /// force (resource DoS, docs/06 §5); a file larger than this is read up to the
@@ -42,10 +43,7 @@ impl FsReadTool {
         Ok(Self { root })
     }
 
-    /// The stable tool identifier.
-    pub fn id() -> ToolId {
-        "fs.read".parse().expect("static tool id is valid")
-    }
+    declare_tool_id!("fs.read");
 
     /// Host-owned policy: R0, read-only, reversible (a read mutates nothing), no
     /// egress, gated behind the `files:read` scope (the domain's scope

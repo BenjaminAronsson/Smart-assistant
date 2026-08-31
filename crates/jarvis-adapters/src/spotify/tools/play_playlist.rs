@@ -2,11 +2,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use jarvis_application::policy::{ToolDescriptor, ToolExecutor};
+use jarvis_domain::declare_tool_id;
 use jarvis_domain::grants::ExecutionGrant;
 use jarvis_domain::policy::ToolPolicy;
-use jarvis_domain::tools::{
-    CanonicalValue, ToolError, ToolId, ToolInvocation, ToolResult, ToolVersion,
-};
+use jarvis_domain::tools::{CanonicalValue, ToolError, ToolInvocation, ToolResult, ToolVersion};
 use tokio_util::sync::CancellationToken;
 
 use super::*;
@@ -26,11 +25,7 @@ impl SpotifyPlayPlaylistTool {
         Self { client }
     }
 
-    pub fn id() -> ToolId {
-        "spotify.play_playlist"
-            .parse()
-            .expect("static tool id is valid")
-    }
+    declare_tool_id!("spotify.play_playlist");
 
     pub fn policy() -> ToolPolicy {
         SpotifyPlayTool::policy()

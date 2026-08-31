@@ -2,11 +2,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use jarvis_application::policy::{ToolDescriptor, ToolExecutor};
+use jarvis_domain::declare_tool_id;
 use jarvis_domain::grants::ExecutionGrant;
 use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
-use jarvis_domain::tools::{
-    CanonicalValue, ToolError, ToolId, ToolInvocation, ToolResult, ToolVersion,
-};
+use jarvis_domain::tools::{CanonicalValue, ToolError, ToolInvocation, ToolResult, ToolVersion};
 use tokio_util::sync::CancellationToken;
 
 use super::super::*;
@@ -64,9 +63,7 @@ impl HomeSetLightTool {
         Self { client, allowlist }
     }
 
-    pub fn id() -> ToolId {
-        "home.set_light".parse().expect("static tool id is valid")
-    }
+    declare_tool_id!("home.set_light");
 
     /// Host-owned policy: **R1** — docs/06 §3's own "toggle a light" row.
     /// Reversible is claimed here only because the executor proves it: it reads
