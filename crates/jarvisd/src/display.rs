@@ -291,21 +291,10 @@ fn not_found(what: &str) -> Response {
 }
 
 fn repository_problem(error: RepositoryError) -> Response {
-    match error {
-        RepositoryError::Conflict(_) | RepositoryError::IdempotencyConflict => problem(
-            StatusCode::CONFLICT,
-            ErrorCode::ResourceVersionConflict,
-            "display placement conflict",
-            None,
-        ),
-        RepositoryError::Storage(e) => {
-            tracing::error!(error = %e, "display placement storage failure");
-            problem(
-                StatusCode::SERVICE_UNAVAILABLE,
-                ErrorCode::ProviderUnavailable,
-                "storage unavailable",
-                None,
-            )
-        }
-    }
+    crate::problem::repository_problem_merged_idempotency(
+        error,
+        "display placement",
+        "display placement conflict",
+        "storage unavailable",
+    )
 }

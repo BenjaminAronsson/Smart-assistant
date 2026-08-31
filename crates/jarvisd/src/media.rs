@@ -354,23 +354,12 @@ fn media_problem(error: MediaError) -> Response {
 }
 
 fn repository_problem(error: RepositoryError) -> Response {
-    match error {
-        RepositoryError::Conflict(_) | RepositoryError::IdempotencyConflict => problem(
-            StatusCode::CONFLICT,
-            ErrorCode::ResourceVersionConflict,
-            "media command conflict",
-            None,
-        ),
-        RepositoryError::Storage(e) => {
-            tracing::error!(error = %e, "media command audit failure");
-            problem(
-                StatusCode::SERVICE_UNAVAILABLE,
-                ErrorCode::ProviderUnavailable,
-                "storage unavailable",
-                None,
-            )
-        }
-    }
+    crate::problem::repository_problem_merged_idempotency(
+        error,
+        "media command audit",
+        "media command conflict",
+        "storage unavailable",
+    )
 }
 
 /// The host half of the "what's playing" query (F5.7, FR-32/ADR-022): it reads

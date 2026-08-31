@@ -45,15 +45,14 @@ use jarvis_domain::conversations::{Message, MessageRole};
 use jarvis_domain::ids::{ApprovalId, DeviceId, MessageId, RunId, SessionId};
 use jarvis_domain::run::{Run, RunBudget, RunState};
 use jarvis_infra::dispatcher::OutboxRecord;
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::Instrument;
 
 use crate::auth::{DeviceContext, fresh_id};
-use crate::problem::problem;
+use crate::problem::{not_found, problem};
+use crate::time::{rfc3339, truncate_to_micros};
 use crate::ws::{EventReader, WsHub};
 
 /// The default page size for a timeline read when the client gives no `limit`.
@@ -834,56 +833,16 @@ fn first_text(request: &SubmitMessageRequest) -> String {
         .collect()
 }
 
-fn not_found(detail: &'static str) -> Response {
-    problem(
-        StatusCode::NOT_FOUND,
-        ErrorCode::ResourceNotFound,
-        detail,
-        None,
-    )
-}
-
 /// One mapping for every RepositoryError crossing the boundary (docs/05 §7);
 /// storage internals never reach the client.
 fn repository_problem(error: RepositoryError) -> Response {
-    match error {
-        RepositoryError::IdempotencyConflict => problem(
-            StatusCode::CONFLICT,
-            ErrorCode::IdempotencyConflict,
-            "idempotency key reused with a different payload",
-            None,
-        ),
-        RepositoryError::Conflict(_) => problem(
-            StatusCode::CONFLICT,
-            ErrorCode::ResourceVersionConflict,
-            "resource conflict",
-            None,
-        ),
-        RepositoryError::Storage(error) => {
-            tracing::error!(%error, "run storage failure");
-            problem(
-                StatusCode::SERVICE_UNAVAILABLE,
-                ErrorCode::ProviderUnavailable,
-                "storage unavailable",
-                None,
-            )
-        }
-    }
-}
-
-fn rfc3339(t: SystemTime) -> String {
-    OffsetDateTime::from(t)
-        .format(&Rfc3339)
-        .expect("UTC timestamp formats")
-}
-
-/// Truncate to timestamptz precision so the stored value and every later render
-/// produce the identical RFC 3339 string (mirrors the sessions surface).
-fn truncate_to_micros(t: SystemTime) -> SystemTime {
-    match t.duration_since(std::time::UNIX_EPOCH) {
-        Ok(d) => std::time::UNIX_EPOCH + std::time::Duration::from_micros(d.as_micros() as u64),
-        Err(_) => t,
-    }
+    crate::problem::repository_problem_distinct_idempotency(
+        error,
+        "run",
+        "resource conflict",
+        "idempotency key reused with a different payload",
+        "storage unavailable",
+    )
 }
 
 /// `GET /api/v1/providers` — return current health state for all known providers (F1.7).

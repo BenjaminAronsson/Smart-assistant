@@ -43,7 +43,8 @@ use jarvis_domain::ids::{ArtifactId, RunId};
 use jarvis_domain::policy::Scope;
 
 use crate::auth::{DeviceContext, fresh_id};
-use crate::problem::problem;
+use crate::problem::{not_found, problem};
+use crate::time::rfc3339;
 
 /// Everything the bridge needs, assembled once at wiring time.
 #[derive(Clone)]
@@ -126,15 +127,6 @@ fn path_problem(fault: PathFault) -> Response {
         PathFault::App => "no such app",
         PathFault::Version => "no such app version",
     })
-}
-
-fn not_found(what: &str) -> Response {
-    problem(
-        StatusCode::NOT_FOUND,
-        ErrorCode::ResourceNotFound,
-        what,
-        None,
-    )
 }
 
 /// `POST /api/v1/apps/{id}/versions/{version}/capability-tokens`
@@ -268,10 +260,4 @@ fn bridge_problem(error: BridgeError) -> Response {
             None,
         ),
     }
-}
-
-fn rfc3339(t: std::time::SystemTime) -> String {
-    time::OffsetDateTime::from(t)
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_default()
 }

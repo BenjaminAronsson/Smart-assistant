@@ -25,7 +25,8 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::auth::DeviceContext;
-use crate::problem::problem;
+use crate::problem::{not_found, problem};
+use crate::time::rfc3339;
 
 const MAX_QUERY_BYTES: usize = 128;
 
@@ -105,12 +106,6 @@ fn sensitivity_name(value: Sensitivity) -> &'static str {
         Sensitivity::Normal => "normal",
         Sensitivity::Sensitive => "sensitive",
     }
-}
-
-fn rfc3339(value: SystemTime) -> String {
-    OffsetDateTime::from(value)
-        .format(&Rfc3339)
-        .expect("UTC timestamp formats")
 }
 
 fn parse_retention(value: RetentionDto) -> Result<RetentionRule, &'static str> {
@@ -249,44 +244,19 @@ fn memory_problem(error: jarvis_domain::memory::MemoryError) -> Response {
 }
 
 fn repository_problem(error: RepositoryError) -> Response {
-    match error {
-        RepositoryError::Conflict(_) => problem(
-            StatusCode::CONFLICT,
-            ErrorCode::ResourceVersionConflict,
-            "memory changed; refresh and retry",
-            None,
-        ),
-        RepositoryError::IdempotencyConflict => problem(
-            StatusCode::CONFLICT,
-            ErrorCode::IdempotencyConflict,
-            "idempotency conflict",
-            None,
-        ),
-        RepositoryError::Storage(error) => {
-            tracing::error!(%error, "memory storage failure");
-            problem(
-                StatusCode::SERVICE_UNAVAILABLE,
-                ErrorCode::ProviderUnavailable,
-                "memory storage unavailable",
-                None,
-            )
-        }
-    }
+    crate::problem::repository_problem_distinct_idempotency(
+        error,
+        "memory",
+        "memory changed; refresh and retry",
+        "idempotency conflict",
+        "memory storage unavailable",
+    )
 }
 
 fn bad_request(detail: &'static str) -> Response {
     problem(
         StatusCode::BAD_REQUEST,
         ErrorCode::ValidationFailed,
-        detail,
-        None,
-    )
-}
-
-fn not_found(detail: &'static str) -> Response {
-    problem(
-        StatusCode::NOT_FOUND,
-        ErrorCode::ResourceNotFound,
         detail,
         None,
     )

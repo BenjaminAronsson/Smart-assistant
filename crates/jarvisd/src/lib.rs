@@ -32,6 +32,7 @@ pub mod problem;
 pub mod runs;
 pub mod sessions;
 pub mod settings;
+pub mod time;
 pub mod timers;
 pub mod tls;
 pub mod tools;
