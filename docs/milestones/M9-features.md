@@ -409,6 +409,29 @@ thresholds are calibrated to what the cleaned tree achieves.
       Tests: all 45 specs / 256 `it()` blocks pass; HUD acceptance screenshots unchanged.
       Refs: `.claude/skills/angular-shell`, docs/12. Deps: F9.11.
 
+      **DONE, minus the registry.** Added `hud/cards/_card.scss` (four mixins:
+      `card-stack($gap)`, `card-title`, `card-list($gap)`, `glass-surface`) and applied it
+      across all 17 card stylesheets — every byte-identical (or gap-parameterized)
+      `display:flex;flex-direction:column` root/title/list shape now goes through the
+      mixin; deliberately left alone where the shape looked similar but wasn't identical:
+      `list-card.scss`'s `.list-item-box` (`0.15vmin` border, not the mixin's `1px`) and
+      `map-card.scss`'s `.open-large` (`background: transparent`, not `var(--glass-bg)`).
+      Not doing the registry: `hud-card.ts` is 92 lines with **14** narrowing `computed`s,
+      not 18 as this entry claims — but the bigger issue is the shape of the switch, not
+      its size. Three of the fourteen branches are irregular by design, not by omission:
+      `list` carries an extra `[pending]`/`(checkItem)` pair, `approval` carries
+      `[pending]`/`(decide)` *and* unwraps `c.card` instead of `c`, and `error` binds
+      `[message]` instead of `[card]` at all. A dynamic-dispatch registry (`NgComponentOutlet`
+      keyed by discriminant) would still need hand-written special cases for exactly those
+      three — most of the claimed "three edits per new card type" savings evaporate — and
+      it would trade away the one property the file's own comment calls load-bearing: the
+      `@if`/`@else if` chain plus `narrow<T>`'s discriminated-union narrowing makes an
+      unregistered card type a compile-time-checked fallback to the error card, not a
+      runtime lookup miss. That's `docs/12 §2.3/§9`'s client-side security property, not
+      incidental structure — collapsing it into a generic registry is exactly the kind of
+      behaviour risk F9.12's own scope note ("no behaviour changes") rules out. Left as-is;
+      flagging for a human call at the gate rather than implementing it.
+
 - [ ] **F9.13 — ADR-034 and the structural gate** · *strong model*
       Drafts ADR-034 (Proposed; owner accepts at the gate) fixing the norm: a directory
       module above a size threshold, tests out of `src/` for adapter crates, test doubles

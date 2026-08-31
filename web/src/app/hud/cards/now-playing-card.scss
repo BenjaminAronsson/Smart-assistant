@@ -1,5 +1,7 @@
 /* Now-playing card (docs/12 §2.3, FR-32/ADR-022): data only, no controls. */
 
+@use 'card';
+
 .now-playing-card {
   display: flex;
   gap: 1.2vmin;
@@ -16,9 +18,7 @@
 
 .now-playing-text {
   min-inline-size: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.2vmin;
+  @include card.card-stack(0.2vmin);
 }
 
 .now-playing-title {

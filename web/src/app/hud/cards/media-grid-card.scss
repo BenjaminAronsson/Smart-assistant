@@ -1,16 +1,14 @@
 /* Media/menu grid card (docs/12 §2.3). Tiles auto-fit, never a fixed column
  * count (docs/12 §7). */
 
+@use 'card';
+
 .media-grid-card {
-  display: flex;
-  flex-direction: column;
-  gap: 0.8vmin;
+  @include card.card-stack;
 }
 
 .grid-title {
-  margin: 0;
-  font-size: clamp(14px, 2vmin, 18px);
-  color: var(--ink);
+  @include card.card-title;
 }
 
 .grid-items {
@@ -23,9 +21,7 @@
 }
 
 .grid-item {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4vmin;
+  @include card.card-stack(0.4vmin);
 }
 
 .item-name {
