@@ -17,11 +17,10 @@ use jarvis_domain::ids::SessionId;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::SystemTime;
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
 
 use crate::auth::DeviceContext;
 use crate::problem::problem;
+use crate::time::{rfc3339, truncate_to_micros};
 
 #[derive(Clone)]
 pub struct SessionApi {
@@ -124,29 +123,13 @@ pub async fn list(
 /// One mapping for every RepositoryError crossing the boundary (docs/05 §7).
 /// Storage details never reach the client — they can carry driver internals.
 fn repository_problem(error: RepositoryError) -> Response {
-    match error {
-        RepositoryError::IdempotencyConflict => problem(
-            StatusCode::CONFLICT,
-            ErrorCode::IdempotencyConflict,
-            "idempotency key reused with a different payload",
-            None,
-        ),
-        RepositoryError::Conflict(_) => problem(
-            StatusCode::CONFLICT,
-            ErrorCode::ResourceVersionConflict,
-            "resource conflict",
-            None,
-        ),
-        RepositoryError::Storage(e) => {
-            tracing::error!(error = %e, "session storage failure");
-            problem(
-                StatusCode::SERVICE_UNAVAILABLE,
-                ErrorCode::ProviderUnavailable,
-                "storage unavailable",
-                None,
-            )
-        }
-    }
+    crate::problem::repository_problem_distinct_idempotency(
+        error,
+        "session",
+        "resource conflict",
+        "idempotency key reused with a different payload",
+        "storage unavailable",
+    )
 }
 
 fn to_dto(session: &Session) -> SessionDto {
@@ -160,19 +143,6 @@ fn to_dto(session: &Session) -> SessionDto {
         created_at: rfc3339(session.created_at),
         updated_at: rfc3339(session.updated_at),
     }
-}
-
-fn truncate_to_micros(t: SystemTime) -> SystemTime {
-    match t.duration_since(std::time::UNIX_EPOCH) {
-        Ok(d) => std::time::UNIX_EPOCH + std::time::Duration::from_micros(d.as_micros() as u64),
-        Err(_) => t, // pre-epoch clock: leave untouched, storage will reject
-    }
-}
-
-fn rfc3339(t: SystemTime) -> String {
-    OffsetDateTime::from(t)
-        .format(&Rfc3339)
-        .expect("UTC timestamp formats")
 }
 
 fn current_trace_id() -> Option<String> {

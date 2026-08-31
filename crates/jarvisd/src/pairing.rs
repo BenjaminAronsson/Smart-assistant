@@ -42,11 +42,10 @@ use jarvis_contracts::pairing::{
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::identity::{ClassScope, Device, DeviceClass};
 use rand::RngCore;
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
 
 use crate::auth::{AuthState, DeviceContext};
 use crate::problem::problem;
+use crate::time::rfc3339;
 
 /// How long an opened window stays open. Long enough to walk to the satellite
 /// and type, short enough that a forgotten window is not a standing door.
@@ -546,12 +545,6 @@ fn random_bytes<const N: usize>() -> [u8; N] {
 fn sha256_hex(input: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     hex::encode(Sha256::digest(input))
-}
-
-fn rfc3339(at: SystemTime) -> String {
-    OffsetDateTime::from(at)
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
 }
 
 /// State the pairing routes carry: the identity store (through `AuthState`)

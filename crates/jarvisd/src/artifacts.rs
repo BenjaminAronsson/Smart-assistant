@@ -30,7 +30,7 @@ use jarvis_domain::grants::Sha256;
 use jarvis_domain::ids::ArtifactId;
 use jarvis_domain::location::Sensitivity;
 
-use crate::problem::problem;
+use crate::problem::{not_found, problem};
 
 /// The artifact read API: the manifest store plus the blob store, joined by the
 /// content hash. Cloneable so it can be axum route state.
@@ -46,35 +46,15 @@ impl ArtifactApi {
     }
 }
 
-fn not_found(what: &str) -> Response {
-    problem(
-        StatusCode::NOT_FOUND,
-        ErrorCode::ResourceNotFound,
-        what,
-        None,
-    )
-}
-
 /// One mapping for every RepositoryError crossing the boundary (docs/05 §7).
 /// Storage internals never reach the client.
 fn repository_problem(error: RepositoryError) -> Response {
-    match error {
-        RepositoryError::Conflict(_) | RepositoryError::IdempotencyConflict => problem(
-            StatusCode::CONFLICT,
-            ErrorCode::ResourceVersionConflict,
-            "artifact version conflict",
-            None,
-        ),
-        RepositoryError::Storage(e) => {
-            tracing::error!(error = %e, "artifact storage failure");
-            problem(
-                StatusCode::SERVICE_UNAVAILABLE,
-                ErrorCode::ProviderUnavailable,
-                "storage unavailable",
-                None,
-            )
-        }
-    }
+    crate::problem::repository_problem_merged_idempotency(
+        error,
+        "artifact",
+        "artifact version conflict",
+        "storage unavailable",
+    )
 }
 
 /// `GET /api/v1/artifacts/{id}/versions` — all versions, oldest first (FR-08).

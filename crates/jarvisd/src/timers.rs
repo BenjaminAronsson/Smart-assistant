@@ -53,6 +53,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::auth::DeviceContext;
 use crate::problem::problem;
+use crate::time::rfc3339;
 
 /// Never sleep for less than this between scheduler passes. Belt-and-braces
 /// against a hot loop: if a timer ever reads "due" but cannot be fired, the
@@ -86,12 +87,6 @@ pub fn to_timer_dto(timer: &Timer, now: SystemTime) -> TimerDto {
             .origin_device()
             .map(|device| device.as_str().to_owned()),
     }
-}
-
-fn rfc3339(t: SystemTime) -> String {
-    OffsetDateTime::from(t)
-        .format(&Rfc3339)
-        .expect("UTC timestamp formats")
 }
 
 /// Encodes `timer.fired` for the transactional outbox (docs/05 §3).

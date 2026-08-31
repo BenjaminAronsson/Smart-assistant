@@ -29,10 +29,10 @@ use jarvis_domain::automations::{
 };
 use jarvis_domain::ids::AutomationId;
 use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
 use tokio_util::sync::CancellationToken;
 
-use crate::problem::problem;
+use crate::problem::{not_found, problem};
+use crate::time::rfc3339;
 
 /// How often the clock sweep runs.
 ///
@@ -50,12 +50,6 @@ impl AutomationApi {
     pub fn new(store: Arc<dyn AutomationStore>) -> Self {
         Self { store }
     }
-}
-
-fn rfc3339(t: SystemTime) -> String {
-    OffsetDateTime::from(t)
-        .format(&Rfc3339)
-        .expect("UTC timestamp formats")
 }
 
 fn trigger_dto(trigger: &Trigger) -> TriggerDto {
@@ -242,7 +236,7 @@ pub async fn update(
     Path(id): Path<String>,
     Json(request): Json<UpdateAutomationRequest>,
 ) -> Result<StatusCode, Response> {
-    let id: AutomationId = id.parse().map_err(|_| not_found())?;
+    let id: AutomationId = id.parse().map_err(|_| not_found("no such automation"))?;
     let audit = AuditEvent {
         occurred_at: SystemTime::now(),
         actor: format!("device:{}", device.device_id),
@@ -269,7 +263,7 @@ pub async fn delete(
     axum::Extension(device): axum::Extension<crate::auth::DeviceContext>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, Response> {
-    let id: AutomationId = id.parse().map_err(|_| not_found())?;
+    let id: AutomationId = id.parse().map_err(|_| not_found("no such automation"))?;
     let audit = AuditEvent {
         occurred_at: SystemTime::now(),
         actor: format!("device:{}", device.device_id),
@@ -290,20 +284,11 @@ pub async fn history(
     State(api): State<AutomationApi>,
     Path(id): Path<String>,
 ) -> Result<Json<AutomationHistoryResponse>, Response> {
-    let id: AutomationId = id.parse().map_err(|_| not_found())?;
+    let id: AutomationId = id.parse().map_err(|_| not_found("no such automation"))?;
     let executions = api.store.history(&id, 50).await.map_err(storage_problem)?;
     Ok(Json(AutomationHistoryResponse {
         executions: executions.iter().map(execution_dto).collect(),
     }))
-}
-
-fn not_found() -> Response {
-    problem(
-        StatusCode::NOT_FOUND,
-        ErrorCode::ResourceNotFound,
-        "no such automation",
-        None,
-    )
 }
 
 /// Minutes since local midnight.

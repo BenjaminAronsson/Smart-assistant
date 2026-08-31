@@ -31,12 +31,11 @@ use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::identity::{ClassScope, Device};
 use jarvis_domain::ids::DeviceId;
 use std::time::SystemTime;
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
 use tokio::sync::broadcast;
 
 use crate::auth::{AuthState, DeviceContext};
 use crate::problem::problem;
+use crate::time::rfc3339;
 
 /// Longest revocation reason accepted. It is owner-authored free text that
 /// lands in an append-only audit row and in every future device list, so it
@@ -480,10 +479,4 @@ fn to_dto(device: &Device) -> DeviceDto {
         revoked_at: device.revoked_at.map(rfc3339),
         revoked_reason: device.revoked_reason.clone(),
     }
-}
-
-fn rfc3339(at: SystemTime) -> String {
-    OffsetDateTime::from(at)
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
 }
