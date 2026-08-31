@@ -1,7 +1,8 @@
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
+import type { RunStateDto } from '../../generated/api-types';
 import { hudCardId } from './cards/card-id';
-import { HudStateService } from './hud-state.service';
+import { HudStateService, type PresenceState, presenceForRunState } from './hud-state.service';
 
 describe('HudStateService', () => {
   let hud: HudStateService;
@@ -113,4 +114,32 @@ describe('HudStateService', () => {
     hud.resolveApproval(approval.card.approvalId);
     expect(hud.cards()).toEqual([]);
   });
+});
+
+describe('presenceForRunState', () => {
+  // Exhaustive by construction (F9.11): a `RunStateDto` value not listed here
+  // is a type error at the object literal, and `presenceForRunState`'s own
+  // `never` default arm makes an unhandled variant a compile error at the
+  // mapping's one seam — the pairing this milestone's own doc calls "the
+  // compiler will not flag the miss" was previously true of, back when the
+  // mapping was duplicated by hand in `App` and `Conversation`.
+  const expected: Record<RunStateDto, PresenceState> = {
+    received: 'speaking',
+    context_ready: 'speaking',
+    model_running: 'speaking',
+    responding: 'speaking',
+    replanning: 'speaking',
+    tool_running: 'tool',
+    waiting_approval: 'waiting',
+    policy_review: 'waiting',
+    completed: 'done',
+    failed: 'error',
+    cancelled: 'idle',
+  };
+
+  for (const [state, presence] of Object.entries(expected) as [RunStateDto, PresenceState][]) {
+    it(`maps ${state} to ${presence}`, () => {
+      expect(presenceForRunState(state)).toBe(presence);
+    });
+  }
 });

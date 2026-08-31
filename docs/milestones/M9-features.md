@@ -371,6 +371,32 @@ thresholds are calibrated to what the cleaned tree achieves.
       Refs: `.claude/skills/angular-shell`, docs/05 §2, `web/src/generated/api-types.ts`.
       Deps: F9.10.
 
+      **DONE, for the one part the milestone doc itself calls a live defect; two of the
+      other three claims did not hold up.** The `setHudPresenceForRunState` duplication
+      was real and byte-identical — extracted to one exported `presenceForRunState` function
+      in `hud-state.service.ts` (co-located with `PresenceState`, the type it produces),
+      with a `default: { const exhaustive: never = state; ... }` arm so an unhandled
+      `RunStateDto` variant is a compile error at this one seam rather than a silent gap.
+      Both call sites now delegate to it in one line. Added the required test: an exhaustive
+      `Record<RunStateDto, PresenceState>` table in `hud-state.service.spec.ts`, one `it()`
+      per variant (11), which fails to type-check if a new variant is added without an entry.
+      **Investigated and did not find:** `artifact-api.service.ts` and
+      `app-bridge.service.ts` do not exist anywhere in the tree, and `authHeaders()` is
+      defined exactly once (in `ApiService`, private, not duplicated) — grepped for both
+      claims directly rather than trusting the milestone text. There is already exactly one
+      HTTP layer; nothing to collapse. **Deliberately not attempted:** the `RunStreamService`
+      consolidation of `app.ts`'s and `conversation.ts`'s WS reconnect/gap-detection/resync
+      logic. Read both in full: they are similar in *shape* (both open a socket via
+      `ApiService.openSocket`, track a last-seen `seq`, detect a gap, resync) but genuinely
+      different in *content* — `app.ts` resyncs via `getRun` and drives global HUD presence
+      only; `conversation.ts` resyncs via `loadTimeline`, additionally owns the approval
+      tray, streaming-text accumulation, and canvas scoping to its own session. Forcing them
+      into one service risks exactly the fixture-vs-caller trap this project has hit
+      repeatedly (see `fixture-vs-caller-bug-class` in the working notes) — a shared
+      abstraction built to fit one caller's shape that quietly stops fitting the other's.
+      Left as a scoped-out follow-up rather than rushed; the one verified live defect
+      (the presence-mapping duplication) is fixed, tested, and does not depend on it.
+
 - [ ] **F9.12 — Web: a shared card layer** · *Sonnet*
       There is no `shared/`, `ui/` or `core/` directory, and **zero `@use`/`@import`**
       across 853 lines of card SCSS in 17 standalone files, coordinating only through the 33

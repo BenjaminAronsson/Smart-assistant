@@ -22,7 +22,7 @@ import type {
 } from '../generated/api-types';
 import { ApiService } from './api.service';
 import { Hud } from './hud/hud';
-import { HudStateService } from './hud/hud-state.service';
+import { HudStateService, presenceForRunState } from './hud/hud-state.service';
 import { MediaBar } from './media-bar';
 import { MediaService } from './media.service';
 
@@ -319,31 +319,7 @@ export class App implements OnInit, OnDestroy {
   }
 
   private setHudPresenceForRunState(state: RunStateDto): void {
-    switch (state) {
-      case 'received':
-      case 'context_ready':
-      case 'model_running':
-      case 'responding':
-      case 'replanning':
-        this.hud.setPresence('speaking');
-        break;
-      case 'tool_running':
-        this.hud.setPresence('tool');
-        break;
-      case 'waiting_approval':
-      case 'policy_review':
-        this.hud.setPresence('waiting');
-        break;
-      case 'completed':
-        this.hud.setPresence('done');
-        break;
-      case 'failed':
-        this.hud.setPresence('error');
-        break;
-      case 'cancelled':
-        this.hud.setPresence('idle');
-        break;
-    }
+    this.hud.setPresence(presenceForRunState(state));
   }
 
   private speakMessage(message: MessageDto): void {
