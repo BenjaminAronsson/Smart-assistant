@@ -3,6 +3,7 @@
 //! `codegen` (contracts → TypeScript, lands in F0.3), `golden` (trace runner, F0.9).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod perf;
@@ -715,17 +716,184 @@ fn arch_test() -> anyhow::Result<()> {
         "cargo metadata failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let graph = parse_graph(&serde_json::from_slice(&output.stdout)?)?;
-    let violations = check(&graph);
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let graph = parse_graph(&metadata)?;
+    let mut violations = check(&graph);
+
+    let workspace_root = metadata["workspace_root"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("cargo metadata: missing workspace_root"))?;
+    violations.extend(check_structure(&Path::new(workspace_root).join("crates"))?);
+
     if violations.is_empty() {
-        println!("arch-test: {} crates, dependency rules hold", graph.len());
+        println!(
+            "arch-test: {} crates, dependency rules hold, structure within ADR-034 ceilings",
+            graph.len()
+        );
         Ok(())
     } else {
         for v in &violations {
             eprintln!("arch-test violation: {v}");
         }
-        anyhow::bail!("{} dependency-rule violation(s)", violations.len());
+        anyhow::bail!("{} arch-test violation(s)", violations.len());
     }
+}
+
+/// ADR-034 §2's two ceilings: max lines per `.rs` file, max lines per
+/// function. Ratcheted (§3), not aspirational — each is the worst value the
+/// tree actually achieved when this check landed (`crates/jarvis-application/
+/// src/lists.rs` for the file ceiling, `crates/jarvisd/src/main.rs::run` for
+/// the function ceiling), so the gate is green on arrival and can only be
+/// tightened by an ordinary PR. Raising either number requires editing
+/// ADR-034 itself, not just this constant.
+const MAX_FILE_LINES: usize = 1700;
+const MAX_FN_LINES: usize = 730;
+
+fn check_structure(crates_root: &Path) -> anyhow::Result<Vec<String>> {
+    let mut violations = Vec::new();
+    let mut rs_files = Vec::new();
+    collect_rs_files(crates_root, &mut rs_files)?;
+    for path in rs_files {
+        let contents = std::fs::read_to_string(&path)?;
+        let line_count = contents.lines().count();
+        let display = path
+            .strip_prefix(crates_root.parent().unwrap_or(crates_root))
+            .unwrap_or(&path)
+            .display();
+        if line_count > MAX_FILE_LINES {
+            violations.push(format!(
+                "{display}: {line_count} lines exceeds the {MAX_FILE_LINES}-line file ceiling (ADR-034 §2) — split into a directory module"
+            ));
+        }
+        for (fn_start_line, fn_line_count) in function_lengths(&contents) {
+            if fn_line_count > MAX_FN_LINES {
+                violations.push(format!(
+                    "{display}:{fn_start_line}: function is {fn_line_count} lines, exceeds the {MAX_FN_LINES}-line function ceiling (ADR-034 §2)"
+                ));
+            }
+        }
+    }
+    Ok(violations)
+}
+
+fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            if entry.file_name() == "target" {
+                continue;
+            }
+            collect_rs_files(&path, out)?;
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// Returns `(1-indexed start line, line count)` for every top-level function
+/// body found by brace-matching from each `fn` signature. A heuristic, not a
+/// parser: it does not track raw strings or block comments, but Rust's own
+/// `{`/`}` balance inside ordinary format-string literals nets to zero within
+/// the same token, which is the only case this codebase's style produces.
+fn function_lengths(contents: &str) -> Vec<(usize, usize)> {
+    let lines: Vec<&str> = contents.lines().collect();
+    let mut results = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if is_fn_signature_start(lines[i]) {
+            let start = i;
+            let mut j = i;
+            let mut brace_line = None;
+            while j < lines.len() && j - i < 30 {
+                if lines[j].contains('{') {
+                    brace_line = Some(j);
+                    break;
+                }
+                if lines[j].trim_end().ends_with(';') {
+                    break; // trait fn declaration, no body
+                }
+                j += 1;
+            }
+            if let Some(bl) = brace_line
+                && let Some(close) = find_matching_close(&lines, bl)
+            {
+                results.push((start + 1, close - start + 1));
+                i = close + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    results
+}
+
+fn find_matching_close(lines: &[&str], brace_line: usize) -> Option<usize> {
+    let mut depth: i32 = 0;
+    for (k, line) in lines.iter().enumerate().skip(brace_line) {
+        let mut in_string = false;
+        let mut escape = false;
+        let mut chars = line.chars().peekable();
+        while let Some(c) = chars.next() {
+            if in_string {
+                if escape {
+                    escape = false;
+                } else if c == '\\' {
+                    escape = true;
+                } else if c == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match c {
+                '/' if chars.peek() == Some(&'/') => break,
+                '"' => in_string = true,
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(k);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+fn is_fn_signature_start(line: &str) -> bool {
+    let mut rest = line.trim_start();
+    loop {
+        if let Some(r) = rest.strip_prefix("pub(")
+            && let Some(idx) = r.find(')')
+        {
+            rest = r[idx + 1..].trim_start();
+            continue;
+        }
+        if let Some(r) = rest.strip_prefix("pub ") {
+            rest = r.trim_start();
+            continue;
+        }
+        if let Some(r) = rest.strip_prefix("async ") {
+            rest = r.trim_start();
+            continue;
+        }
+        if let Some(r) = rest.strip_prefix("unsafe ") {
+            rest = r.trim_start();
+            continue;
+        }
+        if let Some(r) = rest.strip_prefix("const ") {
+            rest = r.trim_start();
+            continue;
+        }
+        break;
+    }
+    rest.starts_with("fn ") || rest.starts_with("fn(")
 }
 
 fn parse_graph(metadata: &serde_json::Value) -> anyhow::Result<DepGraph> {
@@ -1011,5 +1179,89 @@ mod tests {
         assert_eq!(violations.len(), 2);
         assert!(violations.iter().any(|v| v.contains("is missing")));
         assert!(violations.iter().any(|v| v.contains("no arch-test rule")));
+    }
+
+    /// A throwaway `crates_root`-shaped directory under the OS temp dir,
+    /// cleaned up on drop — ADR-034's structural checks read real files, so
+    /// their tests need real (if fake) files rather than in-memory fixtures.
+    struct FixtureCrate {
+        root: PathBuf,
+    }
+
+    impl FixtureCrate {
+        fn new(name: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "xtask-arch-test-fixture-{name}-{}-{:?}",
+                std::process::id(),
+                std::time::Instant::now()
+            ));
+            let src = root.join("a-fixture-crate/src");
+            std::fs::create_dir_all(&src).unwrap();
+            Self { root }
+        }
+
+        fn write_src_file(&self, filename: &str, contents: &str) {
+            std::fs::write(
+                self.root.join("a-fixture-crate/src").join(filename),
+                contents,
+            )
+            .unwrap();
+        }
+    }
+
+    impl Drop for FixtureCrate {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn check_structure_flags_a_deliberately_oversized_fixture_file() {
+        let fixture = FixtureCrate::new("oversized-file");
+        let body: String = (0..MAX_FILE_LINES + 1)
+            .map(|n| format!("// padding line {n}\n"))
+            .collect();
+        fixture.write_src_file("big.rs", &body);
+
+        let violations = check_structure(&fixture.root).unwrap();
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.contains("big.rs") && v.contains("file ceiling")),
+            "expected a file-ceiling violation for big.rs: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn check_structure_flags_a_deliberately_oversized_function() {
+        let fixture = FixtureCrate::new("oversized-fn");
+        let mut body = String::from("fn oversized() {\n");
+        for n in 0..MAX_FN_LINES + 1 {
+            body.push_str(&format!("    let _ = {n};\n"));
+        }
+        body.push_str("}\n");
+        fixture.write_src_file("big_fn.rs", &body);
+
+        let violations = check_structure(&fixture.root).unwrap();
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.contains("big_fn.rs") && v.contains("function ceiling")),
+            "expected a function-ceiling violation for big_fn.rs: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn check_structure_passes_a_clean_fixture() {
+        let fixture = FixtureCrate::new("clean");
+        fixture.write_src_file(
+            "small.rs",
+            "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n",
+        );
+
+        assert_eq!(
+            check_structure(&fixture.root).unwrap(),
+            Vec::<String>::new()
+        );
     }
 }
