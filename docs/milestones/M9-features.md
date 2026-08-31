@@ -302,6 +302,35 @@ thresholds are calibrated to what the cleaned tree achieves.
       three crates depend on its shape.
       Refs: docs/02 §3, docs/09 §2. Deps: F9.9.
 
+      **DONE, minus one sub-task that turned out not to apply.** `config.rs` had grown to
+      1,628 lines by the time this ran (not 1,311 — F8.x/F9.x landed more `[section]`s
+      since the milestone was decomposed), split into `config/{apps,ui,voice,maps,timers,
+      lists,media,display,storage,location,integrations,server,database,observability,
+      providers,secrets}.rs` by exact line-range extraction, one file per TOML top-level
+      section (sub-structs like `ElevenLabsConfig`/`CaldavConfig` live with their parent
+      section, not separately). `ports.rs` split into 13 files under `ports/` the same way.
+      Both required the same fix, once each: an item defined in one new file but used by
+      another (`RepositoryError` in ports' case, `MediaConfig`/`default_true` in config's)
+      compiled fine when everything shared one file's scope and broke the instant the file
+      split, with the config case cascading into confusing unrelated-looking errors at
+      distant call sites — found and fixed via `use super::other_file::Item;`, the same
+      class of bug F9.7's `ws.rs` split hit first. `ports/mod.rs` re-exports every submodule
+      via `pub use area::*;`; confirmed re-export-surface-identical by construction —
+      `jarvisd`, `jarvis-infra`, and `jarvis-adapters` compile with zero edits to any of
+      their own `use jarvis_application::ports::{...}` lines. Investigated `deepdive.rs`'s
+      claimed "six near-identical problem helpers": found only two functions
+      (`session_lookup_problem`, `promotion_problem`), and neither is a duplicate of F9.9's
+      new `repository_problem_*` seam — `session_lookup_problem` collapses every
+      `RepositoryError` variant to one fixed "storage unavailable" response rather than
+      discriminating Conflict/IdempotencyConflict/Storage (a narrower, genuinely different
+      contract for a read-only lookup), and `promotion_problem` maps `DeepDiveError`, a
+      distinct domain error type, not `RepositoryError` at all. Forcing either through
+      `repository_problem_distinct_idempotency`/`_merged_idempotency` would change observable
+      response behaviour, which this milestone's own rule (`docs/milestones/M9-features.md`
+      decision 4: "no behaviour changes... anything else found along the way leaves in a
+      separate PR") forbids doing inside a structural diff. Left untouched, documented here
+      rather than silently dropped.
+
 - [ ] **F9.11 — Web: one socket, one HTTP layer** · *strong model*
       `app.ts` and `conversation.ts` each hand-roll a WebSocket client with their own
       reconnect, sequence-gap detection and resync, over the one shared piece
