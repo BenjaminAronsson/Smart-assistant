@@ -220,6 +220,20 @@ thresholds are calibrated to what the cleaned tree achieves.
       11 passes; the `delivery_scope_tests` module keeps every assertion.
       Refs: `.claude/skills/ws-contracts`, M7 gate report §1, docs/05 §1. Deps: F9.6.
 
+      **DONE, with a scope-narrowing deviation.** The five-file split landed exactly as
+      specified, byte-identical per security-auditor review (`delivers_to`/
+      `delivers_to_owner_of`/`delivers_to_for_test` diff clean against the original; the
+      `handle_socket` select-loop body diffs clean modulo one `pub(crate)` token). **`handle_socket`
+      was NOT decomposed into new named branch handlers.** Its `shut_down!()` macro relies on an
+      implicit `return` from the enclosing function, and its arms mutably borrow `state`, `socket`,
+      `speech`, `voice_stream`, and `owned_streams` together — extracting arms would mean inventing
+      a return-value protocol to replace the macro, a real behavior-preserving-but-not-obviously-so
+      transformation on the exact code that closed CF-8. Judged not worth the risk under this
+      milestone's "nothing changed" exit criterion; byte-identity is stronger evidence of that than
+      a hand-verified decomposition. `start_voice_turn`/`forward_speech_chunk` (already extracted
+      before this feature) moved into `socket.rs` unchanged. If further `handle_socket` decomposition
+      is still wanted, it needs its own narrowly-scoped feature with the CF-8 table tests as the gate.
+
 - [ ] **F9.8 — Extract the composition root; unmix `jarvisd::runs`** · *strong model*
       `main.rs::run` is **708 lines** — the whole DI graph in one body — and
       `api.rs::router_with` is 290. Splits the composition root into per-area builders and
