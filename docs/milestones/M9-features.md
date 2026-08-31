@@ -144,7 +144,7 @@ thresholds are calibrated to what the cleaned tree achieves.
 
 ## M9 — features (F9.1–F9.13)
 
-- [ ] **F9.1 — Untrack the worktrees, reclaim the tree** · *Sonnet*
+- [x] **F9.1 — Untrack the worktrees, reclaim the tree** · *Sonnet*
       Removes the 18 `160000` gitlinks under `.claude/worktrees/` from the tracked tree,
       adds the path to `.gitignore` (3 lines today: `/target`, `node_modules/`,
       `web/dist/`), and deletes the 0-byte `.gitmodules`. This is first because it is not
@@ -157,7 +157,7 @@ thresholds are calibrated to what the cleaned tree achieves.
       a known-unique string returns exactly one hit.
       Refs: `.gitignore`, `git ls-tree -r HEAD`. Deps: none.
 
-- [ ] **F9.2 — CI: cache the toolchain and the workspace** · *Sonnet*
+- [x] **F9.2 — CI: cache the toolchain and the workspace** · *Sonnet*
       `.github/workflows/ci.yml` runs 5 jobs that each cold-compile 547 crates, and
       `cargo install`s `sqlx-cli` and `cargo-deny` from source — twice. Adds
       `Swatinem/rust-cache` to every Rust job, installs both tools as prebuilt binaries,
@@ -167,7 +167,7 @@ thresholds are calibrated to what the cleaned tree achieves.
       Tests: full CI green; before/after wall-clock recorded for the gate report.
       Refs: `.github/workflows/ci.yml`, docs/09 §5. Deps: F9.1.
 
-- [ ] **F9.3 — Workspace dependency inheritance** · *Sonnet*
+- [x] **F9.3 — Workspace dependency inheritance** · *Sonnet*
       `[workspace.dependencies]` holds 10 entries (5 internal, 5 external) while 41 of 46
       external crates are declared per-crate with a literal version — `tokio` in **11**
       manifests, `tokio-util` in 5, `tracing`/`sha2`/`async-trait` in 4 each. A version bump
@@ -180,7 +180,7 @@ thresholds are calibrated to what the cleaned tree achieves.
       `arch-test` and `cargo deny check` pass.
       Refs: root `Cargo.toml`, the 9 member manifests. Deps: F9.2.
 
-- [ ] **F9.4 — `jarvis-test-support` crate** · *strong model*
+- [x] **F9.4 — `jarvis-test-support` crate** · *strong model*
       A new workspace crate is a deliberate act — `arch-test` fails any crate with no rule
       — so this needs its own rule entry, reachable by **dev-dependency edges only**, and it
       must not become a back door around `jarvis-domain`'s purity allowlist. Promotes the
@@ -196,7 +196,7 @@ thresholds are calibrated to what the cleaned tree achieves.
       a `jarvis-test-support` edge from a non-dev dependency; workspace test count unchanged.
       Refs: `crates/xtask/src/main.rs` `RULES`, docs/02 §3. Deps: F9.3.
 
-- [ ] **F9.5 — Split `spotify` and `home_assistant` into module directories** · *Sonnet*
+- [x] **F9.5 — Split `spotify` and `home_assistant` into module directories** · *Sonnet*
       The two largest files in the repo, 7,258 lines combined, each a god-module: transport
       + auth/metadata cache + private wire DTOs + arg parsing + 4–6 tools + tests. Each
       becomes `<name>/{client,wire,tools/*}.rs`, one file per tool. Moves the ~3,080 lines
@@ -207,7 +207,7 @@ thresholds are calibrated to what the cleaned tree achieves.
       untouched; the HA allowlist and area-resolution tests keep every assertion.
       Refs: docs/02 §3, `.claude/skills/media-integration`. Deps: F9.4.
 
-- [ ] **F9.6 — One tool-declaration seam** · *strong model* · **security-auditor required**
+- [x] **F9.6 — One tool-declaration seam** · *strong model* · **security-auditor required**
       The `new()`/`id()`/`policy()`/`descriptor()` quartet repeats at **25** `impl
       ToolExecutor` sites, with `descriptor()` byte-identical 6× inside `spotify.rs` alone.
       Introduces a `declare_tool!` macro (or `ToolDefinition` blanket trait) for the
@@ -220,7 +220,7 @@ thresholds are calibrated to what the cleaned tree achieves.
       before and after; the adversarial suite passes; security-auditor returns no BLOCKING.
       Refs: `.claude/skills/policy-grants`, invariant 1. Deps: F9.5.
 
-- [ ] **F9.7 — Split `jarvisd::ws`** · *strong model* · **security-auditor required**
+- [x] **F9.7 — Split `jarvisd::ws`** · *strong model* · **security-auditor required**
       2,348 lines carrying five sink traits (`CanvasSink`, `OutboxPublisher`,
       `DisplayDirectiveSink`, `MediaWindowSink`, `RunEventSink`), the voice-stream state
       machine (`ActiveVoiceStream`, `speak_task`, `ActiveSpeech`, barge-in), replay/resync,
@@ -246,7 +246,7 @@ thresholds are calibrated to what the cleaned tree achieves.
       before this feature) moved into `socket.rs` unchanged. If further `handle_socket` decomposition
       is still wanted, it needs its own narrowly-scoped feature with the CF-8 table tests as the gate.
 
-- [ ] **F9.8 — Extract the composition root; unmix `jarvisd::runs`** · *strong model*
+- [x] **F9.8 — Extract the composition root; unmix `jarvisd::runs`** · *strong model*
       `main.rs::run` is **708 lines** — the whole DI graph in one body — and
       `api.rs::router_with` is 290. Splits the composition root into per-area builders and
       the route table into per-area routers. Separately, `runs.rs` (1,524 lines) mixes HTTP
@@ -289,7 +289,7 @@ thresholds are calibrated to what the cleaned tree achieves.
       for a follow-up feature, gated the same way (full test suite green +
       `build_tool_registry`-style extraction, one phase per commit).
 
-- [ ] **F9.9 — Kill the `jarvisd` helper duplication** · *Sonnet*
+- [x] **F9.9 — Kill the `jarvisd` helper duplication** · *Sonnet*
       `rfc3339` ×9 **in two variants that disagree on failure** (five `.expect("UTC
       timestamp formats")`, two `unwrap_or_else(|_| "1970-01-01T00:00:00Z")`), plus
       `truncate_to_micros` ×3, `repository_problem` ×6, `not_found` ×5, and per-module
@@ -329,7 +329,7 @@ thresholds are calibrated to what the cleaned tree achieves.
       `repository_problem` — each maps a genuinely different per-module error enum — and
       left them untouched.
 
-- [ ] **F9.10 — Split the two remaining grab-bags** · *Sonnet*
+- [x] **F9.10 — Split the two remaining grab-bags** · *Sonnet*
       `jarvisd/src/config.rs` (1,311 lines: ~25 config structs, each with a `Default`, and
       ~35 one-line `default_*` serde helpers) becomes `config/` submodules by area.
       `jarvis-application/src/ports.rs` (833 lines: 5 error enums plus every port trait)
@@ -369,7 +369,7 @@ thresholds are calibrated to what the cleaned tree achieves.
       separate PR") forbids doing inside a structural diff. Left untouched, documented here
       rather than silently dropped.
 
-- [ ] **F9.11 — Web: one socket, one HTTP layer** · *strong model*
+- [x] **F9.11 — Web: one socket, one HTTP layer** · *strong model*
       `app.ts` and `conversation.ts` each hand-roll a WebSocket client with their own
       reconnect, sequence-gap detection and resync, over the one shared piece
       (`ApiService.openSocket()`). Worse, **`setHudPresenceForRunState` is duplicated
@@ -409,7 +409,7 @@ thresholds are calibrated to what the cleaned tree achieves.
       Left as a scoped-out follow-up rather than rushed; the one verified live defect
       (the presence-mapping duplication) is fixed, tested, and does not depend on it.
 
-- [ ] **F9.12 — Web: a shared card layer** · *Sonnet*
+- [x] **F9.12 — Web: a shared card layer** · *Sonnet*
       There is no `shared/`, `ui/` or `core/` directory, and **zero `@use`/`@import`**
       across 853 lines of card SCSS in 17 standalone files, coordinating only through the 33
       custom properties in `styles.scss` (`display:flex` ×31, `color: var(--ink)` ×22,
@@ -444,7 +444,7 @@ thresholds are calibrated to what the cleaned tree achieves.
       behaviour risk F9.12's own scope note ("no behaviour changes") rules out. Left as-is;
       flagging for a human call at the gate rather than implementing it.
 
-- [ ] **F9.13 — ADR-034 and the structural gate** · *strong model*
+- [x] **F9.13 — ADR-034 and the structural gate** · *strong model*
       Drafts ADR-034 (Proposed; owner accepts at the gate) fixing the norm: a directory
       module above a size threshold, tests out of `src/` for adapter crates, test doubles
       only from `jarvis-test-support`, and the file/function ceilings. Extends `xtask
