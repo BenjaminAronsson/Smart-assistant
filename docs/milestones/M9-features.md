@@ -291,6 +291,32 @@ thresholds are calibrated to what the cleaned tree achieves.
       every existing API test's problem-body assertion unchanged.
       Refs: docs/03 (RFC 9457 mapping), `crates/jarvisd/src/problem.rs`. Deps: F9.8.
 
+      **DONE, with two of the milestone's own counts corrected.** `rfc3339` was duplicated
+      at **8** sites, not 9, in **three** divergent failure behaviours, not two: 5×
+      `.expect("UTC timestamp formats")` (panics), 1× `.unwrap_or_default()`
+      (`appbridge.rs`, silently returns `""`), 2× the epoch-sentinel form already shown in
+      the milestone text. Settled on the epoch-sentinel form and wrote down why in
+      `crates/jarvisd/src/time.rs`'s doc comment: a malformed timestamp read back from
+      storage must degrade to a recognizable sentinel, never panic the request handler
+      that happened to read it, and never silently return `""` (indistinguishable from a
+      missing field). `truncate_to_micros` was duplicated at **2** sites, not 3
+      (`runs.rs`, `sessions.rs`) — no third site exists. Both now live in the new
+      `crates/jarvisd/src/time.rs`. `not_found` (5 sites, byte-identical) and
+      `repository_problem` (6 sites) both moved into `problem.rs`; the latter split into
+      `repository_problem_distinct_idempotency` and `repository_problem_merged_idempotency`
+      rather than one `From` impl, because the milestone's own "two variants" framing
+      undersold this one too — `sessions`/`memories`/`runs` give an idempotency-key
+      conflict its own `ErrorCode::IdempotencyConflict`, while `artifacts`/`display`/
+      `media` collapse it into the same `ErrorCode::ResourceVersionConflict` a plain
+      version conflict gets. That is a real per-module API-response divergence, not
+      cosmetic duplication, so it is preserved as two named functions instead of erased
+      by a single generic mapping. Confirmed the milestone's "8 more files with per-module
+      `*_problem` mappers" (`session_lookup_problem`, `promotion_problem`,
+      `service_problem` ×2, `storage_problem` ×2, `memory_problem`, `media_problem`,
+      `path_problem`, `bridge_problem`) are not duplicates of each other or of
+      `repository_problem` — each maps a genuinely different per-module error enum — and
+      left them untouched.
+
 - [ ] **F9.10 — Split the two remaining grab-bags** · *Sonnet*
       `jarvisd/src/config.rs` (1,311 lines: ~25 config structs, each with a `Default`, and
       ~35 one-line `default_*` serde helpers) becomes `config/` submodules by area.
