@@ -119,6 +119,18 @@ idle RSS is unchanged against the M8 figure.
 crate rather than 7–8 copies; CI wall-clock materially reduced, with the before/after
 figure recorded in the gate report.
 
+**Correction (F9.13).** The 1,000/150 figures above don't survive contact with either
+ADR-034 §3 (ratchet to whatever the tree actually achieves at landing time, never an
+aspirational target) or the actual tree: F9.1–F9.12's scope was eight specific god-files
+and never claimed to be exhaustive, so `crates/jarvis-application/src/lists.rs` (1,699
+lines), `crates/jarvisd/src/main.rs::run` (720 lines, one function), and a dozen other
+files/functions above those numbers are untouched and still in main. Enforcing 1,000/150
+today would fail on landing — the opposite of what a ratchet is for. The ceilings that
+actually shipped are `MAX_FILE_LINES = 1700` and `MAX_FN_LINES = 730`
+(`crates/xtask/src/main.rs`), each set to the worst real value at landing time (`lists.rs`
+for the file ceiling, `main.rs::run` for the function ceiling) — lower than either number
+is a future ordinary PR, per ADR-034 §3, not a thing this feature owed.
+
 ---
 
 ## Ordering
@@ -444,6 +456,41 @@ thresholds are calibrated to what the cleaned tree achieves.
       Tests: `arch-test` fails a deliberately oversized fixture file and a fixture crate
       with no rule; full CI green under the new lint table.
       Refs: docs/02 §3, `crates/xtask/src/main.rs:518-701`, NFR-08. Deps: F9.12.
+
+      **DONE, minus two human-only steps.** ADR-034 was already drafted (Proposed, landed
+      at F8.11 per `docs/adr/README.md` — its own "drafted in F9.13" self-description is
+      itself stale, since it predates M9 existing; noted for `/sync-docs`). This feature
+      adds the enforcement code and configs the ADR describes but does not, and cannot,
+      accept the ADR or sign off the milestone — both are human-only decisions
+      (`docs/11` §3, `CLAUDE.md`).
+
+      Shipped: `cargo xtask arch-test` now walks every `.rs` file under `crates/` and
+      flags any file over `MAX_FILE_LINES` (1,700) or any brace-matched function over
+      `MAX_FN_LINES` (730) — both ratcheted to the tree's actual worst value at landing
+      (see the Exit Evidence correction above), covered by three new hermetic
+      fixture-directory tests (`check_structure_flags_a_deliberately_oversized_fixture_file`,
+      `..._function`, `..._passes_a_clean_fixture`); `clippy.toml` (pins clippy's MSRV
+      lints to the same 1.94 `rust-toolchain.toml` already pins) and `rustfmt.toml`
+      (`edition = "2024"`, matching what `cargo fmt` was already inferring from
+      `Cargo.toml`); `[workspace.lints.clippy] all = { level = "deny", priority = -1 }`,
+      which makes declarative in `Cargo.toml` what the CI `-D warnings` flag already
+      enforced — the tree was already clean against it, verified by a full
+      `cargo clippy --workspace --all-targets` run with no CLI flag before adding the
+      table.
+
+      Decisions #4 (test doubles only from `jarvis-test-support`) and #5 (adapter crates
+      keep integration tests in `tests/`) from the ADR are not new mechanical checks here.
+      #4 is already enforced — it's the F9.4 dev-dependency-edge rule `arch-test` already
+      had. #5 doesn't get a checker: `jarvis-adapters/src/{home_assistant,spotify}/tests.rs`
+      use `use super::*` to reach private items, which only compiles for a `#[cfg(test)]
+      mod` inside the crate — moving them to `tests/` would require making everything they
+      touch `pub`, a real API-surface widening, not a location change. Building a checker
+      that can't tell that apart from a genuine integration-test-left-in-src violation
+      would produce exactly the kind of false-positive gate ADR-034 itself argues against
+      (§"Rejected: clippy's ... They fire on the wrong unit").
+      `cargo build --workspace`, `cargo test --workspace`, `cargo xtask arch-test`,
+      `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check` all
+      green.
 
 ---
 

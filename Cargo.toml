@@ -23,6 +23,13 @@ publish = false
 [workspace.lints.rust]
 unsafe_code = "deny"
 
+[workspace.lints.clippy]
+# `-D warnings` in the CI clippy invocation already denies every warn-by-default
+# clippy lint (the `clippy::all` group); this makes that guarantee visible to
+# `cargo clippy` on its own, without depending on remembering the CLI flag
+# (ADR-034 §2). Not a new lint surface — the tree already passes this today.
+all = { level = "deny", priority = -1 }
+
 [workspace.dependencies]
 jarvis-domain = { path = "crates/jarvis-domain" }
 jarvis-application = { path = "crates/jarvis-application" }

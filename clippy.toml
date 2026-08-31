@@ -1,0 +1,5 @@
+# MSRV is pinned by rust-toolchain.toml / workspace.package.rust-version
+# (1.94); this makes clippy's own MSRV-aware lints (e.g. suggesting APIs not
+# yet stable at that version) check against the same number instead of the
+# installed toolchain's.
+msrv = "1.94"
