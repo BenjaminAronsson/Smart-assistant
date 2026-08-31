@@ -308,250 +308,49 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
                 .with_state(auth.clone()),
         );
         if let Some(api) = sessions {
-            protected = protected.merge(
-                Router::new()
-                    .route(
-                        "/api/v1/sessions",
-                        axum::routing::post(crate::sessions::create).get(crate::sessions::list),
-                    )
-                    .route("/api/v1/sessions/{id}", get(crate::sessions::get))
-                    .with_state(api),
-            );
+            protected = mount_sessions(protected, api);
         }
-        if let Some(RunWiring { runs, ws }) = runs {
-            protected = protected.merge(
-                Router::new()
-                    .route(
-                        "/api/v1/sessions/{id}/messages",
-                        axum::routing::post(crate::runs::submit_message),
-                    )
-                    .route(
-                        "/api/v1/sessions/{id}/timeline",
-                        get(crate::runs::get_timeline),
-                    )
-                    .route("/api/v1/runs/{id}", get(crate::runs::get_run))
-                    .route(
-                        "/api/v1/runs/{id}/cancel",
-                        axum::routing::post(crate::runs::cancel_run),
-                    )
-                    .route(
-                        "/api/v1/runs/{id}/approvals/{approval_id}",
-                        axum::routing::post(crate::runs::resolve_approval),
-                    )
-                    .route("/api/v1/providers", get(crate::runs::get_providers))
-                    .with_state(runs),
-            );
-            // A node's whole purpose is this socket, so it is the one
-            // authenticated route not gated on `ui`. What a given class may
-            // *receive* on it is F7.4's per-connection filter; what it may
-            // *send* is already scope-checked per frame.
-            node_reachable = node_reachable.merge(
-                Router::new()
-                    .route("/ws/v1", get(crate::ws::ws_upgrade))
-                    .with_state(ws),
-            );
+        if let Some(wiring) = runs {
+            (protected, node_reachable) = mount_runs(protected, node_reachable, wiring);
         }
         if let Some(api) = diagnostics {
-            // `ui`-scoped and authenticated, unlike the health page. Health
-            // answers "are you alive" for an install script on loopback; this
-            // assembles a picture of the household, and a satellite has no
-            // business doing that.
-            protected = protected.merge(
-                Router::new()
-                    .route(
-                        "/api/v1/diagnostics/bundle",
-                        get(crate::diagnostics::get_bundle),
-                    )
-                    .with_state(api),
-            );
+            protected = mount_diagnostics(protected, api);
         }
         if let Some(view) = policy {
-            // `ui`-scoped like every other settings surface: a satellite has no
-            // business enumerating the household's policy, and this route names
-            // every tool in the house.
-            protected = protected.merge(
-                Router::new()
-                    .route("/api/v1/policy", get(crate::policy_view::get_policy))
-                    .with_state(view),
-            );
+            protected = mount_policy(protected, view);
         }
         if let Some(api) = settings {
-            // Read and write are `ui`-scoped inside the handlers, like device
-            // management: a room satellite must not be able to withdraw the
-            // household's consent settings or read its spend.
-            protected = protected.merge(
-                Router::new()
-                    .route(
-                        "/api/v1/settings/voice",
-                        get(crate::settings::get_voice).patch(crate::settings::update_voice),
-                    )
-                    .with_state(api.clone()),
-            );
-            // The one setting a node is *about*, on its own route rather than
-            // as a scope exception on the one above: a satellite needs the
-            // wake word and has no business with the spend, the consent state,
-            // or the list of what else could be configured (ADR-032 §4).
-            node_reachable = node_reachable.merge(
-                Router::new()
-                    .route(
-                        "/api/v1/settings/node-voice",
-                        get(crate::settings::get_node_voice),
-                    )
-                    .with_state(api),
-            );
+            (protected, node_reachable) = mount_settings(protected, node_reachable, api);
         }
         if let Some(api) = artifacts {
-            protected = protected.merge(
-                Router::new()
-                    .route(
-                        "/api/v1/artifacts/{id}/versions",
-                        get(crate::artifacts::list_versions),
-                    )
-                    .route(
-                        "/api/v1/artifacts/{id}/versions/{version}/blob",
-                        get(crate::artifacts::get_blob),
-                    )
-                    // F6.4: the one deliberately *renderable* artifact path —
-                    // separate from the blob route, which stays attachment-only.
-                    .route(
-                        "/api/v1/apps/{id}/versions/{version}/document",
-                        get(crate::artifacts::get_app_document),
-                    )
-                    .with_state(api),
-            );
+            protected = mount_artifacts(protected, api);
         }
         if let Some(api) = appbridge {
-            protected = protected.merge(
-                Router::new()
-                    // F6.5: mint a short-lived, single-use capability token…
-                    .route(
-                        "/api/v1/apps/{id}/versions/{version}/capability-tokens",
-                        axum::routing::post(crate::appbridge::mint_token),
-                    )
-                    // …and exchange it for exactly one operation, through
-                    // `policy::evaluate` and a grant for R2+.
-                    .route(
-                        "/api/v1/apps/{id}/versions/{version}/invoke",
-                        axum::routing::post(crate::appbridge::invoke),
-                    )
-                    .with_state(api),
-            );
+            protected = mount_appbridge(protected, api);
         }
         if let Some(api) = display {
-            protected = protected.merge(
-                Router::new()
-                    .route(
-                        "/api/v1/artifacts/{id}/open",
-                        axum::routing::post(crate::display::open_artifact),
-                    )
-                    .with_state(api),
-            );
+            protected = mount_display(protected, api);
         }
         if let Some(api) = timers {
-            protected = protected.merge(
-                Router::new()
-                    .route(
-                        "/api/v1/timers",
-                        get(crate::timers::list).post(crate::timers::create),
-                    )
-                    .route(
-                        "/api/v1/timers/{id}/action",
-                        axum::routing::post(crate::timers::act),
-                    )
-                    .with_state(api),
-            );
+            protected = mount_timers(protected, api);
         }
         if let Some(api) = automations {
-            protected = protected.merge(
-                Router::new()
-                    .route(
-                        "/api/v1/automations",
-                        get(crate::automations::index).post(crate::automations::create),
-                    )
-                    .route(
-                        "/api/v1/automations/{id}",
-                        axum::routing::patch(crate::automations::update)
-                            .delete(crate::automations::delete),
-                    )
-                    .route(
-                        "/api/v1/automations/{id}/history",
-                        get(crate::automations::history),
-                    )
-                    .with_state(api),
-            );
+            protected = mount_automations(protected, api);
         }
         if let Some(api) = lists {
-            protected = protected.merge(
-                Router::new()
-                    .route(
-                        "/api/v1/lists",
-                        get(crate::lists::index).post(crate::lists::create),
-                    )
-                    .route("/api/v1/lists/{id}", get(crate::lists::get))
-                    .route(
-                        "/api/v1/lists/{id}/items",
-                        axum::routing::post(crate::lists::add_item),
-                    )
-                    .route(
-                        "/api/v1/lists/{id}/items/{item_id}",
-                        axum::routing::patch(crate::lists::check_item)
-                            .delete(crate::lists::remove_item),
-                    )
-                    .route(
-                        "/api/v1/lists/command",
-                        axum::routing::post(crate::lists::command),
-                    )
-                    .route(
-                        "/api/v1/lists/{id}/promote",
-                        axum::routing::post(crate::lists::promote),
-                    )
-                    .with_state(api),
-            );
+            protected = mount_lists(protected, api);
         }
         if let Some(api) = deepdive {
-            protected = protected.merge(
-                Router::new()
-                    .route(
-                        "/api/v1/sessions/{id}/deepdive/findings",
-                        axum::routing::post(crate::deepdive::record_findings),
-                    )
-                    .route(
-                        "/api/v1/sessions/{id}/deepdive/promote",
-                        axum::routing::post(crate::deepdive::promote),
-                    )
-                    .with_state(api),
-            );
+            protected = mount_deepdive(protected, api);
         }
         if let Some(api) = memories {
-            protected = protected.merge(
-                Router::new()
-                    .route("/api/v1/memories", get(crate::memories::list))
-                    .route(
-                        "/api/v1/memories/{id}",
-                        axum::routing::patch(crate::memories::patch)
-                            .delete(crate::memories::forget),
-                    )
-                    .with_state(api),
-            );
+            protected = mount_memories(protected, api);
         }
         if let Some(api) = media {
-            protected = protected.merge(
-                Router::new()
-                    .route("/api/v1/media/state", get(crate::media::get_state))
-                    .route(
-                        "/api/v1/media/command",
-                        axum::routing::post(crate::media::post_command),
-                    )
-                    .with_state(api),
-            );
+            protected = mount_media(protected, api);
         }
         if let Some(api) = maps {
-            protected = protected.merge(
-                Router::new()
-                    .route("/api/v1/map/coverage", get(crate::maps::get_coverage))
-                    .route("/api/v1/map/tiles/{z}/{x}/{y}", get(crate::maps::get_tile))
-                    .with_state(api),
-            );
+            protected = mount_maps(protected, api);
         }
         // Order matters and is load-bearing: `require_device` must be the
         // OUTER layer, because the class gate reads the `DeviceContext` it
@@ -579,6 +378,299 @@ pub fn router_with(state: AppState, wiring: Wiring) -> Router {
         );
     }
     router.with_state(state)
+}
+
+fn mount_runs(
+    protected: Router<AppState>,
+    node_reachable: Router<AppState>,
+    wiring: RunWiring,
+) -> (Router<AppState>, Router<AppState>) {
+    let RunWiring { runs, ws } = wiring;
+    let protected = protected.merge(
+        Router::new()
+            .route(
+                "/api/v1/sessions/{id}/messages",
+                axum::routing::post(crate::runs::submit_message),
+            )
+            .route(
+                "/api/v1/sessions/{id}/timeline",
+                get(crate::runs::get_timeline),
+            )
+            .route("/api/v1/runs/{id}", get(crate::runs::get_run))
+            .route(
+                "/api/v1/runs/{id}/cancel",
+                axum::routing::post(crate::runs::cancel_run),
+            )
+            .route(
+                "/api/v1/runs/{id}/approvals/{approval_id}",
+                axum::routing::post(crate::runs::resolve_approval),
+            )
+            .route("/api/v1/providers", get(crate::runs::get_providers))
+            .with_state(runs),
+    );
+    // A node's whole purpose is this socket, so it is the one authenticated
+    // route not gated on `ui`. What a given class may *receive* on it is
+    // F7.4's per-connection filter; what it may *send* is already
+    // scope-checked per frame.
+    let node_reachable = node_reachable.merge(
+        Router::new()
+            .route("/ws/v1", get(crate::ws::ws_upgrade))
+            .with_state(ws),
+    );
+    (protected, node_reachable)
+}
+
+fn mount_settings(
+    protected: Router<AppState>,
+    node_reachable: Router<AppState>,
+    api: crate::settings::SettingsApi,
+) -> (Router<AppState>, Router<AppState>) {
+    // Read and write are `ui`-scoped inside the handlers, like device
+    // management: a room satellite must not be able to withdraw the
+    // household's consent settings or read its spend.
+    let protected = protected.merge(
+        Router::new()
+            .route(
+                "/api/v1/settings/voice",
+                get(crate::settings::get_voice).patch(crate::settings::update_voice),
+            )
+            .with_state(api.clone()),
+    );
+    // The one setting a node is *about*, on its own route rather than as a
+    // scope exception on the one above: a satellite needs the wake word and
+    // has no business with the spend, the consent state, or the list of what
+    // else could be configured (ADR-032 §4).
+    let node_reachable = node_reachable.merge(
+        Router::new()
+            .route(
+                "/api/v1/settings/node-voice",
+                get(crate::settings::get_node_voice),
+            )
+            .with_state(api),
+    );
+    (protected, node_reachable)
+}
+
+fn mount_sessions(
+    protected: Router<AppState>,
+    api: crate::sessions::SessionApi,
+) -> Router<AppState> {
+    protected.merge(
+        Router::new()
+            .route(
+                "/api/v1/sessions",
+                axum::routing::post(crate::sessions::create).get(crate::sessions::list),
+            )
+            .route("/api/v1/sessions/{id}", get(crate::sessions::get))
+            .with_state(api),
+    )
+}
+
+fn mount_diagnostics(
+    protected: Router<AppState>,
+    api: crate::diagnostics::DiagnosticsApi,
+) -> Router<AppState> {
+    // `ui`-scoped and authenticated, unlike the health page. Health
+    // answers "are you alive" for an install script on loopback; this
+    // assembles a picture of the household, and a satellite has no
+    // business doing that.
+    protected.merge(
+        Router::new()
+            .route(
+                "/api/v1/diagnostics/bundle",
+                get(crate::diagnostics::get_bundle),
+            )
+            .with_state(api),
+    )
+}
+
+fn mount_policy(
+    protected: Router<AppState>,
+    view: crate::policy_view::PolicyViewState,
+) -> Router<AppState> {
+    // `ui`-scoped like every other settings surface: a satellite has no
+    // business enumerating the household's policy, and this route names
+    // every tool in the house.
+    protected.merge(
+        Router::new()
+            .route("/api/v1/policy", get(crate::policy_view::get_policy))
+            .with_state(view),
+    )
+}
+
+fn mount_artifacts(
+    protected: Router<AppState>,
+    api: crate::artifacts::ArtifactApi,
+) -> Router<AppState> {
+    protected.merge(
+        Router::new()
+            .route(
+                "/api/v1/artifacts/{id}/versions",
+                get(crate::artifacts::list_versions),
+            )
+            .route(
+                "/api/v1/artifacts/{id}/versions/{version}/blob",
+                get(crate::artifacts::get_blob),
+            )
+            // F6.4: the one deliberately *renderable* artifact path —
+            // separate from the blob route, which stays attachment-only.
+            .route(
+                "/api/v1/apps/{id}/versions/{version}/document",
+                get(crate::artifacts::get_app_document),
+            )
+            .with_state(api),
+    )
+}
+
+fn mount_appbridge(
+    protected: Router<AppState>,
+    api: crate::appbridge::AppBridgeApi,
+) -> Router<AppState> {
+    protected.merge(
+        Router::new()
+            // F6.5: mint a short-lived, single-use capability token…
+            .route(
+                "/api/v1/apps/{id}/versions/{version}/capability-tokens",
+                axum::routing::post(crate::appbridge::mint_token),
+            )
+            // …and exchange it for exactly one operation, through
+            // `policy::evaluate` and a grant for R2+.
+            .route(
+                "/api/v1/apps/{id}/versions/{version}/invoke",
+                axum::routing::post(crate::appbridge::invoke),
+            )
+            .with_state(api),
+    )
+}
+
+fn mount_display(protected: Router<AppState>, api: crate::display::DisplayApi) -> Router<AppState> {
+    protected.merge(
+        Router::new()
+            .route(
+                "/api/v1/artifacts/{id}/open",
+                axum::routing::post(crate::display::open_artifact),
+            )
+            .with_state(api),
+    )
+}
+
+fn mount_timers(protected: Router<AppState>, api: crate::timers::TimerApi) -> Router<AppState> {
+    protected.merge(
+        Router::new()
+            .route(
+                "/api/v1/timers",
+                get(crate::timers::list).post(crate::timers::create),
+            )
+            .route(
+                "/api/v1/timers/{id}/action",
+                axum::routing::post(crate::timers::act),
+            )
+            .with_state(api),
+    )
+}
+
+fn mount_automations(
+    protected: Router<AppState>,
+    api: crate::automations::AutomationApi,
+) -> Router<AppState> {
+    protected.merge(
+        Router::new()
+            .route(
+                "/api/v1/automations",
+                get(crate::automations::index).post(crate::automations::create),
+            )
+            .route(
+                "/api/v1/automations/{id}",
+                axum::routing::patch(crate::automations::update).delete(crate::automations::delete),
+            )
+            .route(
+                "/api/v1/automations/{id}/history",
+                get(crate::automations::history),
+            )
+            .with_state(api),
+    )
+}
+
+fn mount_lists(protected: Router<AppState>, api: crate::lists::ListApi) -> Router<AppState> {
+    protected.merge(
+        Router::new()
+            .route(
+                "/api/v1/lists",
+                get(crate::lists::index).post(crate::lists::create),
+            )
+            .route("/api/v1/lists/{id}", get(crate::lists::get))
+            .route(
+                "/api/v1/lists/{id}/items",
+                axum::routing::post(crate::lists::add_item),
+            )
+            .route(
+                "/api/v1/lists/{id}/items/{item_id}",
+                axum::routing::patch(crate::lists::check_item).delete(crate::lists::remove_item),
+            )
+            .route(
+                "/api/v1/lists/command",
+                axum::routing::post(crate::lists::command),
+            )
+            .route(
+                "/api/v1/lists/{id}/promote",
+                axum::routing::post(crate::lists::promote),
+            )
+            .with_state(api),
+    )
+}
+
+fn mount_deepdive(
+    protected: Router<AppState>,
+    api: crate::deepdive::DeepDiveApi,
+) -> Router<AppState> {
+    protected.merge(
+        Router::new()
+            .route(
+                "/api/v1/sessions/{id}/deepdive/findings",
+                axum::routing::post(crate::deepdive::record_findings),
+            )
+            .route(
+                "/api/v1/sessions/{id}/deepdive/promote",
+                axum::routing::post(crate::deepdive::promote),
+            )
+            .with_state(api),
+    )
+}
+
+fn mount_memories(
+    protected: Router<AppState>,
+    api: crate::memories::MemoryApi,
+) -> Router<AppState> {
+    protected.merge(
+        Router::new()
+            .route("/api/v1/memories", get(crate::memories::list))
+            .route(
+                "/api/v1/memories/{id}",
+                axum::routing::patch(crate::memories::patch).delete(crate::memories::forget),
+            )
+            .with_state(api),
+    )
+}
+
+fn mount_media(protected: Router<AppState>, api: crate::media::MediaApi) -> Router<AppState> {
+    protected.merge(
+        Router::new()
+            .route("/api/v1/media/state", get(crate::media::get_state))
+            .route(
+                "/api/v1/media/command",
+                axum::routing::post(crate::media::post_command),
+            )
+            .with_state(api),
+    )
+}
+
+fn mount_maps(protected: Router<AppState>, api: crate::maps::MapApi) -> Router<AppState> {
+    protected.merge(
+        Router::new()
+            .route("/api/v1/map/coverage", get(crate::maps::get_coverage))
+            .route("/api/v1/map/tiles/{z}/{x}/{y}", get(crate::maps::get_tile))
+            .with_state(api),
+    )
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
