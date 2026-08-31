@@ -26,7 +26,7 @@ import type {
 } from '../generated/api-types';
 import { ApiService } from './api.service';
 import { ApprovalTray } from './approval-tray';
-import { HudStateService } from './hud/hud-state.service';
+import { HudStateService, presenceForRunState } from './hud/hud-state.service';
 import { VoiceCaptureService } from './voice-capture.service';
 
 const TRANSIENT_WS_TYPES = new Set(['text.delta', 'media.state', 'hud.canvas', 'degraded.queued']);
@@ -460,31 +460,7 @@ export class Conversation implements OnInit, OnDestroy {
   }
 
   private setHudPresenceForRunState(state: RunStateDto): void {
-    switch (state) {
-      case 'received':
-      case 'context_ready':
-      case 'model_running':
-      case 'responding':
-      case 'replanning':
-        this.hud.setPresence('speaking');
-        break;
-      case 'tool_running':
-        this.hud.setPresence('tool');
-        break;
-      case 'waiting_approval':
-      case 'policy_review':
-        this.hud.setPresence('waiting');
-        break;
-      case 'completed':
-        this.hud.setPresence('done');
-        break;
-      case 'failed':
-        this.hud.setPresence('error');
-        break;
-      case 'cancelled':
-        this.hud.setPresence('idle');
-        break;
-    }
+    this.hud.setPresence(presenceForRunState(state));
   }
 
   protected getQuotaReset(): string | null {

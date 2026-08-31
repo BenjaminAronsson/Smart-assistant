@@ -1,5 +1,5 @@
 import { Injectable, computed, signal } from '@angular/core';
-import type { HudCardDto, UiSettingsDto } from '../../generated/api-types';
+import type { HudCardDto, RunStateDto, UiSettingsDto } from '../../generated/api-types';
 import { hudCardId } from './cards/card-id';
 import {
   BUNDLED_WALLPAPERS,
@@ -89,6 +89,40 @@ export const PRESENCE_LABEL: Readonly<Record<PresenceState, string>> = Object.fr
   error: 'Error',
   degraded: 'Degraded',
 });
+
+/**
+ * Map a run's state to the HUD presence it implies (F9.11: was reimplemented
+ * byte-identically as a private method in both `App` and `Conversation` — a
+ * live defect, not a smell, since a new `RunStateDto` variant needed both
+ * copies updated by hand and nothing caught a miss). The `default` arm's
+ * `never` assignment makes an unhandled variant a compile error at this one
+ * seam, rather than a silently-wrong presence at runtime.
+ */
+export function presenceForRunState(state: RunStateDto): PresenceState {
+  switch (state) {
+    case 'received':
+    case 'context_ready':
+    case 'model_running':
+    case 'responding':
+    case 'replanning':
+      return 'speaking';
+    case 'tool_running':
+      return 'tool';
+    case 'waiting_approval':
+    case 'policy_review':
+      return 'waiting';
+    case 'completed':
+      return 'done';
+    case 'failed':
+      return 'error';
+    case 'cancelled':
+      return 'idle';
+    default: {
+      const exhaustive: never = state;
+      throw new Error(`unhandled RunStateDto variant: ${String(exhaustive)}`);
+    }
+  }
+}
 
 /** A sentence-splitter for the caption reveal. Voice timing marks replace this
  * in M5; until then the caption reveals per sentence, never a fake typewriter
