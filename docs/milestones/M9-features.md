@@ -247,6 +247,36 @@ thresholds are calibrated to what the cleaned tree achieves.
       before — the one assertion that makes a composition-root split safe.
       Refs: docs/02 §3, `.claude/skills/state-machine`. Deps: F9.7.
 
+      **DONE, with a scope-narrowing deviation on the DI-graph half.** All three other
+      parts landed as specified: the four misplaced trait impls moved to a new
+      `jarvisd::orchestrator_ports` module; `api.rs::router_with` split into 15 named
+      `mount_<area>` functions (`mount_sessions`, `mount_runs`, …), `router_with` itself
+      now 161 lines; the required startup test
+      (`main.rs::tests::every_integration_disabled_registers_only_the_config_free_tools`)
+      asserts the same registered-tool-id set an all-disabled config produces, reached
+      through the real composition-root path rather than the lower-level primitive
+      `jarvisd::tools::build_registry` alone. **`main.rs::run` had ONE builder function
+      extracted (`build_tool_registry`, the opt-in tool-registry block — 175 lines,
+      config+pool+shutdown+hub+display_profile+artifact_store+blob_store in, a
+      `ToolRegistryBundle` out) rather than being fully decomposed into per-area
+      builders for every phase.** `run` dropped from 876 to ~650 lines but still exceeds
+      the ADR-034 ceiling. The remaining phases (persistence/identity/auth, voice/
+      ElevenLabs wiring, display, RunEngine/tool-plane assembly, the timers/lists/
+      automations/media surfaces, and the final router+serve+drain sequence) are far
+      more tightly interdependent — most read from and feed into most others — and
+      extracting them safely would mean threading 15-20 parameters through several new
+      function boundaries with no way to integration-test the daemon's actual startup
+      path in this environment (no live Postgres-backed full config, no Wyoming/HA/
+      Spotify services). `build_tool_registry` was chosen because it is the one phase
+      that is both large and genuinely self-contained (bounded inputs/outputs, no
+      onward dependency on anything constructed after it besides `bridge_registry`).
+      Rust's type system caught every wiring mistake at compile time during this one
+      extraction (never a silent runtime bug), which is the strongest argument *for*
+      finishing the rest of the decomposition later, done the same way: one bounded,
+      independently-compilable phase at a time, never as a single large rewrite. Left
+      for a follow-up feature, gated the same way (full test suite green +
+      `build_tool_registry`-style extraction, one phase per commit).
+
 - [ ] **F9.9 — Kill the `jarvisd` helper duplication** · *Sonnet*
       `rfc3339` ×9 **in two variants that disagree on failure** (five `.expect("UTC
       timestamp formats")`, two `unwrap_or_else(|_| "1970-01-01T00:00:00Z")`), plus

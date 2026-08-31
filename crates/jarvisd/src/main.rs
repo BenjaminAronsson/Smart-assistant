@@ -324,180 +324,23 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     // at its single registration site (`jarvisd::tools`), the durable audit sink,
     // and the grant mint/validate ports. `fs.read` is left unregistered — no
     // configured root is the stricter default (no ambient filesystem authority).
-    let grant_store = Arc::new(jarvis_infra::grants::PgGrantStore::new(pool.clone()));
-    let smtp = if config.integrations.smtp.enabled {
-        let password =
-            jarvisd::config::resolve_secret_ref_async(&config.integrations.smtp.password_secret)
-                .await?;
-        Some(jarvis_adapters::smtp::SmtpConfig::new(
-            config.integrations.smtp.host.clone(),
-            config.integrations.smtp.port,
-            config.integrations.smtp.username.clone(),
-            config.integrations.smtp.from_address.clone(),
-            password.expose().to_owned(),
-        ))
-    } else {
-        None
-    };
-    let calendar = if config.integrations.caldav.enabled {
-        let password =
-            jarvisd::config::resolve_secret_ref_async(&config.integrations.caldav.password_secret)
-                .await?;
-        let caldav = jarvis_adapters::caldav::CalDavConfig::new(
-            config.integrations.caldav.server_url.clone(),
-            config.integrations.caldav.username.clone(),
-            password.expose().to_owned(),
-        )
-        .map_err(|error| anyhow::anyhow!("invalid CalDAV configuration: {error}"))?;
-        Some(Arc::new(
-            jarvis_adapters::caldav::CalDavReader::new(caldav)
-                .map_err(|error| anyhow::anyhow!("could not initialize CalDAV reader: {error}"))?,
-        )
-            as Arc<dyn jarvis_application::calendar::CalendarReader>)
-    } else {
-        None
-    };
-    let mut registry = jarvisd::tools::build_registry_with_smtp(None, smtp)?;
-    // MCP tool servers (F2.7): none configured in M2, so no ambient MCP tool
-    // authority — the stricter default. `_mcp_hosts` must live for the process
-    // lifetime: each registered MCP executor holds a peer into its child, and
-    // dropping a host reaps that child. Held here in `run`'s scope until shutdown.
-    let _mcp_hosts =
-        jarvisd::tools::register_mcp_servers(&mut registry, Vec::new(), serve_shutdown.clone())
-            .await?;
-    // web.search/web.fetch (F2.8): registered ONLY when a provider is configured
-    // — that config presence is the external-egress consent gate (CF-5). Absent
-    // ⇒ no web tools, the stricter default.
-    if let Some(web) = &config.integrations.web_search {
-        anyhow::ensure!(
-            web.provider == "brave",
-            "integrations.web_search.provider {:?} is not supported (only \"brave\")",
-            web.provider
-        );
-        let api_key = jarvisd::config::resolve_secret_ref_async(&web.api_key_secret).await?;
-        jarvisd::tools::register_web_tools(
-            &mut registry,
-            api_key.expose().to_owned(),
-            web.max_fetch_bytes,
-        )?;
-    }
-    // Local media control (F3a.7, FR-22, ADR-012): registered ONLY when
-    // `[integrations.media].enabled` is set AND a session bus is reachable — the
-    // same opt-in stance as the web tools. Absent ⇒ no media tools, no media
-    // routes, no D-Bus subscription (nothing resident, docs/09 §5).
-    let max_volume = config.integrations.media.max_volume()?;
-    let media_controller: Option<Arc<jarvis_adapters::media_mpris::MprisController>> = if config
-        .integrations
-        .media
-        .enabled
-    {
-        match jarvis_adapters::media_mpris::MprisController::connect().await {
-            Ok(controller) => Some(Arc::new(controller)),
-            Err(e) => {
-                tracing::warn!(error = %e, "[integrations.media].enabled but no session bus; media control off");
-                None
-            }
-        }
-    } else {
-        None
-    };
-    if let Some(controller) = &media_controller {
-        // Cast-a-link needs a monitor to cast onto: registered only when the
-        // display profile actually assigns one to the media window.
-        let cast = display_profile
-            .monitor_for(jarvis_domain::display::Surface::MediaWindow)
-            .is_some()
-            .then(|| jarvisd::tools::CastWiring {
-                profile: display_profile.clone(),
-                // Addressed at the configured screen when the owner named one
-                // (M7 gate D-M7-2): `media.open_url` is R1 and carries a URL
-                // model output can influence, so with room nodes paired an
-                // unaddressed cast would light up every screen in the house.
-                sink: Arc::new(jarvisd::media::TargetedMediaWindow::new(
-                    hub.clone(),
-                    config.display.media_window_device.clone().map(|name| {
-                        config
-                            .display
-                            .node_aliases
-                            .get(&name)
-                            .cloned()
-                            .unwrap_or(name)
-                    }),
-                )),
-                audit: Arc::new(jarvis_infra::audit_sink::PgAuditLog::new(pool.clone())),
-            });
-        jarvisd::tools::register_media_tools(&mut registry, controller.clone(), max_volume, cast)?;
-    }
-
-    // Home Assistant (F5.3, FR-14, ADR-006): opt-in, same consent stance as the
-    // web/media tools. This is the first integration that changes *physical*
-    // state, so absent config means no home tools at all — never a default-on
-    // capability. The token is resolved here, at the composition root, and
-    // handed to the adapter as a value (invariant 5); the allowlists come from
-    // config, and an enabled section with empty lists controls nothing.
-    if config.integrations.home_assistant.enabled {
-        let ha = &config.integrations.home_assistant;
-        let token = jarvisd::config::resolve_secret_ref_async(&ha.token_secret).await?;
-        let ha_config = jarvis_adapters::home_assistant::HomeAssistantConfig::new(
-            &ha.base_url,
-            token.expose().to_owned(),
-        )
-        .map_err(|error| anyhow::anyhow!("invalid Home Assistant configuration: {error}"))?;
-        let allowlist = Arc::new(
-            jarvis_adapters::home_assistant::EntityAllowlist::new(
-                &ha.readable,
-                &ha.lights,
-                &ha.scenes,
-                &ha.scripts,
-            )
-            .map_err(|error| anyhow::anyhow!("invalid Home Assistant allowlist: {error}"))?,
-        );
-        let client = Arc::new(
-            jarvis_adapters::home_assistant::HomeAssistantClient::new(ha_config).map_err(
-                |error| anyhow::anyhow!("could not initialize Home Assistant client: {error}"),
-            )?,
-        );
-        jarvisd::tools::register_home_assistant_tools(&mut registry, client, allowlist)?;
-    }
-
-    // Spotify (F5.6, FR-21, ADR-012/022): opt-in. `max_volume_pct` is validated
-    // at config load; the R1/R2 volume split is enforced inside the tools, not
-    // by the tier, because `policy::evaluate` cannot see arguments.
-    if config.integrations.spotify.enabled {
-        let spotify = &config.integrations.spotify;
-        let refresh =
-            jarvisd::config::resolve_secret_ref_async(&spotify.refresh_token_secret).await?;
-        let max_volume = jarvis_domain::media::VolumePct::new(spotify.max_volume_pct)
-            .map_err(|error| anyhow::anyhow!("invalid [integrations.spotify]: {error}"))?;
-        let mut spotify_config = jarvis_adapters::spotify::SpotifyConfig::new(
-            spotify.client_id.clone(),
-            refresh.expose().to_owned(),
-            max_volume,
-        )
-        .with_device_aliases(spotify.device_aliases.clone());
-        if let Some(market) = &spotify.market {
-            spotify_config = spotify_config.with_market(market.clone());
-        }
-        let client = Arc::new(jarvis_adapters::spotify::SpotifyClient::new(spotify_config));
-        jarvisd::tools::register_spotify_tools(&mut registry, client)?;
-    }
-
-    // F6.6: the generated-app builder. Opt-in (`[apps].enabled`), and the whole
-    // launch profile is ops': jarvisd spawns the command it is given and hands
-    // the child's pipes to the transport (ADR-027). The **host** reads and hashes
-    // the lockfile, and attests `network: disabled` only when a worker image says
-    // a profile that could isolate the network was actually used (D-M6-1).
-    if config.apps.enabled {
-        match spawn_app_builder(&config, artifact_store.clone(), blob_store.clone()).await {
-            Ok(builder) => jarvisd::tools::register_app_tools(&mut registry, builder)?,
-            Err(e) => {
-                // A builder that cannot start registers no tool: the model then
-                // gets `policy.unknown_tool`, which is the honest answer, rather
-                // than a proposal that fails deep inside a worker.
-                tracing::error!(error = %e, "app builder unavailable; app.generate not registered");
-            }
-        }
-    }
+    let ToolRegistryBundle {
+        registry,
+        mcp_hosts: _mcp_hosts,
+        calendar,
+        grant_store,
+        media_controller,
+        max_volume,
+    } = build_tool_registry(
+        &config,
+        &pool,
+        &serve_shutdown,
+        &hub,
+        &display_profile,
+        &artifact_store,
+        &blob_store,
+    )
+    .await?;
 
     let bridge_registry = Arc::new(registry);
     let bridge_audit: Arc<dyn jarvis_application::policy::AuditSink> =
@@ -984,6 +827,217 @@ async fn run(config: jarvisd::config::Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Everything the tool plane needs: the registry (every executor
+/// timeout-wrapped at this single site), the opt-in integrations that
+/// register into it, and the handles that must outlive this function
+/// (an MCP host tears down its child when dropped; a `ToolRegistry` alone
+/// says nothing about media availability or the calendar reader the
+/// context assembler needs).
+struct ToolRegistryBundle {
+    registry: jarvis_application::policy::ToolRegistry,
+    /// Held for the process lifetime: each registered MCP executor holds a
+    /// peer into its child, and dropping a host reaps that child.
+    mcp_hosts: Vec<jarvis_adapters::mcp_host::McpHost>,
+    calendar: Option<Arc<dyn jarvis_application::calendar::CalendarReader>>,
+    grant_store: Arc<jarvis_infra::grants::PgGrantStore>,
+    media_controller: Option<Arc<jarvis_adapters::media_mpris::MprisController>>,
+    max_volume: jarvis_domain::media::VolumePct,
+}
+
+async fn build_tool_registry(
+    config: &jarvisd::config::Config,
+    pool: &sqlx::PgPool,
+    serve_shutdown: &CancellationToken,
+    hub: &Arc<WsHub>,
+    display_profile: &Arc<jarvis_domain::display::DisplayProfile>,
+    artifact_store: &Arc<jarvis_infra::artifacts::PgArtifactStore>,
+    blob_store: &Arc<jarvis_infra::artifact_cas::FileBlobStore>,
+) -> anyhow::Result<ToolRegistryBundle> {
+    let grant_store = Arc::new(jarvis_infra::grants::PgGrantStore::new(pool.clone()));
+    let smtp = if config.integrations.smtp.enabled {
+        let password =
+            jarvisd::config::resolve_secret_ref_async(&config.integrations.smtp.password_secret)
+                .await?;
+        Some(jarvis_adapters::smtp::SmtpConfig::new(
+            config.integrations.smtp.host.clone(),
+            config.integrations.smtp.port,
+            config.integrations.smtp.username.clone(),
+            config.integrations.smtp.from_address.clone(),
+            password.expose().to_owned(),
+        ))
+    } else {
+        None
+    };
+    let calendar = if config.integrations.caldav.enabled {
+        let password =
+            jarvisd::config::resolve_secret_ref_async(&config.integrations.caldav.password_secret)
+                .await?;
+        let caldav = jarvis_adapters::caldav::CalDavConfig::new(
+            config.integrations.caldav.server_url.clone(),
+            config.integrations.caldav.username.clone(),
+            password.expose().to_owned(),
+        )
+        .map_err(|error| anyhow::anyhow!("invalid CalDAV configuration: {error}"))?;
+        Some(Arc::new(
+            jarvis_adapters::caldav::CalDavReader::new(caldav)
+                .map_err(|error| anyhow::anyhow!("could not initialize CalDAV reader: {error}"))?,
+        )
+            as Arc<dyn jarvis_application::calendar::CalendarReader>)
+    } else {
+        None
+    };
+    let mut registry = jarvisd::tools::build_registry_with_smtp(None, smtp)?;
+    // MCP tool servers (F2.7): none configured in M2, so no ambient MCP tool
+    // authority — the stricter default. `_mcp_hosts` must live for the process
+    // lifetime: each registered MCP executor holds a peer into its child, and
+    // dropping a host reaps that child. Held here in `run`'s scope until shutdown.
+    let _mcp_hosts =
+        jarvisd::tools::register_mcp_servers(&mut registry, Vec::new(), serve_shutdown.clone())
+            .await?;
+    // web.search/web.fetch (F2.8): registered ONLY when a provider is configured
+    // — that config presence is the external-egress consent gate (CF-5). Absent
+    // ⇒ no web tools, the stricter default.
+    if let Some(web) = &config.integrations.web_search {
+        anyhow::ensure!(
+            web.provider == "brave",
+            "integrations.web_search.provider {:?} is not supported (only \"brave\")",
+            web.provider
+        );
+        let api_key = jarvisd::config::resolve_secret_ref_async(&web.api_key_secret).await?;
+        jarvisd::tools::register_web_tools(
+            &mut registry,
+            api_key.expose().to_owned(),
+            web.max_fetch_bytes,
+        )?;
+    }
+    // Local media control (F3a.7, FR-22, ADR-012): registered ONLY when
+    // `[integrations.media].enabled` is set AND a session bus is reachable — the
+    // same opt-in stance as the web tools. Absent ⇒ no media tools, no media
+    // routes, no D-Bus subscription (nothing resident, docs/09 §5).
+    let max_volume = config.integrations.media.max_volume()?;
+    let media_controller: Option<Arc<jarvis_adapters::media_mpris::MprisController>> = if config
+        .integrations
+        .media
+        .enabled
+    {
+        match jarvis_adapters::media_mpris::MprisController::connect().await {
+            Ok(controller) => Some(Arc::new(controller)),
+            Err(e) => {
+                tracing::warn!(error = %e, "[integrations.media].enabled but no session bus; media control off");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(controller) = &media_controller {
+        // Cast-a-link needs a monitor to cast onto: registered only when the
+        // display profile actually assigns one to the media window.
+        let cast = display_profile
+            .monitor_for(jarvis_domain::display::Surface::MediaWindow)
+            .is_some()
+            .then(|| jarvisd::tools::CastWiring {
+                profile: display_profile.clone(),
+                // Addressed at the configured screen when the owner named one
+                // (M7 gate D-M7-2): `media.open_url` is R1 and carries a URL
+                // model output can influence, so with room nodes paired an
+                // unaddressed cast would light up every screen in the house.
+                sink: Arc::new(jarvisd::media::TargetedMediaWindow::new(
+                    hub.clone(),
+                    config.display.media_window_device.clone().map(|name| {
+                        config
+                            .display
+                            .node_aliases
+                            .get(&name)
+                            .cloned()
+                            .unwrap_or(name)
+                    }),
+                )),
+                audit: Arc::new(jarvis_infra::audit_sink::PgAuditLog::new(pool.clone())),
+            });
+        jarvisd::tools::register_media_tools(&mut registry, controller.clone(), max_volume, cast)?;
+    }
+
+    // Home Assistant (F5.3, FR-14, ADR-006): opt-in, same consent stance as the
+    // web/media tools. This is the first integration that changes *physical*
+    // state, so absent config means no home tools at all — never a default-on
+    // capability. The token is resolved here, at the composition root, and
+    // handed to the adapter as a value (invariant 5); the allowlists come from
+    // config, and an enabled section with empty lists controls nothing.
+    if config.integrations.home_assistant.enabled {
+        let ha = &config.integrations.home_assistant;
+        let token = jarvisd::config::resolve_secret_ref_async(&ha.token_secret).await?;
+        let ha_config = jarvis_adapters::home_assistant::HomeAssistantConfig::new(
+            &ha.base_url,
+            token.expose().to_owned(),
+        )
+        .map_err(|error| anyhow::anyhow!("invalid Home Assistant configuration: {error}"))?;
+        let allowlist = Arc::new(
+            jarvis_adapters::home_assistant::EntityAllowlist::new(
+                &ha.readable,
+                &ha.lights,
+                &ha.scenes,
+                &ha.scripts,
+            )
+            .map_err(|error| anyhow::anyhow!("invalid Home Assistant allowlist: {error}"))?,
+        );
+        let client = Arc::new(
+            jarvis_adapters::home_assistant::HomeAssistantClient::new(ha_config).map_err(
+                |error| anyhow::anyhow!("could not initialize Home Assistant client: {error}"),
+            )?,
+        );
+        jarvisd::tools::register_home_assistant_tools(&mut registry, client, allowlist)?;
+    }
+
+    // Spotify (F5.6, FR-21, ADR-012/022): opt-in. `max_volume_pct` is validated
+    // at config load; the R1/R2 volume split is enforced inside the tools, not
+    // by the tier, because `policy::evaluate` cannot see arguments.
+    if config.integrations.spotify.enabled {
+        let spotify = &config.integrations.spotify;
+        let refresh =
+            jarvisd::config::resolve_secret_ref_async(&spotify.refresh_token_secret).await?;
+        let max_volume = jarvis_domain::media::VolumePct::new(spotify.max_volume_pct)
+            .map_err(|error| anyhow::anyhow!("invalid [integrations.spotify]: {error}"))?;
+        let mut spotify_config = jarvis_adapters::spotify::SpotifyConfig::new(
+            spotify.client_id.clone(),
+            refresh.expose().to_owned(),
+            max_volume,
+        )
+        .with_device_aliases(spotify.device_aliases.clone());
+        if let Some(market) = &spotify.market {
+            spotify_config = spotify_config.with_market(market.clone());
+        }
+        let client = Arc::new(jarvis_adapters::spotify::SpotifyClient::new(spotify_config));
+        jarvisd::tools::register_spotify_tools(&mut registry, client)?;
+    }
+
+    // F6.6: the generated-app builder. Opt-in (`[apps].enabled`), and the whole
+    // launch profile is ops': jarvisd spawns the command it is given and hands
+    // the child's pipes to the transport (ADR-027). The **host** reads and hashes
+    // the lockfile, and attests `network: disabled` only when a worker image says
+    // a profile that could isolate the network was actually used (D-M6-1).
+    if config.apps.enabled {
+        match spawn_app_builder(config, artifact_store.clone(), blob_store.clone()).await {
+            Ok(builder) => jarvisd::tools::register_app_tools(&mut registry, builder)?,
+            Err(e) => {
+                // A builder that cannot start registers no tool: the model then
+                // gets `policy.unknown_tool`, which is the honest answer, rather
+                // than a proposal that fails deep inside a worker.
+                tracing::error!(error = %e, "app builder unavailable; app.generate not registered");
+            }
+        }
+    }
+
+    Ok(ToolRegistryBundle {
+        registry,
+        mcp_hosts: _mcp_hosts,
+        calendar,
+        grant_store,
+        media_controller,
+        max_volume,
+    })
+}
+
 /// Restart backoff so a persistent dispatcher failure cannot hot-loop (CPU +
 /// log flood); short enough that recovery from a transient blip stays prompt.
 const DISPATCH_RESTART_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
@@ -1245,4 +1299,67 @@ fn report_capabilities(
         },
         Some(format!("{} registered: {}", tools.len(), tools.join(", "))),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F9.8: `build_tool_registry` is the one place jarvisd turns config into
+    /// tool authority. A config with every integration disabled must register
+    /// exactly the two config-free tools (`example.light`, `message.send` via
+    /// the no-op `ExampleMessageTool`) and nothing else — the same baseline
+    /// `jarvisd::tools::build_registry(None)` asserts directly, reached here
+    /// through the composition-root path instead of the primitive, so a
+    /// regression in *wiring* config to registration (not in registration
+    /// itself) fails here rather than only showing up at a live daemon start.
+    ///
+    /// The pool never executes a query on this path (every store `build_tool_registry`
+    /// constructs is a thin `PgPool` wrapper, evaluated lazily), so a lazy pool with an
+    /// address nothing is listening on is sufficient — this test needs no live Postgres.
+    #[tokio::test]
+    async fn every_integration_disabled_registers_only_the_config_free_tools() {
+        let config = jarvisd::config::Config::default();
+        let pool = jarvis_infra::db::connect_lazy("postgres://unused/unused", 1)
+            .expect("lazy pool construction performs no I/O");
+        let hub = WsHub::new();
+        let display_profile = Arc::new(
+            jarvisd::display::profile_from_config(&config.display.profile)
+                .expect("the default display profile is valid"),
+        );
+        let serve_shutdown = CancellationToken::new();
+        let artifact_store = Arc::new(jarvis_infra::artifacts::PgArtifactStore::new(pool.clone()));
+        let blob_store = Arc::new(jarvis_infra::artifact_cas::FileBlobStore::new(
+            std::env::temp_dir(),
+        ));
+
+        let bundle = build_tool_registry(
+            &config,
+            &pool,
+            &serve_shutdown,
+            &hub,
+            &display_profile,
+            &artifact_store,
+            &blob_store,
+        )
+        .await
+        .expect("an all-disabled config registers cleanly");
+
+        let mut ids: Vec<String> = bundle
+            .registry
+            .tool_ids()
+            .map(ToString::to_string)
+            .collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec!["example.light".to_owned(), "message.send".to_owned()],
+            "an all-disabled config must register exactly the two config-free tools \
+             — anything else is either a missing opt-in gate or a stricter-default \
+             regression"
+        );
+        assert!(bundle.mcp_hosts.is_empty());
+        assert!(bundle.calendar.is_none());
+        assert!(bundle.media_controller.is_none());
+    }
 }
