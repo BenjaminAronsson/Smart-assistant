@@ -1,13 +1,13 @@
 /* List card (docs/12 §2.3, FR-34/ADR-024). */
 
+@use 'card';
+
 :host {
   display: block;
 }
 
 .list-card {
-  display: flex;
-  flex-direction: column;
-  gap: 0.8vmin;
+  @include card.card-stack;
 }
 
 .list-head {
@@ -18,9 +18,7 @@
 }
 
 .list-title {
-  margin: 0;
-  font-size: clamp(14px, 2vmin, 18px);
-  color: var(--ink);
+  @include card.card-title;
   overflow-wrap: anywhere;
 }
 
@@ -38,12 +36,7 @@
 }
 
 .list-items {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4vmin;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  @include card.card-list(0.4vmin);
 }
 
 .list-item {

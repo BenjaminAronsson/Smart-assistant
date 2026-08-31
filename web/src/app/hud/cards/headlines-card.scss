@@ -1,25 +1,18 @@
 /* Headlines/digest card (docs/12 §2.3): several items, not one fact —
  * thumbnails are optional per item. */
 
+@use 'card';
+
 .headlines-card {
-  display: flex;
-  flex-direction: column;
-  gap: 0.8vmin;
+  @include card.card-stack;
 }
 
 .headlines-title {
-  margin: 0;
-  font-size: clamp(14px, 2vmin, 18px);
-  color: var(--ink);
+  @include card.card-title;
 }
 
 .headline-items {
-  display: flex;
-  flex-direction: column;
-  gap: 1.2vmin;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  @include card.card-list(1.2vmin);
 }
 
 .headline-item {
@@ -34,10 +27,8 @@
 }
 
 .headline-body {
+  @include card.card-stack(0.3vmin);
   min-inline-size: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.3vmin;
 }
 
 .headline-item-title {

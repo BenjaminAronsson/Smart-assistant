@@ -2,16 +2,14 @@
  * Each tile keeps room for its own source chip — the badge is part of the tile,
  * not an overlay that can be cropped away (ADR-017). */
 
+@use 'card';
+
 .gallery-card {
-  display: flex;
-  flex-direction: column;
-  gap: 0.8vmin;
+  @include card.card-stack;
 }
 
 .gallery-title {
-  margin: 0;
-  font-size: clamp(14px, 2vmin, 18px);
-  color: var(--ink);
+  @include card.card-title;
 }
 
 .gallery-grid {

@@ -1,15 +1,13 @@
 /* Map card (F3b.5, docs/12 §3, ADR-013). */
 
+@use 'card';
+
 :host {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6vmin;
+  @include card.card-stack(0.6vmin);
 }
 
 .map-title {
-  margin: 0;
-  font-size: clamp(14px, 2vmin, 18px);
-  color: var(--ink);
+  @include card.card-title;
 }
 
 .map-destination-label {
@@ -35,24 +33,22 @@
 }
 
 .map-overlay-close {
+  @include card.glass-surface;
   position: absolute;
   inset-block-start: 1vmin;
   inset-inline-end: 1vmin;
   z-index: 1001;
   padding: 0.6vmin 1.2vmin;
   border-radius: 999px;
-  border: 1px solid var(--glass-border);
-  background: var(--glass-bg);
   color: var(--ink);
   font-size: clamp(12px, 1.6vmin, 14px);
   cursor: pointer;
 }
 
 .map-placeholder {
+  @include card.glass-surface;
   aspect-ratio: 16 / 10;
   border-radius: 0.8vmin;
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
 }
 
 .open-large {
@@ -67,13 +63,10 @@
 }
 
 .coords-only {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3vmin;
+  @include card.card-stack(0.3vmin);
+  @include card.glass-surface;
   padding: 1.2vmin;
   border-radius: 0.8vmin;
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
 }
 
 .coords-line,

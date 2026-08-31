@@ -1,0 +1,49 @@
+// Shared card SCSS shapes (F9.12: was reimplemented byte-identically across
+// most of the 17 card stylesheets, coordinating only through the custom
+// properties in styles.scss). Mixins, not `%placeholder` selectors: Angular's
+// per-component view encapsulation means a placeholder would need its own
+// `@use` in every file anyway, and a mixin reads the same at every call site
+// without import-order care.
+//
+// Deliberately conservative: only shapes that were BYTE-IDENTICAL (or
+// identical modulo one already-varying parameter, e.g. `gap`) across
+// multiple files are here. A card whose spacing or type scale genuinely
+// differs keeps its own literal value — this partial removes duplication,
+// it does not standardize values that were never the same to begin with.
+
+/// The card's flex-column root shape: `display: flex; flex-direction:
+/// column; gap: $gap;`. `0.8vmin` is the most common gap across the cards
+/// that use this shape; pass a different value where the original literal
+/// differed.
+@mixin card-stack($gap: 0.8vmin) {
+  display: flex;
+  flex-direction: column;
+  gap: $gap;
+}
+
+/// A card's heading: `margin: 0; font-size: clamp(14px, 2vmin, 18px);
+/// color: var(--ink);` — byte-identical across every card that has one.
+@mixin card-title {
+  margin: 0;
+  font-size: clamp(14px, 2vmin, 18px);
+  color: var(--ink);
+}
+
+/// An unordered/ordered list reset combined with the flex-column shape
+/// above, for a card's list of sub-items (`margin: 0; padding: 0;
+/// list-style: none;` plus `card-stack`). Gap varies per card's own rhythm.
+@mixin card-list($gap: 1vmin) {
+  @include card-stack($gap);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/// The glass surface pairing (`background: var(--glass-bg); border: 1px
+/// solid var(--glass-border);`) — byte-identical everywhere it appears.
+/// Callers add their own border-radius/padding, which genuinely differ
+/// (pill-shaped badges vs. panel-shaped containers).
+@mixin glass-surface {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+}

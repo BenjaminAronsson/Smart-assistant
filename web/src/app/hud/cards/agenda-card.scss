@@ -1,28 +1,19 @@
+@use 'card';
+
 .agenda-card {
-  display: flex;
-  flex-direction: column;
-  gap: 0.8vmin;
+  @include card.card-stack;
 }
 
 .agenda-title {
-  margin: 0;
-  font-size: clamp(14px, 2vmin, 18px);
-  color: var(--ink);
+  @include card.card-title;
 }
 
 .agenda-events {
-  display: flex;
-  flex-direction: column;
-  gap: 1vmin;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  @include card.card-list(1vmin);
 }
 
 .agenda-event {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25vmin;
+  @include card.card-stack(0.25vmin);
   padding-inline-start: 1vmin;
   border-inline-start: 0.35vmin solid var(--hue);
 }

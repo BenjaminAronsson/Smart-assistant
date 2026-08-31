@@ -1,15 +1,13 @@
 /* Entity/person card (docs/12 §2.3). */
 
+@use 'card';
+
 .entity-card {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6vmin;
+  @include card.card-stack(0.6vmin);
 }
 
 .entity-name {
-  margin: 0;
-  font-size: clamp(14px, 2vmin, 18px);
-  color: var(--ink);
+  @include card.card-title;
 }
 
 .confidence {

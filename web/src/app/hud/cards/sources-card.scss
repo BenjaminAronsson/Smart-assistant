@@ -2,31 +2,22 @@
  * domain + link each. Compact on purpose; the full bibliography of a promoted
  * thread lives in the Research Notes artifact, not on the HUD face. */
 
+@use 'card';
+
 .sources-card {
-  display: flex;
-  flex-direction: column;
-  gap: 0.8vmin;
+  @include card.card-stack;
 }
 
 .sources-title {
-  margin: 0;
-  font-size: clamp(14px, 2vmin, 18px);
-  color: var(--ink);
+  @include card.card-title;
 }
 
 .source-items {
-  display: flex;
-  flex-direction: column;
-  gap: 1vmin;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  @include card.card-list(1vmin);
 }
 
 .source-item {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3vmin;
+  @include card.card-stack(0.3vmin);
   min-inline-size: 0;
 }
 

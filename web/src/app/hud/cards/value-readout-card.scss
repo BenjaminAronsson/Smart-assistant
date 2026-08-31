@@ -1,10 +1,10 @@
 /* Value-readout card (docs/12 §2.3): a hero number plus staggered mini-stats.
  * No fixed pixels — type scales via clamp()/vmin (docs/12 §7). */
 
+@use 'card';
+
 .value-readout {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6vmin;
+  @include card.card-stack(0.6vmin);
 }
 
 .readout-label {
