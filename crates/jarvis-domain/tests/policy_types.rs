@@ -8,7 +8,9 @@ use std::time::{Duration, SystemTime};
 
 use jarvis_domain::grants::{ExecutionGrant, GrantId, Sha256};
 use jarvis_domain::ids::{DeviceId, RunId, UserId};
-use jarvis_domain::policy::{DataEgress, ResourcePattern, RiskLevel, Scope, ToolPolicy};
+use jarvis_domain::policy::{
+    DataEgress, ResourcePattern, RiskLevel, Scope, SpeechSensitivity, ToolPolicy,
+};
 use jarvis_domain::tools::{
     CanonicalValue as V, ToolId, ToolInvocation, ToolProposal, ToolVersion, canonical_form,
 };
@@ -211,6 +213,7 @@ fn tool_policy_requires_grant_follows_risk() {
         timeout: Duration::from_secs(5),
         required_scopes: [Scope::new("files:read").unwrap()].into_iter().collect(),
         egress: DataEgress::None,
+        speech_sensitivity: SpeechSensitivity::Normal,
     };
     assert!(!read.requires_grant());
 
@@ -221,6 +224,7 @@ fn tool_policy_requires_grant_follows_risk() {
         timeout: Duration::from_secs(30),
         required_scopes: Default::default(),
         egress: DataEgress::External,
+        speech_sensitivity: SpeechSensitivity::Normal,
     };
     assert!(send.requires_grant());
 }

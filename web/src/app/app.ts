@@ -26,7 +26,17 @@ import { HudStateService, presenceForRunState } from './hud/hud-state.service';
 import { MediaBar } from './media-bar';
 import { MediaService } from './media.service';
 
-const TRANSIENT_WS_TYPES = new Set(['text.delta', 'media.state', 'hud.canvas', 'degraded.queued']);
+const TRANSIENT_WS_TYPES = new Set([
+  'text.delta',
+  'media.state',
+  'hud.canvas',
+  'degraded.queued',
+  // S3/ADR-033 §4: transient like the deltas it labels. Listed here so
+  // it neither advances `lastSeq` nor reads as a gap in the durable
+  // sequence — an unlisted transient event makes every one of them look
+  // like a dropped domain event and triggers a needless timeline reload.
+  'run.speech_sensitive',
+]);
 
 /**
  * Jarvis shell root (docs/03 §3, docs/12 §1).

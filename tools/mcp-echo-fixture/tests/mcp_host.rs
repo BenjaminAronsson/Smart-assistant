@@ -13,7 +13,7 @@
 use std::time::Duration;
 
 use jarvis_adapters::mcp_host::{HostPolicyTable, HostToolPolicy, McpHost};
-use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
+use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, SpeechSensitivity, ToolPolicy};
 use jarvis_domain::tools::{CanonicalValue, ToolError, ToolId, ToolInvocation, ToolVersion};
 use tokio_util::sync::CancellationToken;
 
@@ -32,6 +32,7 @@ fn r0_policy(scope: &str) -> ToolPolicy {
         timeout: Duration::from_secs(5),
         required_scopes: [Scope::new(scope).unwrap()].into_iter().collect(),
         egress: DataEgress::Local,
+        speech_sensitivity: SpeechSensitivity::Normal,
     }
 }
 

@@ -14,7 +14,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use jarvis_application::policy::{ToolDescriptor, ToolExecutor};
 use jarvis_domain::grants::ExecutionGrant;
-use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
+use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, SpeechSensitivity, ToolPolicy};
 use jarvis_domain::tools::{
     CanonicalValue, ToolError, ToolInvocation, ToolResult, ToolVersion, canonical_form,
 };
@@ -205,6 +205,10 @@ impl SmtpTool {
                 .into_iter()
                 .collect(),
             egress: DataEgress::External,
+            // S3/ADR-033 §4: "message bodies" is the ADR's own first example.
+            // A confirmation that quotes what was sent, or to whom, is the
+            // owner's correspondence being read back into the room.
+            speech_sensitivity: SpeechSensitivity::Sensitive,
         }
     }
 

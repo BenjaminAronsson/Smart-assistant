@@ -402,7 +402,7 @@ impl AutomationService {
 mod tests {
     use super::*;
     use jarvis_domain::automations::{AutomationAction, AutomationName, Trigger};
-    use jarvis_domain::policy::{DataEgress, RiskLevel, ToolPolicy};
+    use jarvis_domain::policy::{DataEgress, RiskLevel, SpeechSensitivity, ToolPolicy};
     use jarvis_domain::tools::{CanonicalValue, ToolId};
     use std::time::SystemTime;
 
@@ -464,6 +464,7 @@ mod tests {
                         .map(|s| Scope::new(*s).expect("scope"))
                         .collect(),
                     egress: DataEgress::None,
+                    speech_sensitivity: SpeechSensitivity::Normal,
                 }),
                 executor: std::sync::Arc::new(Unreached),
             })

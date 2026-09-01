@@ -33,6 +33,7 @@ use crate::policy::{
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::grants::{ExecutionGrant, GrantError};
 use jarvis_domain::ids::{RunId, UserId};
+use jarvis_domain::policy::SpeechSensitivity;
 use jarvis_domain::run::{Run, RunEvent, RunOutcome, RunState, TransitionError};
 use jarvis_domain::tools::{
     MAX_RESULT_PROMPT_BYTES, ToolError, ToolId, ToolInvocation, ToolProposal, ToolResult,
@@ -87,6 +88,24 @@ pub enum RunUpdate {
     /// The run reached a terminal state (completed, failed, or cancelled);
     /// carries the outcome.
     Finished { run_id: RunId, outcome: RunOutcome },
+    /// This run's answer must not be spoken by a third-party voice (ADR-033 §4,
+    /// S3). Emitted the moment private content enters the run — a tool whose
+    /// [`ToolPolicy::speech_sensitivity`] is `Sensitive` returned, or context
+    /// assembly produced a calendar agenda — and always **before** the text
+    /// that quotes it, so the synthesizer is told in time rather than after the
+    /// sentence has left.
+    ///
+    /// Transient, never replayed. It describes an utterance in flight; on
+    /// reconnect there is none, and a stale escalation replayed into a later
+    /// utterance would mislabel it (the socket's run ownership is per-socket
+    /// and deliberately does not survive a reconnect either).
+    ///
+    /// Carries **only** the run id. Not the tool that caused it, not the
+    /// content: the event crosses to a room satellite (it is on the spoken-run
+    /// allowlist), and "which tool ran" is more than a satellite needs in order
+    /// to pick a voice. One bit, one direction — escalation is monotonic and
+    /// there is deliberately no de-escalation event.
+    SpeechSensitivityEscalated { run_id: RunId },
     /// A reversible R2 tool executed and registered a compensating undo
     /// (docs/06 §4); the description is surfaced in the run timeline so the undo
     /// is discoverable. Persisted (a domain event), not transient.
@@ -385,6 +404,23 @@ impl Orchestrator<'_> {
         active.base_context = Some(ctx.prompt.clone());
         active.prompt = Some(ctx.prompt);
         if let Some(agenda) = ctx.agenda {
+            // S3/ADR-033 §4: an agenda is the user's own schedule, so the answer
+            // built from it must not be read aloud by a third-party voice.
+            //
+            // Escalated for *any* agenda, not only entries whose CalDAV
+            // `Sensitivity` says so. That per-event flag marks what the calendar
+            // owner explicitly classified, and almost nothing real is
+            // classified — trusting it would send every unflagged appointment
+            // out to a vendor, which is precisely the label-fails-open failure
+            // ADR-033 §4 forbids inferring.
+            //
+            // Emitted *before* the agenda itself, so a consumer that reacts to
+            // either one has already been told how it may be spoken.
+            self.sink
+                .emit(RunUpdate::SpeechSensitivityEscalated {
+                    run_id: run.id.clone(),
+                })
+                .await;
             self.sink
                 .emit(RunUpdate::Agenda {
                     run_id: run.id.clone(),
@@ -760,6 +796,25 @@ impl Orchestrator<'_> {
                         Some(&args_sha),
                     ))
                     .await;
+                // S3/ADR-033 §4: this tool's result is about to become the next
+                // prompt and, through it, the spoken answer. If the tool is
+                // declared as producing private content, say so now — before
+                // the observation is folded in, and therefore before any text
+                // delta derived from it exists. The label is the tool's own
+                // host-owned declaration, never a guess at what came back:
+                // inspecting the content would be the fail-open heuristic the
+                // ADR rules out, and the result is untrusted data besides.
+                //
+                // Read from `policy`, which was resolved from the registry at
+                // the top of this step — the same host-owned metadata the
+                // grant decision used, not anything the executor returned.
+                if policy.speech_sensitivity == SpeechSensitivity::Sensitive {
+                    self.sink
+                        .emit(RunUpdate::SpeechSensitivityEscalated {
+                            run_id: run.id.clone(),
+                        })
+                        .await;
+                }
                 // A reversible tool's registered undo is surfaced in the timeline.
                 if let Some(description) = &result.compensation {
                     self.sink

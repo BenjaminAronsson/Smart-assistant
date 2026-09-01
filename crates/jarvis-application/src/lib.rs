@@ -47,3 +47,6 @@ mod policy_tests;
 
 #[cfg(test)]
 mod queue_tests;
+
+#[cfg(test)]
+mod speech_sensitivity_tests;

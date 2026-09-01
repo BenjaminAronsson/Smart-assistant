@@ -26,4 +26,6 @@ pub use socket::*;
 #[cfg(test)]
 mod delivery_scope_tests;
 #[cfg(test)]
+mod speech_sensitivity_tests;
+#[cfg(test)]
 mod tests;

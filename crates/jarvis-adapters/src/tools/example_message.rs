@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use jarvis_application::policy::{ToolDescriptor, ToolExecutor};
 use jarvis_domain::declare_tool_id;
 use jarvis_domain::grants::ExecutionGrant;
-use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
+use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, SpeechSensitivity, ToolPolicy};
 use jarvis_domain::tools::{CanonicalValue, ToolError, ToolInvocation, ToolResult, ToolVersion};
 use tokio_util::sync::CancellationToken;
 
@@ -43,6 +43,10 @@ impl ExampleMessageTool {
                 .into_iter()
                 .collect(),
             egress: DataEgress::External,
+            // Matches `SmtpTool` (S3/ADR-033 §4). This is the worked example
+            // other tools get written from, so it has to model the right
+            // answer: message bodies are `Sensitive`.
+            speech_sensitivity: SpeechSensitivity::Sensitive,
         }
     }
 

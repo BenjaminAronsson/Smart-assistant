@@ -29,7 +29,17 @@ import { ApprovalTray } from './approval-tray';
 import { HudStateService, presenceForRunState } from './hud/hud-state.service';
 import { VoiceCaptureService } from './voice-capture.service';
 
-const TRANSIENT_WS_TYPES = new Set(['text.delta', 'media.state', 'hud.canvas', 'degraded.queued']);
+const TRANSIENT_WS_TYPES = new Set([
+  'text.delta',
+  'media.state',
+  'hud.canvas',
+  'degraded.queued',
+  // S3/ADR-033 §4: transient like the deltas it labels. Listed here so
+  // it neither advances `lastSeq` nor reads as a gap in the durable
+  // sequence — an unlisted transient event makes every one of them look
+  // like a dropped domain event and triggers a needless timeline reload.
+  'run.speech_sensitive',
+]);
 
 /** Cap on the live streaming preview buffer (NIT 4). The durable message that
  * arrives on completion is authoritative, so trimming the transient preview to

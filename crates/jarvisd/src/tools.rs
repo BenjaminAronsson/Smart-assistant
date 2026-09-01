@@ -730,7 +730,7 @@ mod f9_6_policy_snapshot_tests {
         MediaOpenUrlTool, MediaPlaybackTool, MediaVolumeBoostTool,
     };
     use jarvis_adapters::web::{BraveSearchProvider, HttpPageFetcher, WebFetchTool, WebSearchTool};
-    use jarvis_domain::policy::{DataEgress, RiskLevel, ToolPolicy};
+    use jarvis_domain::policy::{DataEgress, RiskLevel, SpeechSensitivity, ToolPolicy};
     use jarvis_domain::tools::ToolId;
 
     fn scopes_of(policy: &ToolPolicy) -> Vec<&str> {
@@ -750,6 +750,11 @@ mod f9_6_policy_snapshot_tests {
         // exactly the "policy regression, not a cleanup" F9.6 warns against.
         expected_is_reversible: bool,
         expected_requires_user_presence: bool,
+        // S3: pinned here for the same reason as `risk` — the field is
+        // declared per tool and must never start being *derived*. Nothing in
+        // the tiers below predicts this column: `fs.read` is the least
+        // dangerous tool in the table and one of only two `Sensitive` ones.
+        expected_speech_sensitivity: SpeechSensitivity,
     }
 
     #[test]
@@ -764,6 +769,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R0,
                 expected_egress: DataEgress::Local,
                 expected_scopes: &["home:read"],
+                expected_speech_sensitivity: SpeechSensitivity::Normal,
             },
             Case {
                 id: HomeSetLightTool::id(),
@@ -774,6 +780,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R1,
                 expected_egress: DataEgress::Local,
                 expected_scopes: &["home:control"],
+                expected_speech_sensitivity: SpeechSensitivity::Normal,
             },
             Case {
                 id: HomeSetAreaLightsTool::id(),
@@ -784,6 +791,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R1,
                 expected_egress: DataEgress::Local,
                 expected_scopes: &["home:control"],
+                expected_speech_sensitivity: SpeechSensitivity::Normal,
             },
             Case {
                 id: HomeBroadTool::scene_id(),
@@ -794,6 +802,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R2,
                 expected_egress: DataEgress::Local,
                 expected_scopes: &["home:control"],
+                expected_speech_sensitivity: SpeechSensitivity::Normal,
             },
             Case {
                 id: HomeBroadTool::script_id(),
@@ -804,6 +813,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R2,
                 expected_egress: DataEgress::Local,
                 expected_scopes: &["home:control"],
+                expected_speech_sensitivity: SpeechSensitivity::Normal,
             },
             Case {
                 id: SmtpTool::id(),
@@ -814,6 +824,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R2,
                 expected_egress: DataEgress::External,
                 expected_scopes: &["message:send"],
+                expected_speech_sensitivity: SpeechSensitivity::Sensitive,
             },
             Case {
                 id: SpotifyPlayTool::id(),
@@ -824,6 +835,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R1,
                 expected_egress: DataEgress::External,
                 expected_scopes: &["media:control"],
+                expected_speech_sensitivity: SpeechSensitivity::Normal,
             },
             Case {
                 id: SpotifyPlayPlaylistTool::id(),
@@ -834,6 +846,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R1,
                 expected_egress: DataEgress::External,
                 expected_scopes: &["media:control"],
+                expected_speech_sensitivity: SpeechSensitivity::Normal,
             },
             Case {
                 id: SpotifyQueueAddTool::id(),
@@ -844,6 +857,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R1,
                 expected_egress: DataEgress::External,
                 expected_scopes: &["media:control"],
+                expected_speech_sensitivity: SpeechSensitivity::Normal,
             },
             Case {
                 id: SpotifySearchTool::id(),
@@ -854,6 +868,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R0,
                 expected_egress: DataEgress::External,
                 expected_scopes: &["media:search"],
+                expected_speech_sensitivity: SpeechSensitivity::Normal,
             },
             Case {
                 id: SpotifyVolumeTool::id(),
@@ -864,6 +879,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R1,
                 expected_egress: DataEgress::External,
                 expected_scopes: &["media:control"],
+                expected_speech_sensitivity: SpeechSensitivity::Normal,
             },
             Case {
                 id: SpotifyVolumeBoostTool::id(),
@@ -874,6 +890,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R2,
                 expected_egress: DataEgress::External,
                 expected_scopes: &["media:control"],
+                expected_speech_sensitivity: SpeechSensitivity::Normal,
             },
             Case {
                 id: ExampleLightTool::id(),
@@ -884,6 +901,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R1,
                 expected_egress: DataEgress::Local,
                 expected_scopes: &["demo:light"],
+                expected_speech_sensitivity: SpeechSensitivity::Normal,
             },
             Case {
                 id: ExampleMessageTool::id(),
@@ -894,6 +912,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R2,
                 expected_egress: DataEgress::External,
                 expected_scopes: &["message:send"],
+                expected_speech_sensitivity: SpeechSensitivity::Sensitive,
             },
             Case {
                 id: FsReadTool::id(),
@@ -904,6 +923,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R0,
                 expected_egress: DataEgress::None,
                 expected_scopes: &["files:read"],
+                expected_speech_sensitivity: SpeechSensitivity::Sensitive,
             },
             Case {
                 id: MediaPlaybackTool::id(),
@@ -914,6 +934,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R1,
                 expected_egress: DataEgress::Local,
                 expected_scopes: &["media:control"],
+                expected_speech_sensitivity: SpeechSensitivity::Normal,
             },
             Case {
                 id: MediaVolumeBoostTool::id(),
@@ -924,6 +945,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R2,
                 expected_egress: DataEgress::Local,
                 expected_scopes: &["media:control"],
+                expected_speech_sensitivity: SpeechSensitivity::Normal,
             },
             Case {
                 id: MediaOpenUrlTool::id(),
@@ -934,6 +956,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R1,
                 expected_egress: DataEgress::External,
                 expected_scopes: &["media:control"],
+                expected_speech_sensitivity: SpeechSensitivity::Normal,
             },
             Case {
                 id: WebSearchTool::<BraveSearchProvider>::id(),
@@ -944,6 +967,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R0,
                 expected_egress: DataEgress::External,
                 expected_scopes: &["web:search"],
+                expected_speech_sensitivity: SpeechSensitivity::Normal,
             },
             Case {
                 id: WebFetchTool::<HttpPageFetcher>::id(),
@@ -954,6 +978,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R0,
                 expected_egress: DataEgress::External,
                 expected_scopes: &["web:fetch"],
+                expected_speech_sensitivity: SpeechSensitivity::Normal,
             },
             Case {
                 id: crate::apptool::AppGenerateTool::id(),
@@ -964,6 +989,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R1,
                 expected_egress: DataEgress::Local,
                 expected_scopes: &["app:build"],
+                expected_speech_sensitivity: SpeechSensitivity::Normal,
             },
         ];
 
@@ -997,6 +1023,12 @@ mod f9_6_policy_snapshot_tests {
             assert_eq!(
                 case.policy.requires_user_presence, case.expected_requires_user_presence,
                 "{}: requires_user_presence drifted",
+                case.expected_id
+            );
+            assert_eq!(
+                case.policy.speech_sensitivity, case.expected_speech_sensitivity,
+                "{}: speech_sensitivity drifted — a tool that reads private content \
+                 aloud in a third-party voice is a privacy regression, not a cleanup",
                 case.expected_id
             );
         }

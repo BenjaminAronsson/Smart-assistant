@@ -20,7 +20,7 @@ use jarvis_application::policy::{
 };
 use jarvis_contracts::policy::PolicyOutcomeDto;
 use jarvis_domain::identity::DeviceClass;
-use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
+use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, SpeechSensitivity, ToolPolicy};
 use jarvis_domain::tools::{CanonicalValue, ToolProposal};
 use jarvisd::policy_view::project;
 
@@ -53,6 +53,7 @@ fn policy(risk: RiskLevel, scopes: &[&str]) -> ToolPolicy {
         timeout: Duration::from_secs(5),
         required_scopes: scopes.iter().map(|s| scope(s)).collect(),
         egress: DataEgress::Local,
+        speech_sensitivity: SpeechSensitivity::Normal,
     }
 }
 

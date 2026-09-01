@@ -4093,6 +4093,23 @@
           "type": "object"
         },
         {
+          "description": "This run's spoken answer must stay in the house (ADR-033 §4, S3).\n\nEmitted the moment private content enters the run — a tool declared\n`SpeechSensitivity::Sensitive` returned, or an agenda was assembled — and\nalways ahead of the text that quotes it, so a node picks the local voice\nfor the sentence rather than one sentence later.\n\nTransient, for the same reason as `text.delta`: it describes an utterance\nin flight. There is no utterance to label after a reconnect, and a\nreplayed escalation would attach to whatever is being spoken *then*.\n\nCarries only the run id. Deliberately not the tool that triggered it:\nthis event reaches a room satellite (it is on the hub's spoken-run\nallowlist), and \"the owner just read their mail\" is more than a device\nneeds in order to choose a synthesizer. One bit, one direction — there is\nno de-escalation event, because a label that could be walked back would\nnot be a routing constraint.",
+          "properties": {
+            "runId": {
+              "$ref": "#/definitions/UlidString"
+            },
+            "type": {
+              "const": "run.speech_sensitive",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "runId"
+          ],
+          "type": "object"
+        },
+        {
           "description": "A run entered degraded-mode queueing. The next durable run snapshot is\nauthoritative after reconnect; this live notice supplies the position\nwhile the provider is unavailable (FR-12, angular-shell §5).",
           "properties": {
             "position": {

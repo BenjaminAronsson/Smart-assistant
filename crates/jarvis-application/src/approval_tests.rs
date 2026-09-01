@@ -16,7 +16,7 @@ use crate::testing::{
 };
 use jarvis_domain::grants::GrantError;
 use jarvis_domain::ids::{DeviceId, RunId, SessionId, UserId};
-use jarvis_domain::policy::{DataEgress, RiskLevel, ToolPolicy};
+use jarvis_domain::policy::{DataEgress, RiskLevel, SpeechSensitivity, ToolPolicy};
 use jarvis_domain::run::{Run, RunBudget, RunState};
 use jarvis_domain::tools::{CanonicalValue as V, ToolId, ToolProposal, ToolVersion};
 use tokio_util::sync::CancellationToken;
@@ -41,6 +41,7 @@ fn r2_policy() -> ToolPolicy {
         timeout: Duration::from_secs(30),
         required_scopes: Default::default(),
         egress: DataEgress::External,
+        speech_sensitivity: SpeechSensitivity::Normal,
     }
 }
 

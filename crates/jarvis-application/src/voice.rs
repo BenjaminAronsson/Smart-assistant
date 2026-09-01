@@ -80,34 +80,18 @@ pub trait SpeechTranscriber: Send + Sync {
     ) -> Result<BoxStream<'static, TranscriptEvent>, VoiceError>;
 }
 
+/// Re-exported from the domain (S3). The type moved next to `DataEgress` when
+/// `ToolPolicy` gained a `speech_sensitivity` field: a tool's declaration site
+/// is in the domain's vocabulary, and the label had to be sayable there. It is
+/// re-exported rather than relocated in the callers' imports because every
+/// voice-side user of it — the synthesizer port below, both adapters, the
+/// socket — is talking about the *same* constraint, and two import paths for
+/// one routing rule is how the second, divergent copy starts.
+pub use jarvis_domain::policy::SpeechSensitivity;
+
 /// Synthesizes speech from text (docs/02 §9 "TTS (Piper)"). Starts from
 /// complete clauses and stops on barge-in in a later slice; here it is simply
 /// text in, framed PCM out.
-/// Whether an utterance may leave the house (F8.11).
-///
-/// Labelled by the **producer**, never inferred from the text. A heuristic
-/// deciding whether your message body is private is exactly the wrong place
-/// for a heuristic: it fails open, silently, and only for the people whose
-/// messages happen not to look private.
-///
-/// `Sensitive` is a hard routing constraint, not a preference — a synthesizer
-/// that reaches a third party must refuse it rather than degrade.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpeechSensitivity {
-    /// An assistant reply, a timer announcement, a weather answer.
-    Normal,
-    /// Message bodies, calendar entries — anything whose *content* is the
-    /// user's private correspondence. Never spoken by a third party.
-    Sensitive,
-}
-
-impl SpeechSensitivity {
-    /// Whether this utterance may cross a `DataEgress::External` boundary.
-    pub fn may_leave_the_house(self) -> bool {
-        matches!(self, Self::Normal)
-    }
-}
-
 #[async_trait]
 pub trait SpeechSynthesizer: Send + Sync {
     fn id(&self) -> &str;

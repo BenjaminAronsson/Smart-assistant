@@ -668,6 +668,11 @@ export type TransientEvent =
       [k: string]: unknown;
     }
   | {
+      runId: UlidString;
+      type: "run.speech_sensitive";
+      [k: string]: unknown;
+    }
+  | {
       position: number;
       reason: string;
       runId: UlidString;

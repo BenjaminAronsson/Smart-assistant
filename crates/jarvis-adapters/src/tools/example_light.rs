@@ -12,7 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use jarvis_application::policy::{ToolDescriptor, ToolExecutor};
 use jarvis_domain::grants::ExecutionGrant;
-use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
+use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, SpeechSensitivity, ToolPolicy};
 use jarvis_domain::tools::{ToolError, ToolInvocation, ToolResult, ToolVersion};
 use tokio_util::sync::CancellationToken;
 
@@ -53,6 +53,7 @@ impl ExampleLightTool {
                 .into_iter()
                 .collect(),
             egress: DataEgress::Local,
+            speech_sensitivity: SpeechSensitivity::Normal,
         }
     }
 

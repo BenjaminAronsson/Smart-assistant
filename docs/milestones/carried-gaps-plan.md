@@ -6,10 +6,10 @@ stale in place — see §5. Not a milestone; these are independent items, most s
 none behaviour-blocking today. Priority order below is the recommended pickup order,
 not a schedule.
 
-**Do not run this alongside M9.** M9 (`docs/milestones/M9-features.md`) is a
-behaviour-frozen refactor — "nothing in this milestone changes behaviour" is the
-whole of its exit evidence. Every item below changes behaviour. Land M9 first; these
-after.
+~~**Do not run this alongside M9.**~~ **Lifted 2026-09-01** — M9 is signed off (tag
+`m9-complete`), so the behaviour freeze that blocked every item here is over. The
+reason it existed: M9 was a refactor whose entire exit evidence was "nothing changes
+behaviour", and every item below changes behaviour.
 
 ---
 
@@ -58,7 +58,49 @@ signature other tools will be written against.
 
 ---
 
-## 2. S3 — every spoken run answer is labelled `Normal`
+## 2. S3 — every spoken run answer is labelled `Normal` — **CLOSED 2026-09-01**
+
+**Closed** on `fix/s3-speech-sensitivity`. What shipped, and where it differs from the
+plan below:
+
+- `SpeechSensitivity` moved to `jarvis-domain::policy` (beside `DataEgress`, which is
+  the same kind of statement) and `ToolPolicy` gained a non-defaulted
+  `speech_sensitivity` field. `fs.read` and both `message.send` tools declare
+  `Sensitive`; the F9.6 policy snapshot in `crates/jarvisd/src/tools.rs` pins all 21
+  tools' values so the field can never start being *derived* from `risk`/`egress`.
+  The tiers genuinely do not line up: `fs.read` is R0/`DataEgress::None` and
+  `Sensitive`.
+- **The plan's step 3 was wrong about the code, and the fix is wider than it asked
+  for.** There is no mail tool in the registry, and *calendar is not a tool* — an
+  agenda reaches the model through `ContextAssembler` as `AssembledContext::agenda`.
+  A per-tool field alone would therefore never have fired for "calendar entries",
+  which is the one case ADR-033 §4 names by name. So the orchestrator escalates from
+  **two** producers: `tool_step` (a tool declaring `Sensitive` returned) and
+  `assemble_step` (an agenda was assembled). Any agenda escalates, not only entries
+  whose CalDAV `Sensitivity` says so — almost nothing real is flagged, and trusting
+  the flag would be the fail-open heuristic the ADR forbids.
+- **Step 1's warning was weighed and not followed.** It anticipated a new `RunUpdate`
+  variant would repeat CF-8's mistake. It does not: `run.speech_sensitive` is a
+  transient Session event carrying *only* a run id, and it is scoped by exactly the
+  machinery F7.4 built — `SPOKEN_RUN_EVENTS` plus per-socket run ownership. It rides
+  beside `text.delta`, which is already sending that same socket the entire answer, so
+  it reveals strictly less than its neighbour. It also had to ride that stream:
+  ordering is the protection, and only one ordered transport can guarantee the label
+  arrives before the clause it labels.
+- Escalation is monotonic — the socket's `AtomicBool` is only ever set, and there is no
+  de-escalation event on the wire — and it is read **per clause** rather than captured
+  when the utterance starts, because the label is a consequence of the run and so
+  necessarily arrives mid-flight.
+- Step 4's mutation check ran, twice: dropping the socket's store, and disabling the
+  orchestrator's tool-path emission. Two tests failed each time.
+- No transition-table change: this adds a `RunUpdate`, not a `RunState`/`RunEvent`.
+- Found and fixed alongside: the web shell's `TRANSIENT_WS_TYPES` sets, which decide
+  what advances `lastSeq`. A transient event missing from them reads as a gap in the
+  durable sequence and triggers a needless timeline reload on every occurrence.
+
+Original entry follows.
+
+---
 
 Open since M8a, restated at every gate since (M8c, M10). `SpeechSensitivity::Sensitive`
 is real routing machinery (ADR-033 §4) — content marked sensitive never reaches
