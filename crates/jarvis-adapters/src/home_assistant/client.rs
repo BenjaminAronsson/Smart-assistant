@@ -475,7 +475,7 @@ impl HomeAssistantClient {
         Ok(stored)
     }
 
-    pub(crate) async fn call_service(
+    pub(in crate::home_assistant) async fn call_service(
         &self,
         service: CuratedService,
         entity: &EntityId,

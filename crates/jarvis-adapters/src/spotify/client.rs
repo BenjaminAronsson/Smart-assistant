@@ -327,7 +327,7 @@ impl SpotifyClient {
     /// A valid access token, refreshing when absent, near expiry, or `force`d
     /// (after a 401). The lock is held across the refresh so concurrent tool
     /// calls make one refresh, not N.
-    pub(crate) async fn access_token(
+    pub(in crate::spotify) async fn access_token(
         &self,
         cancel: &CancellationToken,
         force: bool,
@@ -361,7 +361,7 @@ impl SpotifyClient {
 
     /// Perform a call: refresh-on-401 once, honour a short `Retry-After` once,
     /// then classify. Cancellation is checked before every await point.
-    pub(crate) async fn request(
+    pub(in crate::spotify) async fn request(
         &self,
         request: ApiRequest,
         cancel: &CancellationToken,
@@ -529,7 +529,7 @@ impl SpotifyClient {
 
     // -- playback writes ---------------------------------------------------
 
-    pub(crate) async fn set_volume(
+    pub(in crate::spotify) async fn set_volume(
         &self,
         volume: VolumePct,
         device: Option<&str>,
@@ -545,7 +545,7 @@ impl SpotifyClient {
         .map(|_| ())
     }
 
-    pub(crate) async fn set_shuffle(
+    pub(in crate::spotify) async fn set_shuffle(
         &self,
         state: bool,
         device: Option<&str>,
@@ -561,7 +561,7 @@ impl SpotifyClient {
         .map(|_| ())
     }
 
-    pub(crate) async fn play_context(
+    pub(in crate::spotify) async fn play_context(
         &self,
         context_uri: &str,
         device: Option<&str>,
@@ -577,7 +577,7 @@ impl SpotifyClient {
         .map(|_| ())
     }
 
-    pub(crate) async fn play_uris(
+    pub(in crate::spotify) async fn play_uris(
         &self,
         uris: &[String],
         device: Option<&str>,
@@ -593,7 +593,7 @@ impl SpotifyClient {
         .map(|_| ())
     }
 
-    pub(crate) async fn queue(
+    pub(in crate::spotify) async fn queue(
         &self,
         uri: &str,
         device: Option<&str>,

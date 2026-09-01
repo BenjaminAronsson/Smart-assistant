@@ -142,4 +142,16 @@ describe('presenceForRunState', () => {
       expect(presenceForRunState(state)).toBe(presence);
     });
   }
+
+  it('degrades to idle rather than throwing on a variant this build does not know (gate finding S-3)', () => {
+    // A stale cached SPA against an upgraded daemon can receive a
+    // `RunStateDto` value that predates this build — unreachable through the
+    // type system, so simulated with a cast. This runs inside the WS
+    // message handler before the timeline updates; throwing here used to
+    // drop the event entirely instead of just leaving presence stale.
+    const warnSpy = spyOn(console, 'warn');
+    const unknown = 'some_future_state' as unknown as RunStateDto;
+    expect(presenceForRunState(unknown)).toBe('idle');
+    expect(warnSpy).toHaveBeenCalled();
+  });
 });
