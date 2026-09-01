@@ -1,20 +1,30 @@
 # M9 "Load-bearing" — feature list
 
-Status: **PROPOSED — awaiting owner sign-off.** Decomposed 2026-08-14 on Opus 5 from a
-full-tree architecture review, while M8 is still in flight. Milestone feature lists are a
-human-only decision (docs/11 §3), so nothing here is committed to until it is approved.
-**M8 finishes first** — see decision 1. Check items off as their PRs merge, and do not pull
-a later feature forward without an approved change to this list (docs/11 §2).
+Status: **APPROVED — owner sign-off 2026-09-01**, at the gate, following
+`docs/milestones/M9-gate-report.md`. Decomposed 2026-08-14 on Opus 5 from a full-tree
+architecture review, while M8 is still in flight; executed after M10 landed instead (see
+resolution 1, below). **All thirteen features complete, PRs #85–#101 merged to main
+(2026-09-01).** Check items off as their PRs merge, and do not pull a later feature forward
+without an approved change to this list (docs/11 §2).
 
-**Proposed for resolution at approval:**
-1. **This is M9; product hardening becomes M10**, keeping its scope and golden 10 intact.
-2. **A refactoring milestone is gated on evidence, not aesthetics** — behaviour identical
-   and *provably* so, plus a measured structural change. The exit-evidence section below is
-   the whole argument for whether this milestone is worth running.
-3. **ADR-034** records the structural norm, because the absence of one is the root cause
-   of everything in this list. Drafted in F9.13, accepted or rejected at the gate.
-4. **Nothing in this milestone changes behaviour.** Any bug found mid-refactor is fixed in
-   its own PR with its own test — never folded into a structural diff.
+**Resolved at approval (2026-09-01), all four as proposed:**
+1. **This is M9; product hardening was M10**, scope and golden 10 intact. In practice M10 ran
+   *before* M9 chronologically (closed 2026-08-30), not after as this decision originally
+   assumed — the milestone *numbering* held, the *ordering* didn't. Noted, not re-litigated.
+2. **A refactoring milestone is gated on evidence, not aesthetics** — confirmed at the gate:
+   1,629 Rust tests / 315 web tests (0 failed), golden traces 1–7/9–12 + M3a/M3b/M5/M6
+   acceptance, empty `migrations/`/`.sqlx/` diff, idle RSS within noise of the pre-M9
+   baseline. See `docs/milestones/M9-gate-report.md`.
+3. **ADR-034** — **Accepted 2026-09-01** (`docs/adr/README.md`). The structural ceilings it
+   describes are the ones actually enforced by `cargo xtask arch-test`
+   (`MAX_FILE_LINES=1700`, `MAX_FN_LINES=730` — the tree's measured worst values at landing,
+   per the ADR's own §3 ratchet principle; **not** the 1,000/150 figures this doc's own
+   exit-evidence section originally guessed at, which never matched F9.1–F9.12's real scope).
+4. **Nothing in this milestone changes behaviour** — held, with one accepted deviation: the
+   `rfc3339` helper unification (F9.9) collapsed three previously-divergent failure behaviors
+   (epoch-sentinel / panic / empty-string) into one (epoch-sentinel, fail-closed). Found by
+   the gate's security-auditor pass, judged safety-neutral-or-safer, accepted as a deviation
+   rather than reverted — see `docs/milestones/M9-gate-report.md` §3 (finding S-2).
 
 ## Why this milestone exists, and what it displaces
 
