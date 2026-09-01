@@ -12,7 +12,11 @@
 //! and daemon wiring land in F5.2.
 
 use async_trait::async_trait;
+// S3: the label lives in the domain, beside `DataEgress` (see its doc there).
+// Imported rather than re-exported — a re-export would give one routing rule
+// two names inside one crate, which is the divergence ADR-034 spent M9 undoing.
 use futures_core::stream::BoxStream;
+use jarvis_domain::policy::SpeechSensitivity;
 use tokio_util::sync::CancellationToken;
 
 /// PCM framing shared by every leg of the pipeline (Wyoming `audio-start`/
@@ -79,15 +83,6 @@ pub trait SpeechTranscriber: Send + Sync {
         cancel: CancellationToken,
     ) -> Result<BoxStream<'static, TranscriptEvent>, VoiceError>;
 }
-
-/// Re-exported from the domain (S3). The type moved next to `DataEgress` when
-/// `ToolPolicy` gained a `speech_sensitivity` field: a tool's declaration site
-/// is in the domain's vocabulary, and the label had to be sayable there. It is
-/// re-exported rather than relocated in the callers' imports because every
-/// voice-side user of it — the synthesizer port below, both adapters, the
-/// socket — is talking about the *same* constraint, and two import paths for
-/// one routing rule is how the second, divergent copy starts.
-pub use jarvis_domain::policy::SpeechSensitivity;
 
 /// Synthesizes speech from text (docs/02 §9 "TTS (Piper)"). Starts from
 /// complete clauses and stops on barge-in in a later slice; here it is simply

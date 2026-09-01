@@ -993,6 +993,31 @@ mod f9_6_policy_snapshot_tests {
             },
         ];
 
+        // S3: the table's guarantee is "no registered tool's policy can drift
+        // unnoticed", and that only holds while the table covers the registry.
+        // Without this, registering a new tool adds an unpinned
+        // `speech_sensitivity` — and the unpinned direction is `Normal`, i.e.
+        // spoken by a third-party voice. Compared by id set, not count, so the
+        // failure names the tool that was added.
+        {
+            use std::collections::BTreeSet;
+            let pinned: BTreeSet<&str> = cases.iter().map(|c| c.expected_id).collect();
+            let mut registry = super::build_registry(Some(std::env::temp_dir())).expect("builds");
+            super::register_web_tools(&mut registry, "unused-key".to_owned(), 1024)
+                .expect("registers");
+            let registered: BTreeSet<String> =
+                registry.tool_ids().map(ToString::to_string).collect();
+            let missing: Vec<&String> = registered
+                .iter()
+                .filter(|id| !pinned.contains(id.as_str()))
+                .collect();
+            assert!(
+                missing.is_empty(),
+                "these tools are registered but not pinned by this snapshot, so their \
+                 risk/egress/scopes/speech_sensitivity can drift unnoticed: {missing:?}"
+            );
+        }
+
         for case in cases {
             assert_eq!(
                 case.id.as_str(),

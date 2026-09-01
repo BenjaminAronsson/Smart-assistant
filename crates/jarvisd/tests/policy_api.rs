@@ -46,6 +46,14 @@ fn scope(s: &str) -> Scope {
 }
 
 fn policy(risk: RiskLevel, scopes: &[&str]) -> ToolPolicy {
+    policy_spoken(risk, scopes, SpeechSensitivity::Normal)
+}
+
+fn policy_spoken(
+    risk: RiskLevel,
+    scopes: &[&str],
+    speech_sensitivity: SpeechSensitivity,
+) -> ToolPolicy {
     ToolPolicy {
         risk,
         is_reversible: true,
@@ -53,7 +61,7 @@ fn policy(risk: RiskLevel, scopes: &[&str]) -> ToolPolicy {
         timeout: Duration::from_secs(5),
         required_scopes: scopes.iter().map(|s| scope(s)).collect(),
         egress: DataEgress::Local,
-        speech_sensitivity: SpeechSensitivity::Normal,
+        speech_sensitivity,
     }
 }
 
@@ -258,4 +266,42 @@ fn evaluate_ignores_arguments_which_is_what_makes_the_view_faithful() {
         "policy_view renders outcomes using empty arguments; that is only honest \
          while arguments cannot change the decision"
     );
+}
+
+/// S3: the owner-facing inspector must show `speech_sensitivity`, and show the
+/// tool's real value.
+///
+/// This is the surface an owner uses to answer "what may this tool do", and
+/// "may an answer that used it be read aloud by a vendor" is now part of that
+/// answer. Both branches are asserted because a projection stuck on one
+/// constant would look correct in a single-value fixture — and the direction it
+/// would stick in, `normal`, is the one that reads private content out loud.
+#[test]
+fn the_policy_view_shows_each_tools_speech_sensitivity() {
+    let mut registry = registry();
+    registry
+        .register(ToolDescriptor {
+            id: "example.private".parse().expect("tool id"),
+            version: jarvis_domain::tools::ToolVersion::new(1, 0, 0),
+            policy: Some(policy_spoken(
+                RiskLevel::R0,
+                &["files:read"],
+                SpeechSensitivity::Sensitive,
+            )),
+            executor: Arc::new(NeverRuns),
+        })
+        .expect("registers");
+
+    let view = project(&registry);
+    let shown = |id: &str| -> String {
+        view.tools
+            .iter()
+            .find(|t| t.tool_id == id)
+            .unwrap_or_else(|| panic!("{id} is in the view"))
+            .speech_sensitivity
+            .clone()
+    };
+
+    assert_eq!(shown("example.private"), "sensitive");
+    assert_eq!(shown("example.read"), "normal");
 }

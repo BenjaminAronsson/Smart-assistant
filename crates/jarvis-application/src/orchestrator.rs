@@ -407,12 +407,19 @@ impl Orchestrator<'_> {
             // S3/ADR-033 §4: an agenda is the user's own schedule, so the answer
             // built from it must not be read aloud by a third-party voice.
             //
-            // Escalated for *any* agenda, not only entries whose CalDAV
-            // `Sensitivity` says so. That per-event flag marks what the calendar
-            // owner explicitly classified, and almost nothing real is
-            // classified — trusting it would send every unflagged appointment
-            // out to a vendor, which is precisely the label-fails-open failure
-            // ADR-033 §4 forbids inferring.
+            // Escalated for *any* agenda, deliberately ignoring each event's own
+            // `Sensitivity`. Today that reads as a distinction without a
+            // difference — the CalDAV adapter parses no `CLASS` property and
+            // hardcodes `Sensitivity::Sensitive` on every event it returns
+            // (`jarvis-adapters/src/caldav.rs`), so the flag is a host-set
+            // constant and branching on it would be behaviourally identical.
+            //
+            // The point is what happens when `CLASS` parsing lands. Then the
+            // flag becomes owner-authored, almost no real calendar sets it, and
+            // a branch here would silently start reading every unclassified
+            // appointment to a vendor. That is the label-fails-open failure
+            // ADR-033 §4 forbids, and the moment to refuse it is before the
+            // dependency exists, not after.
             //
             // Emitted *before* the agenda itself, so a consumer that reacts to
             // either one has already been told how it may be spoken.

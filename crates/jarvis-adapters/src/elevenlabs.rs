@@ -28,7 +28,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
-use jarvis_application::voice::{AudioFormat, SpeechSensitivity, SpeechSynthesizer, VoiceError};
+use jarvis_application::voice::{AudioFormat, SpeechSynthesizer, VoiceError};
+use jarvis_domain::policy::SpeechSensitivity;
 use tokio_util::sync::CancellationToken;
 
 /// ElevenLabs streams PCM at a rate we ask for; 16 kHz mono matches the one

@@ -115,6 +115,11 @@ fn every_transient_event() -> Vec<TransientEvent> {
             text: "hello Jarvis".into(),
             is_final: false,
         },
+        // S3/ADR-033 §4: how a run's answer may be spoken. Transient for the
+        // same reason as `text.delta` — it describes an utterance in flight.
+        TransientEvent::SpeechSensitive {
+            run_id: RUN.parse().unwrap(),
+        },
     ]
 }
 
@@ -134,6 +139,18 @@ fn transient_events_round_trip_and_carry_their_type_tag() {
     assert_eq!(
         serde_json::to_value(&delta).unwrap(),
         json!({ "type": "text.delta", "runId": RUN, "text": "hel" })
+    );
+    // S3: `runId` must sit at the payload's **top level**, because that is
+    // where the hub's delivery rule looks for it after `split_tagged` strips
+    // the tag (`delivers_to_owner_of`). If it nested or renamed, the node that
+    // started the run would never be told the answer is sensitive — and would
+    // speak it in the third-party voice. Fails open, so it is pinned here.
+    assert_eq!(
+        serde_json::to_value(TransientEvent::SpeechSensitive {
+            run_id: RUN.parse().unwrap(),
+        })
+        .unwrap(),
+        json!({ "type": "run.speech_sensitive", "runId": RUN })
     );
     assert_eq!(
         serde_json::to_value(TransientEvent::MediaState {

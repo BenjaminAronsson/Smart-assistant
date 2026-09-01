@@ -103,6 +103,7 @@ class FakeApi {
         reversible: true,
         requiresUserPresence: false,
         egress: 'local',
+        speechSensitivity: 'normal',
         requiredScopes: ['home:control'],
         outcomes: [
           { deviceClass: 'owner-ui', outcome: 'auto' },

@@ -14,14 +14,15 @@ use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 use futures_util::stream;
-use jarvis_application::voice::{AudioFormat, SpeechSensitivity, SpeechSynthesizer, VoiceError};
+use jarvis_application::voice::{AudioFormat, SpeechSynthesizer, VoiceError};
 use jarvis_contracts::CONTRACT_VERSION;
 use jarvis_contracts::envelope::{Channel, EventEnvelope};
 use jarvis_domain::identity::DeviceClass;
 use jarvis_domain::ids::RunId;
+use jarvis_domain::policy::SpeechSensitivity;
 use tokio_util::sync::CancellationToken;
 
-use super::hub::{OwnedId, delivers_to_owner_of};
+use super::hub::{OwnedId, WsHub, delivers_to_owner_of};
 use super::voice::{ActiveSpeech, begin_speech, feed_speech};
 
 const RUN: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -166,11 +167,21 @@ async fn an_unescalated_run_is_synthesized_as_normal() {
 }
 
 #[tokio::test]
-async fn escalation_mid_utterance_covers_the_clause_that_follows_it() {
+async fn escalation_mid_utterance_labels_the_quoting_clause() {
     // The realistic shape of a tool run: the model opens with a filler clause
     // before the tool has returned, and only the later clause quotes the
-    // private result. The opener may go out in the nice voice; what follows
-    // the escalation may not.
+    // private result.
+    //
+    // What is asserted is only that the quoting clause is `Sensitive`. It
+    // deliberately does **not** assert the opener is `Normal`, which would be
+    // testing a scheduling accident: whether the opener escapes as `Normal`
+    // depends on whether `speak_task` was polled between the socket loop's two
+    // awaits, and here — a current-thread runtime with three synchronous
+    // `feed_speech` calls — it never is, so both clauses are queued before the
+    // task runs at all. In production that race resolves either way and both
+    // outcomes are acceptable: the per-clause read *permits* the opener to stay
+    // `Normal`, it does not promise it, and losing that permission costs voice
+    // quality on one clause rather than privacy.
     let synth = Arc::new(RecordingSynthesizer::default());
     let mut speech = Some(speech_for(RUN, &synth));
 
@@ -212,6 +223,76 @@ async fn an_escalation_for_another_run_does_not_leak_across_utterances() {
         !speech.as_ref().unwrap().sensitive.load(Ordering::Acquire),
         "another run's escalation must not label this utterance"
     );
+}
+
+// ---- the REAL producer, end to end ---------------------------------------
+
+/// **The envelope built the way the daemon actually builds it.**
+///
+/// Every other test in this file hand-writes the escalation envelope, which
+/// pins `feed_speech` and the delivery rule but proves nothing about the thing
+/// that emits them. That gap is this repository's most-repeated bug: an adapter
+/// fixture that constructs input its own way, hiding a total mismatch with the
+/// real caller while every test stays green (M5 ×3, and again at the M6 gate,
+/// where every approved Home Assistant action was denied in production).
+///
+/// Here it would fail open and silently — a serialization that put `runId`
+/// somewhere `delivers_to_owner_of` does not look, or an event-type string that
+/// drifted from `SPOKEN_RUN_EVENTS`, means the node is never told and speaks
+/// private content in the vendor voice. So this drives
+/// `RunEventSink::emit` — what the orchestrator actually calls — and feeds the
+/// **received** envelope through both the delivery rule and the synthesis path.
+#[tokio::test]
+async fn the_daemons_own_escalation_envelope_routes_and_labels() {
+    use jarvis_application::orchestrator::{RunEventSink, RunUpdate};
+
+    let hub = WsHub::new();
+    let mut rx = hub.subscribe();
+    let run_id: RunId = RUN.parse().unwrap();
+
+    hub.emit(RunUpdate::SpeechSensitivityEscalated {
+        run_id: run_id.clone(),
+    })
+    .await;
+
+    let env = rx.recv().await.expect("the hub broadcast an envelope");
+    assert_eq!(env.event_type, "run.speech_sensitive");
+    assert_eq!(env.channel, Channel::Session);
+
+    // The delivery rule must recognise the real payload — this is the assertion
+    // a hand-built fixture cannot make.
+    let owned: std::collections::VecDeque<OwnedId> =
+        [OwnedId::Run(RUN.to_owned())].into_iter().collect();
+    assert!(
+        delivers_to_owner_of(&env, DeviceClass::RoomNode, THIS_DEVICE, &owned),
+        "the daemon's own escalation envelope must reach the node that started \
+         the run; payload was {:?}",
+        env.payload
+    );
+
+    // And the synthesis path must act on it.
+    let synth = Arc::new(RecordingSynthesizer::default());
+    let mut speech = Some(speech_for(RUN, &synth));
+    feed_speech(&mut speech, &env).unwrap();
+    feed_speech(&mut speech, &delta(RUN, "Your mediation is at ten.")).unwrap();
+    feed_speech(
+        &mut speech,
+        &envelope("run.completed", serde_json::json!({ "runId": RUN })),
+    )
+    .unwrap();
+
+    let active = speech.take().expect("utterance is still active");
+    active.task.await.expect("synthesis task finished");
+
+    let calls = synth.calls();
+    assert!(!calls.is_empty(), "the clause must have been synthesized");
+    for (text, sensitivity) in &calls {
+        assert_eq!(
+            *sensitivity,
+            SpeechSensitivity::Sensitive,
+            "clause {text:?} went out as {sensitivity:?}"
+        );
+    }
 }
 
 // ---- the label reaches the node that speaks ------------------------------

@@ -7,13 +7,13 @@ use std::time::Duration;
 use axum::extract::ws::WebSocket;
 use futures_util::stream::{BoxStream, StreamExt, poll_fn};
 use jarvis_application::voice::{
-    AudioFormat, ClauseSegmenter, SpeechSensitivity, SpeechSynthesizer, SpeechTranscriber,
-    TranscriptEvent, VoiceError,
+    AudioFormat, ClauseSegmenter, SpeechSynthesizer, SpeechTranscriber, TranscriptEvent, VoiceError,
 };
 use jarvis_contracts::CONTRACT_VERSION;
 use jarvis_contracts::envelope::{Channel, EventEnvelope};
 use jarvis_contracts::voice::{VoiceControlDto, VoiceErrorCodeDto, VoiceSpeakEndDto};
 use jarvis_domain::ids::{RunId, SessionId};
+use jarvis_domain::policy::SpeechSensitivity;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -388,9 +388,17 @@ async fn speak_task(
         };
         let Some(clause) = clause else { break };
 
-        // Read here, per clause — see the parameter's note. `Acquire` pairs
-        // with the socket loop's `Release` store so the escalation is visible
-        // to this task by the time the clause it labels arrives.
+        // Read here, per clause — see the parameter's note.
+        //
+        // What makes this observe the escalation is the **clause channel**, not
+        // the atomic's ordering: `feed_speech` stores the flag and only then
+        // `try_send`s the clause, and an mpsc send→recv edge is a happens-before
+        // edge, so any clause arriving here was queued after the store. The
+        // `Acquire`/`Release` pair is deliberate belt-and-braces on top of that
+        // — it costs nothing measurable here and keeps the flag sound if anyone
+        // ever publishes data alongside it. (`ElevenLabsSynthesizer` reads its
+        // consent gate `Relaxed` for the same shape; the difference is only that
+        // this one is load-bearing for a routing constraint.)
         let speech_sensitivity = if sensitive.load(Ordering::Acquire) {
             SpeechSensitivity::Sensitive
         } else {
@@ -563,9 +571,19 @@ pub(crate) fn feed_speech(
         // drains that stream in order. So the flag is already set by the time
         // the clause it governs is pushed to the synthesis task.
         //
-        // `Release` pairs with the synthesis task's `Acquire` load.
+        // Stored *before* any clause this run goes on to queue, which is what
+        // actually orders the two (see the load site).
         "run.speech_sensitive" => {
             active.sensitive.store(true, Ordering::Release);
+            // The only observable trace that this control fired. Without it the
+            // whole path — emit, deliver, store, read — fails silently *and*
+            // open if any link breaks, and nothing afterwards can answer
+            // "was that answer eligible to leave the house?". Run id only:
+            // never the content, and never which tool caused it.
+            tracing::debug!(
+                run_id = %active.run_id,
+                "run marked speech-sensitive; this utterance stays local"
+            );
         }
         "text.delta" => {
             let Some(text) = envelope.payload["text"].as_str() else {

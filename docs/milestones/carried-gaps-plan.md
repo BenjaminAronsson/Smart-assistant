@@ -76,9 +76,15 @@ plan below:
   A per-tool field alone would therefore never have fired for "calendar entries",
   which is the one case ADR-033 §4 names by name. So the orchestrator escalates from
   **two** producers: `tool_step` (a tool declaring `Sensitive` returned) and
-  `assemble_step` (an agenda was assembled). Any agenda escalates, not only entries
-  whose CalDAV `Sensitivity` says so — almost nothing real is flagged, and trusting
-  the flag would be the fail-open heuristic the ADR forbids.
+  `assemble_step` (an agenda was assembled). Any agenda escalates, ignoring each
+  event's own `Sensitivity` — which today is a distinction without a difference,
+  because the CalDAV adapter parses no `CLASS` property and hardcodes
+  `Sensitivity::Sensitive` on every event (`caldav.rs`). The refusal to branch on it
+  is aimed at the moment `CLASS` parsing lands: the flag becomes owner-authored,
+  almost no real calendar sets it, and a branch would silently start reading every
+  unclassified appointment to a vendor. (The first draft of this justified the
+  decision by describing the flag as already owner-authored — wrong about this
+  codebase, and caught by the security-auditor pass.)
 - **Step 1's warning was weighed and not followed.** It anticipated a new `RunUpdate`
   variant would repeat CF-8's mistake. It does not: `run.speech_sensitive` is a
   transient Session event carrying *only* a run id, and it is scoped by exactly the
@@ -96,7 +102,44 @@ plan below:
 - No transition-table change: this adds a `RunUpdate`, not a `RunState`/`RunEvent`.
 - Found and fixed alongside: the web shell's `TRANSIENT_WS_TYPES` sets, which decide
   what advances `lastSeq`. A transient event missing from them reads as a gap in the
-  durable sequence and triggers a needless timeline reload on every occurrence.
+  durable sequence and triggers a needless timeline reload on every occurrence. Now
+  one exported constant (`web/src/app/ws-events.ts`) rather than two copies that had
+  to be edited in lockstep.
+- Reviewed by security-auditor, rust-reviewer and contract-keeper; no BLOCKING
+  findings. Their SHOULD-FIXes were applied: a test that drives the **real** producer
+  (`RunEventSink::emit` → `WsHub`) rather than a hand-built envelope, which is this
+  repo's most-repeated bug class; a corrected agenda rationale (see above); the
+  re-export dropped so one routing rule does not have two import paths inside one
+  crate; a truthful memory-ordering comment (the mpsc send→recv edge is what orders
+  the flag, not `Acquire`/`Release`); `speech_sensitivity` surfaced in the F10.5
+  policy view; and a registry-coverage assertion so a newly registered tool cannot
+  join unpinned — the unpinned direction being `Normal`, i.e. spoken by a vendor.
+
+**Two escalation gaps deliberately left open** (both out of S3's scope, recorded so
+they are decisions rather than oversights):
+
+1. **Cross-turn.** Escalation is per-run. If turn 1 uses `fs.read` and turn 2's
+   assembled context includes history or a summary quoting that content, turn 2 is
+   not escalated and its answer can go out in the vendor voice.
+2. **Resume.** `assemble_step` and `tool_step` are the only producers, so a run
+   resumed from a checkpoint past both re-emits nothing. Harmless today only because
+   a resumed run has no in-flight utterance on a fresh socket — this entry is the
+   record that the design leans on that assumption.
+
+**Two owner decisions left open**, both surfaced by the security-auditor:
+
+- **`home.get_state` stays `Normal`.** It returns household state — lock state,
+  occupancy, presence. "The back door is unlocked and nobody's home" read out by a
+  vendor voice is arguably closer to ADR-033 §4's category than to a weather answer.
+  One line plus a snapshot expectation to flip.
+- **Memory retrieval is a third unlabelled producer** (`jarvisd/src/orchestrator_ports.rs`).
+  Retrieved memories are folded into the prompt and can be quoted verbatim, with no
+  escalation. The memory path *does* rely on a per-item `Sensitivity` flag — the kind
+  of flag the agenda decision declines to trust — but there the label is owner-authored
+  at write time and the retrieval path already drops `Sensitive` items, which is a real
+  distinction from calendar's. Escalating on any retrieval hit would fire on most runs
+  and hollow the label out. The asymmetry needs a sentence in ADR-033 §4 stating it is
+  a decision.
 
 Original entry follows.
 

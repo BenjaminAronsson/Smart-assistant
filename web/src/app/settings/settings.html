@@ -235,6 +235,11 @@
                 <th scope="col">Tool</th>
                 <th scope="col">Risk</th>
                 <th scope="col">Data</th>
+                <!-- S3/ADR-033 §4. Beside "Data" because owners read the two
+                     together, and separate because they answer different
+                     questions: fs.read is "none" under Data and "sensitive"
+                     here. -->
+                <th scope="col">Spoken</th>
                 @for (c of policyClasses; track c) {
                   <th scope="col">{{ c }}</th>
                 }
@@ -246,6 +251,7 @@
                   <th scope="row"><code>{{ tool.toolId }}</code></th>
                   <td>{{ tool.risk }}</td>
                   <td>{{ tool.egress }}</td>
+                  <td>{{ tool.speechSensitivity }}</td>
                   @for (c of policyClasses; track c) {
                     <td>{{ outcomeFor(tool, c) }}</td>
                   }

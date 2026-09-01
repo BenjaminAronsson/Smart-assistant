@@ -38,9 +38,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures_util::stream::{BoxStream, StreamExt, poll_fn};
 use jarvis_application::voice::{
-    AudioFormat, SpeechSensitivity, SpeechSynthesizer, SpeechTranscriber, TranscriptEvent,
-    VadEvent, VoiceActivityDetector, VoiceError,
+    AudioFormat, SpeechSynthesizer, SpeechTranscriber, TranscriptEvent, VadEvent,
+    VoiceActivityDetector, VoiceError,
 };
+use jarvis_domain::policy::SpeechSensitivity;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{

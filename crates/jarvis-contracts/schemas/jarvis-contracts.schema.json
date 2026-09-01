@@ -4014,6 +4014,10 @@
           "description": "`R0`–`R4` (docs/06 §2).",
           "type": "string"
         },
+        "speechSensitivity": {
+          "description": "`normal` | `sensitive` — whether an answer that used this tool may be\nspoken by a third-party voice (ADR-033 §4, S3). Shown beside `egress`\nbecause owners read the two together and they are *not* the same\nquestion: `fs.read` is `none` here and `sensitive` there.",
+          "type": "string"
+        },
         "toolId": {
           "type": "string"
         }
@@ -4024,6 +4028,7 @@
         "reversible",
         "requiresUserPresence",
         "egress",
+        "speechSensitivity",
         "requiredScopes",
         "outcomes"
       ],
