@@ -1,6 +1,7 @@
 use super::hub::*;
 use super::replay::*;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use axum::extract::ws::WebSocket;
@@ -12,6 +13,7 @@ use jarvis_contracts::CONTRACT_VERSION;
 use jarvis_contracts::envelope::{Channel, EventEnvelope};
 use jarvis_contracts::voice::{VoiceControlDto, VoiceErrorCodeDto, VoiceSpeakEndDto};
 use jarvis_domain::ids::{RunId, SessionId};
+use jarvis_domain::policy::SpeechSensitivity;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -336,6 +338,17 @@ pub(crate) struct ActiveSpeech {
     pub(crate) audio: mpsc::Receiver<SpeechChunk>,
     pub(crate) segmenter: ClauseSegmenter,
     pub(crate) announced: bool,
+    /// Whether this run's answer must stay in the house (S3, ADR-033 §4).
+    ///
+    /// Shared with the synthesis task rather than passed to it, because the
+    /// answer to "may a third party say this?" is not known when the utterance
+    /// starts: the run has not run yet. It arrives mid-flight, on the same
+    /// socket subscription the text does.
+    ///
+    /// Set-only. There is no code path that clears it — a run that has touched
+    /// private content has touched it, and `escalate` in the domain is the same
+    /// one-way rule expressed for values.
+    pub(crate) sensitive: Arc<AtomicBool>,
 }
 
 /// Drive synthesis for one utterance: clauses in, PCM out, strictly in order.
@@ -347,22 +360,20 @@ async fn speak_task(
     synthesizer: Arc<dyn SpeechSynthesizer>,
     mut clauses: mpsc::Receiver<String>,
     out: mpsc::Sender<SpeechChunk>,
-    // Whether this utterance may be spoken by a third-party voice (F8.11).
-    // Labelled here, at the producer, rather than sniffed from the text: a
-    // heuristic guessing whether a sentence is private fails open and silently.
+    // Whether this utterance may be spoken by a third-party voice (F8.11, S3).
+    // Labelled by the producer, never sniffed from the text: a heuristic
+    // guessing whether a sentence is private fails open and silently.
     //
-    // ⚠️ **S3, M8 security audit — known gap, not a protection.** There is
-    // exactly one producer of run speech and it always passes `Normal` (see
-    // `begin_speech`). The routing constraint below is therefore correct
-    // machinery with nothing yet driving it: a run that used a mail or calendar
-    // tool and reads the result back is spoken by the third-party voice.
+    // Read **per clause**, immediately before each `synthesize` call, rather
+    // than captured once when the task starts. That is not defensive style, it
+    // is the only ordering that can work: the escalation is a consequence of
+    // the run, so it necessarily arrives after the utterance began. Reading it
+    // late is what lets a "let me check…" opener go out in the nice voice while
+    // the sentence that actually quotes the calendar does not.
     //
-    // Fixing it needs a signal this socket does not have. `RunUpdate` carries no
-    // tool variant, and `StateChanged` is dropped at this sink, so nothing here
-    // knows what a run touched. Escalating correctly means teaching the
-    // orchestrator to say so — an application-layer design change with a
-    // transition-table test, not a patch at this call site.
-    speech_sensitivity: jarvis_application::voice::SpeechSensitivity,
+    // Mirrors how the ElevenLabs adapter reads its consent gate — per
+    // utterance, so a change takes effect on the next sentence (ADR-033 §2).
+    sensitive: Arc<AtomicBool>,
     cancel: CancellationToken,
 ) {
     let mut announced = false;
@@ -376,6 +387,23 @@ async fn speak_task(
             clause = clauses.recv() => clause,
         };
         let Some(clause) = clause else { break };
+
+        // Read here, per clause — see the parameter's note.
+        //
+        // What makes this observe the escalation is the **clause channel**, not
+        // the atomic's ordering: `feed_speech` stores the flag and only then
+        // `try_send`s the clause, and an mpsc send→recv edge is a happens-before
+        // edge, so any clause arriving here was queued after the store. The
+        // `Acquire`/`Release` pair is deliberate belt-and-braces on top of that
+        // — it costs nothing measurable here and keeps the flag sound if anyone
+        // ever publishes data alongside it. (`ElevenLabsSynthesizer` reads its
+        // consent gate `Relaxed` for the same shape; the difference is only that
+        // this one is load-bearing for a routing constraint.)
+        let speech_sensitivity = if sensitive.load(Ordering::Acquire) {
+            SpeechSensitivity::Sensitive
+        } else {
+            SpeechSensitivity::Normal
+        };
 
         let (format, mut pcm) = match synthesizer
             .synthesize(&clause, speech_sensitivity, cancel.clone())
@@ -442,15 +470,16 @@ pub(crate) fn begin_speech(
 ) -> ActiveSpeech {
     let (clause_tx, clause_rx) = mpsc::channel(CLAUSE_QUEUE_CAPACITY);
     let (audio_tx, audio_rx) = mpsc::channel(AUDIO_QUEUE_CAPACITY);
+    // Starts `Normal` and is raised by `feed_speech` if the run says so (S3).
+    // Starting `Sensitive` and relaxing would be the safer-looking default and
+    // the wrong one: nothing ever lowers it, so every answer in the house would
+    // be local forever and the label would stop meaning anything.
+    let sensitive = Arc::new(AtomicBool::new(false));
     let task = tokio::spawn(speak_task(
         synthesizer,
         clause_rx,
         audio_tx,
-        // Always `Normal` today — see the S3 note on `speak_task`. This is the
-        // single producer, so this constant IS the current policy, and the
-        // mitigation for now is that ElevenLabs is off unless explicitly
-        // consented to and never receives anything when it is off.
-        jarvis_application::voice::SpeechSensitivity::Normal,
+        Arc::clone(&sensitive),
         cancel.clone(),
     ));
     ActiveSpeech {
@@ -464,6 +493,7 @@ pub(crate) fn begin_speech(
         audio: audio_rx,
         segmenter: ClauseSegmenter::new(),
         announced: false,
+        sensitive,
     }
 }
 
@@ -534,6 +564,27 @@ pub(crate) fn feed_speech(
         return Ok(());
     }
     match envelope.event_type.as_str() {
+        // S3/ADR-033 §4. Handled **before** `text.delta` in this match for
+        // readers, not for correctness — correctness comes from the transport:
+        // the orchestrator emits this before the deltas derived from the
+        // private content, one ordered broadcast carries both, and this loop
+        // drains that stream in order. So the flag is already set by the time
+        // the clause it governs is pushed to the synthesis task.
+        //
+        // Stored *before* any clause this run goes on to queue, which is what
+        // actually orders the two (see the load site).
+        "run.speech_sensitive" => {
+            active.sensitive.store(true, Ordering::Release);
+            // The only observable trace that this control fired. Without it the
+            // whole path — emit, deliver, store, read — fails silently *and*
+            // open if any link breaks, and nothing afterwards can answer
+            // "was that answer eligible to leave the house?". Run id only:
+            // never the content, and never which tool caused it.
+            tracing::debug!(
+                run_id = %active.run_id,
+                "run marked speech-sensitive; this utterance stays local"
+            );
+        }
         "text.delta" => {
             let Some(text) = envelope.payload["text"].as_str() else {
                 return Ok(());

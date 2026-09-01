@@ -668,6 +668,11 @@ export type TransientEvent =
       [k: string]: unknown;
     }
   | {
+      runId: UlidString;
+      type: "run.speech_sensitive";
+      [k: string]: unknown;
+    }
+  | {
       position: number;
       reason: string;
       runId: UlidString;
@@ -2450,6 +2455,13 @@ export interface ToolPolicyDto {
    * `R0`–`R4` (docs/06 §2).
    */
   risk: string;
+  /**
+   * `normal` | `sensitive` — whether an answer that used this tool may be
+   * spoken by a third-party voice (ADR-033 §4, S3). Shown beside `egress`
+   * because owners read the two together and they are *not* the same
+   * question: `fs.read` is `none` here and `sensitive` there.
+   */
+  speechSensitivity: string;
   toolId: string;
   [k: string]: unknown;
 }

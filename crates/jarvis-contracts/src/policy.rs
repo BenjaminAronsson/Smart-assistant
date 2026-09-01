@@ -56,6 +56,11 @@ pub struct ToolPolicyDto {
     pub requires_user_presence: bool,
     /// `none` | `local` | `external` — how far this tool's data travels.
     pub egress: String,
+    /// `normal` | `sensitive` — whether an answer that used this tool may be
+    /// spoken by a third-party voice (ADR-033 §4, S3). Shown beside `egress`
+    /// because owners read the two together and they are *not* the same
+    /// question: `fs.read` is `none` here and `sensitive` there.
+    pub speech_sensitivity: String,
     /// Scopes a caller must hold. A device class holding none of these is not
     /// merely restricted, it is refused.
     pub required_scopes: Vec<String>,

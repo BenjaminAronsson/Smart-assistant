@@ -43,7 +43,7 @@ use jarvis_domain::artifact::{
 use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::ids::{ArtifactId, RunId};
 use jarvis_domain::location::Sensitivity;
-use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
+use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, SpeechSensitivity, ToolPolicy};
 use jarvis_domain::tools::sanitize_result_content;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -147,6 +147,9 @@ pub fn coding_patch_policy() -> ToolPolicy {
             .into_iter()
             .collect(),
         egress: DataEgress::Local,
+        // S3/ADR-033 §4: a patch quotes the owner's source, which may hold
+        // anything a repository holds. Same reasoning as `fs.read`.
+        speech_sensitivity: SpeechSensitivity::Sensitive,
     }
 }
 

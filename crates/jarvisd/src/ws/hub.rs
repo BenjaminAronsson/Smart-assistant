@@ -317,6 +317,29 @@ impl WsHub {
         let _ = self.tx.send(Arc::new(envelope));
     }
 
+    /// Broadcast the "keep this run's answer in the house" notice (S3,
+    /// ADR-033 §4). Same transient semantics as a text delta, and deliberately
+    /// sent on the same channel: it has to arrive interleaved with — and ahead
+    /// of — the deltas it labels, which a second transport could not guarantee.
+    pub(crate) fn broadcast_speech_sensitive(&self, run_id: &RunId) {
+        let event = TransientEvent::SpeechSensitive {
+            run_id: run_id.clone(),
+        };
+        let (event_type, payload) =
+            split_tagged(serde_json::to_value(&event).expect("transient event serializes"));
+        let envelope = EventEnvelope {
+            v: CONTRACT_VERSION,
+            seq: self.high_water.load(Ordering::SeqCst),
+            channel: Channel::Session,
+            event_type,
+            occurred_at: now_rfc3339(),
+            trace_id: None,
+            resource_version: None,
+            payload,
+        };
+        let _ = self.tx.send(Arc::new(envelope));
+    }
+
     /// Broadcast the live degraded-mode queue notice. It shares the transient
     /// sequence semantics of token deltas; a reconnect gets the durable run
     /// snapshot and a fresh provider poll instead (FR-12).
@@ -541,11 +564,22 @@ pub(crate) fn register_owned_stream(owned: &mut std::collections::VecDeque<Owned
 /// Kept next to [`delivers_to_owner_of`] rather than derived from `feed_speech`
 /// so that widening it is a deliberate edit to a security rule with its own
 /// test, not a side effect of teaching the speech assembler a new event.
-const SPOKEN_RUN_EVENTS: [&str; 4] = [
+const SPOKEN_RUN_EVENTS: [&str; 5] = [
     "text.delta",
     "run.completed",
     "run.queued",
     "degraded.queued",
+    // S3: how the answer may be spoken, sent to the node that will speak it.
+    //
+    // A deliberate widening, weighed against the rule above rather than added
+    // because `feed_speech` learned a new event. It survives that test on the
+    // ground the rule cares about — what a satellite gains by hearing it. This
+    // payload is a run id and a single bit, carried beside `text.delta`, which
+    // is already sending that same socket the entire answer. It reveals
+    // strictly less than what it rides along with, and withholding it would
+    // not protect the content: it would just mean the node speaks that content
+    // in a third-party voice.
+    "run.speech_sensitive",
 ];
 
 /// [`delivers_to`] against every stream this socket owns.

@@ -38,7 +38,7 @@ use jarvis_domain::automations::{
     Automation, AutomationAction, AutomationName, ExecutionOutcome, Trigger,
 };
 use jarvis_domain::ids::{DeviceId, UserId};
-use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
+use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, SpeechSensitivity, ToolPolicy};
 use jarvis_domain::timers::{Timer, TimerKind, TimerName, TimerState};
 use jarvis_domain::tools::{CanonicalValue, ToolId, ToolProposal};
 use jarvis_infra::automations::PgAutomationStore;
@@ -102,6 +102,7 @@ fn registry_with(tool: &ToolId, executor: Arc<SpyTool>) -> ToolRegistry {
                     .into_iter()
                     .collect(),
                 egress: DataEgress::Local,
+                speech_sensitivity: SpeechSensitivity::Normal,
             }),
             executor,
         })

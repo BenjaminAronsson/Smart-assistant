@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use jarvis_application::policy::{ToolDescriptor, ToolExecutor};
 use jarvis_domain::declare_tool_id;
 use jarvis_domain::grants::ExecutionGrant;
-use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
+use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, SpeechSensitivity, ToolPolicy};
 use jarvis_domain::tools::{CanonicalValue, ToolError, ToolInvocation, ToolResult, ToolVersion};
 use tokio_util::sync::CancellationToken;
 
@@ -41,6 +41,16 @@ impl HomeGetStateTool {
                 .into_iter()
                 .collect(),
             egress: DataEgress::Local,
+            // S3/ADR-033 §4. Household state is lock state, occupancy and
+            // presence: "the back door is unlocked and nobody's home" is not a
+            // weather answer, and reading it out in a vendor voice sends the
+            // one fact about this house that most warrants staying inside it.
+            //
+            // The second entry in the table where `Local` egress and
+            // `Sensitive` speech disagree, and for the opposite reason to
+            // `fs.read`'s: the *request* never leaves the LAN, which is exactly
+            // why nothing about the answer suggests care is needed.
+            speech_sensitivity: SpeechSensitivity::Sensitive,
         }
     }
 

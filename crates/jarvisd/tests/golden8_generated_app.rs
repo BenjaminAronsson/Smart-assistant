@@ -41,7 +41,7 @@ use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::grants::{ExecutionGrant, Sha256};
 use jarvis_domain::ids::{ArtifactId, RunId};
 use jarvis_domain::location::Sensitivity;
-use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
+use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, SpeechSensitivity, ToolPolicy};
 use jarvis_domain::tools::{
     CanonicalValue, ToolError, ToolId, ToolInvocation, ToolResult, ToolVersion,
 };
@@ -119,6 +119,7 @@ fn home_read_policy() -> ToolPolicy {
         timeout: Duration::from_secs(5),
         required_scopes: [Scope::new("home:read").unwrap()].into_iter().collect(),
         egress: DataEgress::Local,
+        speech_sensitivity: SpeechSensitivity::Normal,
     }
 }
 

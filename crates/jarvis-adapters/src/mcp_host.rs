@@ -440,7 +440,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    use jarvis_domain::policy::{DataEgress, RiskLevel, Scope};
+    use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, SpeechSensitivity};
     use rmcp::model::CallToolResult;
 
     fn r0_policy(scope: &str) -> ToolPolicy {
@@ -451,6 +451,7 @@ mod tests {
             timeout: Duration::from_secs(5),
             required_scopes: [Scope::new(scope).unwrap()].into_iter().collect(),
             egress: DataEgress::Local,
+            speech_sensitivity: SpeechSensitivity::Normal,
         }
     }
 

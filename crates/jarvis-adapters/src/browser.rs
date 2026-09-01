@@ -683,7 +683,7 @@ where
 mod tests {
     use super::*;
     use jarvis_application::ports::RepositoryError;
-    use jarvis_domain::policy::{DataEgress, RiskLevel, Scope};
+    use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, SpeechSensitivity};
     use std::sync::Mutex as StdMutex;
 
     fn policy_at(risk: RiskLevel) -> ToolPolicy {
@@ -694,6 +694,7 @@ mod tests {
             timeout: Duration::from_secs(30),
             required_scopes: [Scope::new("browser:act").unwrap()].into_iter().collect(),
             egress: DataEgress::External,
+            speech_sensitivity: SpeechSensitivity::Normal,
         }
     }
 

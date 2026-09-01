@@ -22,7 +22,7 @@ use crate::testing::{
     ManualClock, RecordingAuditSink, RecordingCheckpointer, RecordingSink,
 };
 use jarvis_domain::ids::{DeviceId, RunId, SessionId, UserId};
-use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
+use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, SpeechSensitivity, ToolPolicy};
 use jarvis_domain::run::{Run, RunBudget, RunState};
 use jarvis_domain::tools::{CanonicalValue as V, ToolId, ToolProposal, ToolVersion};
 use tokio_util::sync::CancellationToken;
@@ -62,6 +62,7 @@ fn policy(risk: RiskLevel, egress: DataEgress, scopes: &[&str]) -> ToolPolicy {
         timeout: Duration::from_secs(5),
         required_scopes: scopes.iter().map(|s| Scope::new(*s).unwrap()).collect(),
         egress,
+        speech_sensitivity: SpeechSensitivity::Normal,
     }
 }
 

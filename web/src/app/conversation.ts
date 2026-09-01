@@ -28,8 +28,7 @@ import { ApiService } from './api.service';
 import { ApprovalTray } from './approval-tray';
 import { HudStateService, presenceForRunState } from './hud/hud-state.service';
 import { VoiceCaptureService } from './voice-capture.service';
-
-const TRANSIENT_WS_TYPES = new Set(['text.delta', 'media.state', 'hud.canvas', 'degraded.queued']);
+import { TRANSIENT_WS_TYPES } from './ws-events';
 
 /** Cap on the live streaming preview buffer (NIT 4). The durable message that
  * arrives on completion is authoritative, so trimming the transient preview to

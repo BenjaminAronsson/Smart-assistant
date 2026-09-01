@@ -33,7 +33,7 @@ use axum::response::Response;
 use jarvis_application::policy::{PolicyContext, PolicyDecision, ToolRegistry, evaluate};
 use jarvis_contracts::policy::{ClassOutcomeDto, PolicyOutcomeDto, PolicyViewDto, ToolPolicyDto};
 use jarvis_domain::identity::DeviceClass;
-use jarvis_domain::policy::{DataEgress, RiskLevel, Scope};
+use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, SpeechSensitivity};
 use jarvis_domain::tools::{CanonicalValue, ToolProposal};
 
 /// Project the live registry into the read-only view.
@@ -48,6 +48,7 @@ pub fn project(registry: &ToolRegistry) -> PolicyViewDto {
                 reversible: policy.is_reversible,
                 requires_user_presence: policy.requires_user_presence,
                 egress: egress_name(policy.egress).to_owned(),
+                speech_sensitivity: speech_sensitivity_name(policy.speech_sensitivity).to_owned(),
                 required_scopes: policy
                     .required_scopes
                     .iter()
@@ -127,6 +128,13 @@ fn egress_name(egress: DataEgress) -> &'static str {
         DataEgress::None => "none",
         DataEgress::Local => "local",
         DataEgress::External => "external",
+    }
+}
+
+fn speech_sensitivity_name(sensitivity: SpeechSensitivity) -> &'static str {
+    match sensitivity {
+        SpeechSensitivity::Normal => "normal",
+        SpeechSensitivity::Sensitive => "sensitive",
     }
 }
 

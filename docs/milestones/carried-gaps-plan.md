@@ -6,10 +6,10 @@ stale in place — see §5. Not a milestone; these are independent items, most s
 none behaviour-blocking today. Priority order below is the recommended pickup order,
 not a schedule.
 
-**Do not run this alongside M9.** M9 (`docs/milestones/M9-features.md`) is a
-behaviour-frozen refactor — "nothing in this milestone changes behaviour" is the
-whole of its exit evidence. Every item below changes behaviour. Land M9 first; these
-after.
+~~**Do not run this alongside M9.**~~ **Lifted 2026-09-01** — M9 is signed off (tag
+`m9-complete`), so the behaviour freeze that blocked every item here is over. The
+reason it existed: M9 was a refactor whose entire exit evidence was "nothing changes
+behaviour", and every item below changes behaviour.
 
 ---
 
@@ -58,7 +58,94 @@ signature other tools will be written against.
 
 ---
 
-## 2. S3 — every spoken run answer is labelled `Normal`
+## 2. S3 — every spoken run answer is labelled `Normal` — **CLOSED 2026-09-01**
+
+**Closed** on `fix/s3-speech-sensitivity`. What shipped, and where it differs from the
+plan below:
+
+- `SpeechSensitivity` moved to `jarvis-domain::policy` (beside `DataEgress`, which is
+  the same kind of statement) and `ToolPolicy` gained a non-defaulted
+  `speech_sensitivity` field. `fs.read` and both `message.send` tools declare
+  `Sensitive`; the F9.6 policy snapshot in `crates/jarvisd/src/tools.rs` pins all 21
+  tools' values so the field can never start being *derived* from `risk`/`egress`.
+  The tiers genuinely do not line up: `fs.read` is R0/`DataEgress::None` and
+  `Sensitive`.
+- **The plan's step 3 was wrong about the code, and the fix is wider than it asked
+  for.** There is no mail tool in the registry, and *calendar is not a tool* — an
+  agenda reaches the model through `ContextAssembler` as `AssembledContext::agenda`.
+  A per-tool field alone would therefore never have fired for "calendar entries",
+  which is the one case ADR-033 §4 names by name. So the orchestrator escalates from
+  **two** producers: `tool_step` (a tool declaring `Sensitive` returned) and
+  `assemble_step` (an agenda was assembled). Any agenda escalates, ignoring each
+  event's own `Sensitivity` — which today is a distinction without a difference,
+  because the CalDAV adapter parses no `CLASS` property and hardcodes
+  `Sensitivity::Sensitive` on every event (`caldav.rs`). The refusal to branch on it
+  is aimed at the moment `CLASS` parsing lands: the flag becomes owner-authored,
+  almost no real calendar sets it, and a branch would silently start reading every
+  unclassified appointment to a vendor. (The first draft of this justified the
+  decision by describing the flag as already owner-authored — wrong about this
+  codebase, and caught by the security-auditor pass.)
+- **Step 1's warning was weighed and not followed.** It anticipated a new `RunUpdate`
+  variant would repeat CF-8's mistake. It does not: `run.speech_sensitive` is a
+  transient Session event carrying *only* a run id, and it is scoped by exactly the
+  machinery F7.4 built — `SPOKEN_RUN_EVENTS` plus per-socket run ownership. It rides
+  beside `text.delta`, which is already sending that same socket the entire answer, so
+  it reveals strictly less than its neighbour. It also had to ride that stream:
+  ordering is the protection, and only one ordered transport can guarantee the label
+  arrives before the clause it labels.
+- Escalation is monotonic — the socket's `AtomicBool` is only ever set, and there is no
+  de-escalation event on the wire — and it is read **per clause** rather than captured
+  when the utterance starts, because the label is a consequence of the run and so
+  necessarily arrives mid-flight.
+- Step 4's mutation check ran, twice: dropping the socket's store, and disabling the
+  orchestrator's tool-path emission. Two tests failed each time.
+- No transition-table change: this adds a `RunUpdate`, not a `RunState`/`RunEvent`.
+- Found and fixed alongside: the web shell's `TRANSIENT_WS_TYPES` sets, which decide
+  what advances `lastSeq`. A transient event missing from them reads as a gap in the
+  durable sequence and triggers a needless timeline reload on every occurrence. Now
+  one exported constant (`web/src/app/ws-events.ts`) rather than two copies that had
+  to be edited in lockstep.
+- Reviewed by security-auditor, rust-reviewer and contract-keeper; no BLOCKING
+  findings. Their SHOULD-FIXes were applied: a test that drives the **real** producer
+  (`RunEventSink::emit` → `WsHub`) rather than a hand-built envelope, which is this
+  repo's most-repeated bug class; a corrected agenda rationale (see above); the
+  re-export dropped so one routing rule does not have two import paths inside one
+  crate; a truthful memory-ordering comment (the mpsc send→recv edge is what orders
+  the flag, not `Acquire`/`Release`); `speech_sensitivity` surfaced in the F10.5
+  policy view; and a registry-coverage assertion so a newly registered tool cannot
+  join unpinned — the unpinned direction being `Normal`, i.e. spoken by a vendor.
+
+**Two escalation gaps deliberately left open** (both out of S3's scope, recorded so
+they are decisions rather than oversights):
+
+1. **Cross-turn.** Escalation is per-run. If turn 1 uses `fs.read` and turn 2's
+   assembled context includes history or a summary quoting that content, turn 2 is
+   not escalated and its answer can go out in the vendor voice.
+2. **Resume.** `assemble_step` and `tool_step` are the only producers, so a run
+   resumed from a checkpoint past both re-emits nothing. Harmless today only because
+   a resumed run has no in-flight utterance on a fresh socket — this entry is the
+   record that the design leans on that assumption.
+
+**Two owner decisions, both taken 2026-09-01** (raised by the security-auditor,
+resolved by the owner in the same session):
+
+- **`home.get_state` is now `Sensitive`.** It returns household state — lock state,
+  occupancy, presence. "The back door is unlocked and nobody's home" read out by a
+  vendor voice is ADR-033 §4's category, not a weather answer. Settled by CLAUDE.md's
+  own tiebreak for ambiguous requirements: prefer the stricter security interpretation.
+  It is now the second row where `Local` egress and `Sensitive` speech disagree, and
+  for the opposite reason to `fs.read`'s.
+- **Memory retrieval stays unescalated, and ADR-033 §4 now says why.** It relies on the
+  per-item `Sensitivity` label — the kind of flag the agenda path refuses — because
+  there the label is owner-authored at write time and retrieval already *drops*
+  `Sensitive` items rather than merely annotating them. Escalating on any hit would fire
+  on most runs and hollow the label out, retiring the cloud voice by attrition, which is
+  what §3's "rejected: replacing Piper" exists to prevent. The unifying rule is now
+  recorded in the ADR: **escalate unless a human authored the label.**
+
+Original entry follows.
+
+---
 
 Open since M8a, restated at every gate since (M8c, M10). `SpeechSensitivity::Sensitive`
 is real routing machinery (ADR-033 §4) — content marked sensitive never reaches

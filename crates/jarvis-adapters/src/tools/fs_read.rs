@@ -11,7 +11,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use jarvis_application::policy::{ToolDescriptor, ToolExecutor};
 use jarvis_domain::grants::ExecutionGrant;
-use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
+use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, SpeechSensitivity, ToolPolicy};
 use jarvis_domain::tools::{ToolError, ToolInvocation, ToolResult, ToolVersion};
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
@@ -59,6 +59,14 @@ impl FsReadTool {
                 .into_iter()
                 .collect(),
             egress: DataEgress::None,
+            // S3/ADR-033 §4: file contents are the owner's own data, so an
+            // answer built from one is never read aloud by a third-party voice.
+            //
+            // The clearest case that the speech label is *not* a restatement of
+            // the other two: this tool is R0 and `DataEgress::None` — the
+            // safest cell in both existing tables — and still `Sensitive`. Risk
+            // and egress describe the *request*; this describes the *answer*.
+            speech_sensitivity: SpeechSensitivity::Sensitive,
         }
     }
 

@@ -25,8 +25,7 @@ import { Hud } from './hud/hud';
 import { HudStateService, presenceForRunState } from './hud/hud-state.service';
 import { MediaBar } from './media-bar';
 import { MediaService } from './media.service';
-
-const TRANSIENT_WS_TYPES = new Set(['text.delta', 'media.state', 'hud.canvas', 'degraded.queued']);
+import { TRANSIENT_WS_TYPES } from './ws-events';
 
 /**
  * Jarvis shell root (docs/03 §3, docs/12 §1).

@@ -76,6 +76,12 @@ Rules:
   checkpoints. **Not persisted:** token deltas, partial transcripts, waveform levels,
   transient progress. Presence is TTL state.
 - Token deltas are disposable; a durable snapshot event follows completion.
+- `run.speech_sensitive` (transient, session channel) says a run's answer must not be
+  spoken by a third-party voice (ADR-033 §4). It carries only the run id, and it is
+  emitted *before* the deltas it labels — a consumer that has to pick a synthesizer per
+  clause needs the label to arrive ahead of the clause, which only holds because both
+  ride the same ordered stream. Never replayed: it describes an utterance in flight, and
+  after a reconnect there is none.
 - Every event carries schema version `v`; additive evolution only within a version.
 
 ## 4. Core Rust contracts (normative sketches)

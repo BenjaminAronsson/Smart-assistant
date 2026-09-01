@@ -21,7 +21,7 @@ use jarvis_domain::audit::AuditEvent;
 use jarvis_domain::grants::Sha256;
 use jarvis_domain::ids::{ArtifactId, DeviceId, RunId, UserId};
 use jarvis_domain::location::Sensitivity;
-use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
+use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, SpeechSensitivity, ToolPolicy};
 use jarvis_domain::tools::{CanonicalValue, ToolId, ToolVersion};
 use tokio_util::sync::CancellationToken;
 
@@ -162,6 +162,7 @@ fn policy(risk: RiskLevel, scope: &str) -> ToolPolicy {
         timeout: Duration::from_secs(5),
         required_scopes: [Scope::new(scope).unwrap()].into_iter().collect(),
         egress: DataEgress::Local,
+        speech_sensitivity: SpeechSensitivity::Normal,
     }
 }
 

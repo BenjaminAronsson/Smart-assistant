@@ -150,6 +150,28 @@ pub enum TransientEvent {
         run_id: RunId,
         text: String,
     },
+    /// This run's spoken answer must stay in the house (ADR-033 §4, S3).
+    ///
+    /// Emitted the moment private content enters the run — a tool declared
+    /// `SpeechSensitivity::Sensitive` returned, or an agenda was assembled — and
+    /// always ahead of the text that quotes it, so a node picks the local voice
+    /// for the sentence rather than one sentence later.
+    ///
+    /// Transient, for the same reason as `text.delta`: it describes an utterance
+    /// in flight. There is no utterance to label after a reconnect, and a
+    /// replayed escalation would attach to whatever is being spoken *then*.
+    ///
+    /// Carries only the run id. Deliberately not the tool that triggered it:
+    /// this event reaches a room satellite (it is on the hub's spoken-run
+    /// allowlist), and "the owner just read their mail" is more than a device
+    /// needs in order to choose a synthesizer. One bit, one direction — there is
+    /// no de-escalation event, because a label that could be walked back would
+    /// not be a routing constraint.
+    #[serde(rename = "run.speech_sensitive")]
+    SpeechSensitive {
+        #[schemars(with = "crate::schema::UlidString")]
+        run_id: RunId,
+    },
     /// A run entered degraded-mode queueing. The next durable run snapshot is
     /// authoritative after reconnect; this live notice supplies the position
     /// while the provider is unavailable (FR-12, angular-shell §5).
@@ -227,6 +249,7 @@ impl TransientEvent {
     pub fn event_type(&self) -> &'static str {
         match self {
             Self::TextDelta { .. } => "text.delta",
+            Self::SpeechSensitive { .. } => "run.speech_sensitive",
             Self::DegradedQueued { .. } => "degraded.queued",
             Self::MediaState { .. } => "media.state",
             Self::HudCanvas { .. } => "hud.canvas",

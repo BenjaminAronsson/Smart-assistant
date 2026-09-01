@@ -12,7 +12,11 @@
 //! and daemon wiring land in F5.2.
 
 use async_trait::async_trait;
+// S3: the label lives in the domain, beside `DataEgress` (see its doc there).
+// Imported rather than re-exported — a re-export would give one routing rule
+// two names inside one crate, which is the divergence ADR-034 spent M9 undoing.
 use futures_core::stream::BoxStream;
+use jarvis_domain::policy::SpeechSensitivity;
 use tokio_util::sync::CancellationToken;
 
 /// PCM framing shared by every leg of the pipeline (Wyoming `audio-start`/
@@ -83,31 +87,6 @@ pub trait SpeechTranscriber: Send + Sync {
 /// Synthesizes speech from text (docs/02 §9 "TTS (Piper)"). Starts from
 /// complete clauses and stops on barge-in in a later slice; here it is simply
 /// text in, framed PCM out.
-/// Whether an utterance may leave the house (F8.11).
-///
-/// Labelled by the **producer**, never inferred from the text. A heuristic
-/// deciding whether your message body is private is exactly the wrong place
-/// for a heuristic: it fails open, silently, and only for the people whose
-/// messages happen not to look private.
-///
-/// `Sensitive` is a hard routing constraint, not a preference — a synthesizer
-/// that reaches a third party must refuse it rather than degrade.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpeechSensitivity {
-    /// An assistant reply, a timer announcement, a weather answer.
-    Normal,
-    /// Message bodies, calendar entries — anything whose *content* is the
-    /// user's private correspondence. Never spoken by a third party.
-    Sensitive,
-}
-
-impl SpeechSensitivity {
-    /// Whether this utterance may cross a `DataEgress::External` boundary.
-    pub fn may_leave_the_house(self) -> bool {
-        matches!(self, Self::Normal)
-    }
-}
-
 #[async_trait]
 pub trait SpeechSynthesizer: Send + Sync {
     fn id(&self) -> &str;

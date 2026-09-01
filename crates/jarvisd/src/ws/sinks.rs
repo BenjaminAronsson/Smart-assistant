@@ -88,6 +88,11 @@ impl RunEventSink for WsHub {
                 position,
             } => self.broadcast_queued(&run_id, &reason, position),
             RunUpdate::Agenda { run_id, events } => self.broadcast_agenda(&run_id, events),
+            // S3: transient, like the deltas it labels — see the variant's own
+            // doc for why replaying it would attach to the wrong utterance.
+            RunUpdate::SpeechSensitivityEscalated { run_id } => {
+                self.broadcast_speech_sensitive(&run_id)
+            }
             // Persisted by the checkpointer and delivered on the outbox path —
             // dropping them here is the double-emit reconciliation (F1.4).
             // CompensationRegistered (F2.3) is likewise a persisted domain event;

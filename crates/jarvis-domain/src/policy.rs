@@ -69,6 +69,51 @@ pub enum DataEgress {
     External,
 }
 
+/// Whether an utterance derived from this data may leave the house (ADR-033 §4,
+/// F8.11, S3).
+///
+/// Lives here, beside [`DataEgress`], because it is the same kind of statement:
+/// a routing constraint on where content may travel, owned by the host and
+/// declared at the producer. It is *not* a second opinion about `DataEgress` —
+/// that one is about the tool's own request, this one is about the answer
+/// spoken afterwards, and the two differ in both directions. `web.search`
+/// reaches the open web (`External`) and returns public facts a third-party
+/// voice may read aloud (`Normal`); `fs.read` touches no network at all
+/// (`None`) and returns file contents that must not (`Sensitive`).
+///
+/// Labelled by the **producer**, never inferred from the text. A heuristic
+/// deciding whether your message body is private is exactly the wrong place for
+/// a heuristic: it fails open, silently, and only for the people whose messages
+/// happen not to look private.
+///
+/// `Sensitive` is a hard routing constraint, not a preference — a synthesizer
+/// that reaches a third party must refuse it rather than degrade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SpeechSensitivity {
+    /// An assistant reply, a timer announcement, a weather answer.
+    Normal,
+    /// Message bodies, calendar entries, file contents — anything whose
+    /// *content* is the user's private correspondence or data. Never spoken by
+    /// a third party.
+    Sensitive,
+}
+
+impl SpeechSensitivity {
+    /// Whether this utterance may cross a [`DataEgress::External`] boundary.
+    ///
+    /// The single enforcement point: `ElevenLabsSynthesizer` refuses rather
+    /// than degrades when this is false (ADR-033 §4).
+    ///
+    /// There is deliberately no `escalate`/`downgrade` pair here. Escalation
+    /// within a run is monotonic, and it is enforced where it happens — the
+    /// socket's flag is only ever set, and there is no de-escalation event on
+    /// the wire — rather than by a combinator no caller would be obliged to
+    /// use.
+    pub fn may_leave_the_house(self) -> bool {
+        matches!(self, Self::Normal)
+    }
+}
+
 /// A capability scope a device/tool must hold (docs/05 §6.3), e.g.
 /// `files:read`, `home:control`. Validated so scope strings stay a closed,
 /// greppable vocabulary rather than free text.
@@ -169,11 +214,31 @@ pub struct ToolPolicy {
     pub timeout: Duration,
     pub required_scopes: BTreeSet<Scope>,
     pub egress: DataEgress,
+    /// Whether an answer that used this tool may be spoken by a third-party
+    /// voice (ADR-033 §4, S3).
+    ///
+    /// Deliberately **not** defaulted and deliberately not derived from `risk`
+    /// or `egress` — same rule F9.6 pins for `risk` itself: written out at each
+    /// declaration site, so adding a tool is a decision about what it may cause
+    /// to be spoken aloud, not an inheritance. The tiers do not line up anyway
+    /// (see [`SpeechSensitivity`]): `fs.read` is R0/`None`/`Sensitive`.
+    pub speech_sensitivity: SpeechSensitivity,
 }
 
 impl ToolPolicy {
     /// Whether an execution of this tool must present a valid `ExecutionGrant`.
     pub fn requires_grant(&self) -> bool {
         self.risk.requires_approval()
+    }
+}
+
+#[cfg(test)]
+mod speech_sensitivity_tests {
+    use super::SpeechSensitivity::{Normal, Sensitive};
+
+    #[test]
+    fn only_normal_may_leave_the_house() {
+        assert!(Normal.may_leave_the_house());
+        assert!(!Sensitive.may_leave_the_house());
     }
 }

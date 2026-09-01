@@ -38,7 +38,7 @@ use jarvis_domain::grants::ExecutionGrant;
 use jarvis_domain::media::{
     MediaSnapshot, PlayerId, TargetSelection, TransportCommand, TransportCommandError, VolumePct,
 };
-use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, ToolPolicy};
+use jarvis_domain::policy::{DataEgress, RiskLevel, Scope, SpeechSensitivity, ToolPolicy};
 use jarvis_domain::synthesis::clarifying_question;
 use jarvis_domain::tools::{CanonicalValue, ToolError, ToolInvocation, ToolResult, ToolVersion};
 use tokio_util::sync::CancellationToken;
@@ -77,6 +77,7 @@ impl MediaPlaybackTool {
                 .into_iter()
                 .collect(),
             egress: DataEgress::Local,
+            speech_sensitivity: SpeechSensitivity::Normal,
         }
     }
 
@@ -201,6 +202,7 @@ impl MediaVolumeBoostTool {
                 .into_iter()
                 .collect(),
             egress: DataEgress::Local,
+            speech_sensitivity: SpeechSensitivity::Normal,
         }
     }
 
@@ -526,6 +528,7 @@ impl MediaOpenUrlTool {
             // The window fetches the URL: bytes leave the machine, so this is
             // honestly External even though the *control* is local.
             egress: DataEgress::External,
+            speech_sensitivity: SpeechSensitivity::Normal,
         }
     }
 
