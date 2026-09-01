@@ -992,9 +992,10 @@ third party in the path of every sound in the house.
 
 ## ADR-034 — Internal module structure is a ratcheted, enforced norm, not a review convention {#adr-034}
 
-**Status.** **Proposed** (drafted in F9.13, M9). Owner accepts or rejects at the M9 gate. Depends
-on the M9 feature list being approved (`docs/milestones/M9-features.md`); ADR-033 is reserved by
-F8.11.
+**Status.** **Accepted (M9 gate, 1 September 2026).** Drafted at F8.11/M8c (not "in F9.13" as
+this record originally said — it predates M9 existing; corrected here rather than silently).
+Enforcement code (the two ceilings below) landed in F9.13 and is live in `cargo xtask
+arch-test` (`docs/milestones/M9-gate-report.md`).
 
 **Context.** `docs/02 §3` fixes the *crate* boundaries and `cargo xtask arch-test` enforces them —
 the dependency rule has held for eight milestones without a single violation. That is the evidence
