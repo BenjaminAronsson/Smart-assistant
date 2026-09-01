@@ -1130,6 +1130,32 @@ everything said in it.
    deciding whether a sentence is private fails open, silently, and only for the people whose
    messages happen not to look private.
 
+   **Amended 2026-09-01 (S3, PR #104), when the producers were finally built.** Three paths
+   feed private content into a spoken answer, and they are treated differently on purpose:
+
+   - **Tools** declare `speech_sensitivity` at their registration site, beside `risk` and
+     `egress` and defaulted by neither. `fs.read`, `message.send` and `home.get_state` are
+     `Sensitive`. The tiers do not predict each other: `fs.read` is R0 with
+     `DataEgress::None` — the safest cell in both existing tables — and `home.get_state`
+     never leaves the LAN, which is precisely why neither looks like it needs care.
+   - **The calendar agenda** escalates *unconditionally*, ignoring each event's own
+     `Sensitivity`. Today that is a distinction without a difference (the CalDAV adapter
+     hardcodes `Sensitive` and parses no `CLASS`), and the refusal is aimed at when `CLASS`
+     parsing lands: the flag would become owner-authored, almost no real calendar sets it,
+     and branching on it would silently start reading every unclassified appointment to a
+     vendor. There is no author to trust, so nothing is trusted.
+   - **Memory retrieval** does *not* escalate per hit, and instead relies on the per-item
+     `Sensitivity` label — the very kind of flag the agenda path refuses. This is a
+     decision, not an oversight, and it rests on two differences: the label is
+     **owner-authored at write time** rather than derived from a third-party feed, and the
+     retrieval path already drops `Sensitive` items before assembly, so the flag gates
+     inclusion rather than merely annotating it. Escalating on any hit would fire on most
+     runs and hollow the label out — which would retire the cloud voice by attrition, the
+     outcome §3's "rejected: replacing Piper" exists to prevent.
+
+   The rule that unifies them: **escalate unless a human authored the label.** A flag
+   invented by an adapter or a vendor is not an author.
+
 5. **A character budget, reserved before the request and observable.** Reserved rather than
    counted afterwards, because a limit that notices overspend once the bytes are sent is an
    accounting record. Exhaustion falls back to Piper rather than failing the turn — running

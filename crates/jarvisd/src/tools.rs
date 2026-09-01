@@ -769,7 +769,7 @@ mod f9_6_policy_snapshot_tests {
                 expected_risk: RiskLevel::R0,
                 expected_egress: DataEgress::Local,
                 expected_scopes: &["home:read"],
-                expected_speech_sensitivity: SpeechSensitivity::Normal,
+                expected_speech_sensitivity: SpeechSensitivity::Sensitive,
             },
             Case {
                 id: HomeSetLightTool::id(),

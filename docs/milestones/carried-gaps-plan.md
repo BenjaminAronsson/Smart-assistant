@@ -126,20 +126,22 @@ they are decisions rather than oversights):
    a resumed run has no in-flight utterance on a fresh socket — this entry is the
    record that the design leans on that assumption.
 
-**Two owner decisions left open**, both surfaced by the security-auditor:
+**Two owner decisions, both taken 2026-09-01** (raised by the security-auditor,
+resolved by the owner in the same session):
 
-- **`home.get_state` stays `Normal`.** It returns household state — lock state,
+- **`home.get_state` is now `Sensitive`.** It returns household state — lock state,
   occupancy, presence. "The back door is unlocked and nobody's home" read out by a
-  vendor voice is arguably closer to ADR-033 §4's category than to a weather answer.
-  One line plus a snapshot expectation to flip.
-- **Memory retrieval is a third unlabelled producer** (`jarvisd/src/orchestrator_ports.rs`).
-  Retrieved memories are folded into the prompt and can be quoted verbatim, with no
-  escalation. The memory path *does* rely on a per-item `Sensitivity` flag — the kind
-  of flag the agenda decision declines to trust — but there the label is owner-authored
-  at write time and the retrieval path already drops `Sensitive` items, which is a real
-  distinction from calendar's. Escalating on any retrieval hit would fire on most runs
-  and hollow the label out. The asymmetry needs a sentence in ADR-033 §4 stating it is
-  a decision.
+  vendor voice is ADR-033 §4's category, not a weather answer. Settled by CLAUDE.md's
+  own tiebreak for ambiguous requirements: prefer the stricter security interpretation.
+  It is now the second row where `Local` egress and `Sensitive` speech disagree, and
+  for the opposite reason to `fs.read`'s.
+- **Memory retrieval stays unescalated, and ADR-033 §4 now says why.** It relies on the
+  per-item `Sensitivity` label — the kind of flag the agenda path refuses — because
+  there the label is owner-authored at write time and retrieval already *drops*
+  `Sensitive` items rather than merely annotating them. Escalating on any hit would fire
+  on most runs and hollow the label out, retiring the cloud voice by attrition, which is
+  what §3's "rejected: replacing Piper" exists to prevent. The unifying rule is now
+  recorded in the ADR: **escalate unless a human authored the label.**
 
 Original entry follows.
 
