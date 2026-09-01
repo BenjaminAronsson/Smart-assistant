@@ -48,15 +48,24 @@ infra/                   # compose, systemd units, otel collector, postgres init
 docs/                    # this specification
 ```
 
-The layout above is the target. **Build state (verify against `docs/08-roadmap.md`):** M0
-and M1 are signed off (tags `m0-complete`, PR #4); the current milestone is **M2 (safe
-actions)** — read `docs/milestones/M1-gate-report.md` and `docs/08` §1 before writing code.
-Many crates are still thin: `jarvis-adapters` has only `claude_cli.rs`, `jarvis-agent` is a
-stub, and the orchestrator's `match` on `RunState` (`crates/jarvis-application/src/orchestrator.rs`)
-deliberately returns `UnwiredInM1` for the not-yet-built states (`ToolRunning`, `PolicyReview`,
-`WaitingApproval`, `Replanning`) — keep those arms exhaustive; never add a `_` arm. Ports
-(repository traits the domain depends on) live in `jarvis-application/src/ports.rs`; their
-sqlx implementations are in `jarvis-infra`.
+The layout above is built out, not aspirational. **Build state (verify against
+`docs/08-roadmap.md`):** M0–M9 are signed off (tags `m0-complete`…`m9-complete`; M9
+2026-09-01, ADR-034 accepted); the current milestone is **M10 (product hardening)** —
+read `docs/milestones/M10-gate-report.md` and `docs/milestones/M10-acceptance.md` before
+writing code. M10's code gate already passes; sign-off is blocked only on owner/hardware
+items (clean-machine install, reference-hardware NFR-04, wake-word false-accept corpus).
+All crates are substantially built: `jarvis-adapters` has 12+ real adapters (Home
+Assistant, Spotify, MCP host, Wyoming, fastembed, MPRIS, web, CalDAV, SMTP, ElevenLabs,
+browser, coding, …), `jarvis-agent` is a full desktop agent (Hyprland IPC, audio/AEC,
+ONNX wake-word, pairing/TLS), and the orchestrator's `match` on `RunState`
+(`crates/jarvis-application/src/orchestrator.rs`) is exhaustively wired for every state —
+`StepError::Unwired` remains only as a defensive fallback for an unconfigured optional
+port, never a blanket per-state placeholder; keep the match arms exhaustive, never add a
+`_` arm. Ports (repository traits the domain depends on) live in
+`jarvis-application/src/ports.rs`; their sqlx implementations are in `jarvis-infra`.
+Known open architectural gaps are tracked in `docs/milestones/carried-gaps-plan.md`
+(currently: CF-2 audit-write atomicity, CF-14 timeout-drop atomicity, S3 TTS
+sensitivity-labeling) — check it before assuming an area is unowned.
 
 ## Build & test loop
 
