@@ -118,8 +118,14 @@ export function presenceForRunState(state: RunStateDto): PresenceState {
     case 'cancelled':
       return 'idle';
     default: {
+      // Compile-time exhaustiveness only — a `RunStateDto` variant this
+      // build doesn't know about (a stale cached SPA against an upgraded
+      // daemon) must degrade the HUD presence, not throw out of the WS
+      // message handler that calls this before it updates the timeline
+      // (gate finding S-3, M9).
       const exhaustive: never = state;
-      throw new Error(`unhandled RunStateDto variant: ${String(exhaustive)}`);
+      console.warn(`unhandled RunStateDto variant: ${String(exhaustive)}`);
+      return 'idle';
     }
   }
 }
